@@ -237,7 +237,12 @@ export function broadcastPullRequestUpdate(pr: PullRequest, action: string, work
   let stateAfter: string;
   let excellence: string;
 
-  if (action.includes("monitoring") || action.includes("tracking")) {
+  if (action === "opened") {
+    stateBefore = `PR #${pr.number} did not exist`;
+    changeHow = `New pull request opened: "${pr.title}"`;
+    stateAfter = `${pr.state.toUpperCase()} ${statusEmoji} — ${draftLabel}, ${checksLabel}`;
+    excellence = "New change in flight — implementation is underway";
+  } else if (action.includes("monitoring") || action.includes("tracking")) {
     stateBefore = `PR #${pr.number} "${pr.title}" — ${draftLabel}`;
     changeHow = `Continuous monitoring: ${action}`;
     stateAfter = `${pr.state.toUpperCase()} ${statusEmoji} — ${checksLabel}`;

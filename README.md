@@ -183,7 +183,7 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
   - *solid outline, ready* — PR is open and ready for review
   - *completed (full fill)* — PR is merged/closed
 
-  Each pill is colour-coded to a stable slot in the six-colour palette, matching the worker thread assigned to that issue+PR pair.
+  Each pill is colour-coded to its issue's own stable colour — derived from the issue number, so an issue keeps the same colour forever — and the broadcast feed uses that same colour for everything pertaining to the issue.
 
 - **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
 

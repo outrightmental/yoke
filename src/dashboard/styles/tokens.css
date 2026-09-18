@@ -7,7 +7,9 @@
   --color-yellow: #ffcc00;
   --color-orange: #ff6600;
   --color-red: #ff0055;
-  --bg-dark: #0a0e27;
-  --bg-dark-alt: #1a0a3e;
-  --bg-panel: rgba(20, 10, 50, 0.6);
+  /* Neutral gray base tone (issue #236) — no blue/purple cast. */
+  --bg-dark: #0e0e10;
+  --bg-dark-alt: #1a1a1e;
+  --bg-panel: rgba(24, 24, 28, 0.6);
+  --bg-bar: rgba(14, 14, 16, 0.95);
 }
