@@ -391,9 +391,9 @@ test("reducer: action-start records the cylinder's project repo; engine-idle cle
   let s = initialState();
   s = dashboardReducer(s, makeEvent("action-start", {
     actionIndex: 1, totalActions: 4, type: "start-implementation",
-    issueNumber: 210, repo: "outrightmental/vibrator", description: "d",
+    issueNumber: 210, repo: "outrightmental/yoke", description: "d",
   }));
-  assert.equal(s.cylinders[0]?.repo, "outrightmental/vibrator");
+  assert.equal(s.cylinders[0]?.repo, "outrightmental/yoke");
 
   s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "nothing to do this cycle" }));
   assert.equal(s.cylinders[0]?.repo, null, "idle cylinder shows no project");

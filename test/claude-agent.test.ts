@@ -343,7 +343,7 @@ test("validateClaudeAuth returns valid when credentials have no oauth section", 
 });
 
 test("selfReview does not report changes when only merging latest base advances HEAD", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-self-review-base-merge-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-self-review-base-merge-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -460,7 +460,7 @@ function captureModelAndEffortSnippet(modelLogPath: string, effortLogPath: strin
 }
 
 test("implementIssue passes claudeInitialModel and claudeInitialEffort to the claude CLI", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-initial-model-effort-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-initial-model-effort-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -470,7 +470,7 @@ test("implementIssue passes claudeInitialModel and claudeInitialEffort to the cl
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 301;
   const issueTitle = "Initial model wiring";
-  const branch = "vibrator/issue-301-initial-model-wiring";
+  const branch = "yoke/issue-301-initial-model-wiring";
 
   await mkdir(binDir, { recursive: true });
 
@@ -536,7 +536,7 @@ test("implementIssue passes claudeInitialModel and claudeInitialEffort to the cl
 });
 
 test("selfReview passes claudeReviewModel and claudeReviewEffort to the claude CLI", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-review-model-effort-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-review-model-effort-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -616,7 +616,7 @@ test("selfReview passes claudeReviewModel and claudeReviewEffort to the claude C
 });
 
 test("implementIssue cleans stale uncommitted state left by a prior interrupted run", async () => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-stale-checkout-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-stale-checkout-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -625,7 +625,7 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 298;
   const issueTitle = "Affiliate Program Enhancements";
-  const branch = "vibrator/issue-298-affiliate-program-enhancements";
+  const branch = "yoke/issue-298-affiliate-program-enhancements";
 
   await mkdir(binDir, { recursive: true });
 
@@ -672,7 +672,7 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
     runOrThrow("git", ["config", "user.email", "prior@example.com"], issueCheckoutDir);
     // Put the dir on a stale feature branch with uncommitted changes,
     // matching the real-world failure where the prior run had switched
-    // to vibrator/issue-N-... and left modifications.
+    // to yoke/issue-N-... and left modifications.
     runOrThrow("git", ["checkout", "-b", branch], issueCheckoutDir);
     await writeFile(join(issueCheckoutDir, "tracked.txt"), "PRIOR INTERRUPTED EDIT\n", "utf8");
     await writeFile(join(issueCheckoutDir, "stale-untracked.txt"), "leftover\n", "utf8");
@@ -712,7 +712,7 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
 });
 
 test("implementIssue retries push by merging remote branch on non-fast-forward", async () => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-nff-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-nff-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -721,7 +721,7 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 173;
   const issueTitle = "Gift Certificates";
-  const branch = "vibrator/issue-173-gift-certificates";
+  const branch = "yoke/issue-173-gift-certificates";
 
   await mkdir(binDir, { recursive: true });
 
@@ -753,7 +753,7 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
         "echo \"local change\" >> local.txt",
         "git add local.txt",
         "git commit -m \"agent local commit\"",
-        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-race-XXXXXX\")\"",
+        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/yoke-race-XXXXXX\")\"",
         "git clone \"$YOKE_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
         "cd \"$RACE_DIR/repo\"",
         "git checkout \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
@@ -824,7 +824,7 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
 });
 
 test("implementIssue resolves merge conflicts during non-fast-forward push recovery", async () => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-nff-conflict-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-nff-conflict-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -833,7 +833,7 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 173;
   const issueTitle = "Gift Certificates";
-  const branch = "vibrator/issue-173-gift-certificates";
+  const branch = "yoke/issue-173-gift-certificates";
 
   await mkdir(binDir, { recursive: true });
 
@@ -876,7 +876,7 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
         "echo \"local agent change\" > shared.txt",
         "git add shared.txt",
         "git commit -m \"agent local commit\"",
-        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-race-conflict-XXXXXX\")\"",
+        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/yoke-race-conflict-XXXXXX\")\"",
         "git clone \"$YOKE_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
         "cd \"$RACE_DIR/repo\"",
         "git checkout \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
@@ -956,7 +956,7 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
   // a different commit.  Our push is rejected as non-fast-forward.  Because we
   // started fresh, our implementation is authoritative: we should force-push and
   // overwrite the stale race commit rather than merging it in.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-force-push-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-force-push-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -965,7 +965,7 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 174;
   const issueTitle = "Force Push Test";
-  const branch = "vibrator/issue-174-force-push-test";
+  const branch = "yoke/issue-174-force-push-test";
 
   await mkdir(binDir, { recursive: true });
 
@@ -996,7 +996,7 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
         // Race: a concurrent process creates the feature branch on remote from
         // main with a completely different commit.  This makes our upcoming push
         // a non-fast-forward.
-        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-force-push-race-XXXXXX\")\"",
+        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/yoke-force-push-race-XXXXXX\")\"",
         "git clone \"$YOKE_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
         "cd \"$RACE_DIR/repo\"",
         "git checkout -b \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
@@ -1068,7 +1068,7 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
 });
 
 test("generateFinalDescription passes claudeCommitModel to claude CLI and closes stdin", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "vibrator-commit-model-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-commit-model-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1350,7 +1350,7 @@ test("implementIssue creates a canonical clone and uses linked worktrees for tas
   // 2. Creates task directories as linked git worktrees (`.git` is a file, not
   //    a directory), avoiding a full network clone per issue.
   // 3. Reuses the canonical clone without re-cloning for a second task.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-canonical-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-canonical-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1451,7 +1451,7 @@ test("implementIssue repairs a leftover interrupted clone with an unborn HEAD", 
   // "ambiguous argument 'HEAD'", so the engine could never make progress.
   // The checkout must detect the unusable HEAD and recreate the directory as a
   // linked worktree instead of looping.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-unborn-head-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-unborn-head-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1545,7 +1545,7 @@ test("implementIssue collapses a canonical clone whose single-valued git config 
   // code path could ever remove the extra value. Writing with `--replace-all`
   // collapses however many values are present down to the one we want, so the
   // checkout converges instead of latching.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-dup-config-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-dup-config-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1664,7 +1664,7 @@ test("implementIssue converges a legacy regular clone whose git config keys were
   // recreate self-heal — so a duplicated key there is permanent for that
   // checkout too, and no worktree-based test can reach the line. Several such
   // legacy checkouts exist on real machines.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-legacy-dup-config-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-legacy-dup-config-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1769,7 +1769,7 @@ test("concurrent implementIssue calls share one canonical clone without collidin
   //
   // So this asserts BOTH: that concurrent calls all succeed, and that the
   // canonical clone is left with exactly one refspec.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-concurrent-canonical-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-concurrent-canonical-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1875,7 +1875,7 @@ test("implementIssue clears a stale index.lock left by a killed git process", as
   // stale lock does not stop `git rev-parse --verify HEAD` resolving, so
   // `ensureWorktreeCheckout` took its reuse path and returned before the
   // remove-and-recreate repair. The task directory was wedged permanently.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-stale-index-lock-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-stale-index-lock-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -1980,7 +1980,7 @@ test("implementIssue clears a stale config.lock that even --replace-all cannot c
   // canonical clone exits 255 ("could not lock config file") forever. Nothing
   // removed it, and crucially `--replace-all` does NOT cure this one: it is a
   // second permanent wedge sitting behind the duplicated-refspec fix.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-stale-config-lock-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-stale-config-lock-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -2081,7 +2081,7 @@ test("implementIssue re-clones a canonical clone left unusable by an interrupted
   // checkout root here is placed inside an outer repo so a health check that
   // merely ran `rev-parse` without comparing the answer to this directory would
   // wrongly conclude the broken clone is fine.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-unusable-canonical-test-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-unusable-canonical-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -2186,7 +2186,7 @@ test("implementIssue recovers a checkout wedged by a merge `git merge --abort` r
   // run (a regenerated snapshot, say). Treating the refusal as fatal wedged the
   // task directory permanently — every later run re-entered the same state and
   // re-ran the same doomed command, so the engine never made progress.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-merge-abort-refusal-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-merge-abort-refusal-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -2281,7 +2281,7 @@ test("implementIssue recovers a checkout wedged by a merge `git merge --abort` r
       baseBranch: "main",
     });
 
-    assert.equal(result.branch, "vibrator/issue-1-first-task");
+    assert.equal(result.branch, "yoke/issue-1-first-task");
 
     // The leftover merge and the stray working-tree edit must both be gone.
     const mergeHeadProbe = spawnSync("git", ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {
@@ -2305,7 +2305,7 @@ test("implementIssue recovers a checkout wedged by a rebase `git rebase --abort`
   // interrupted run can leave behind) and exits non-zero with the rebase still
   // registered, so the checkout stays mid-rebase forever. `--quit` drops the
   // state without touching the tree, and the hard reset does the cleanup.
-  const root = await mkdtemp(join(tmpdir(), "vibrator-rebase-abort-refusal-"));
+  const root = await mkdtemp(join(tmpdir(), "yoke-rebase-abort-refusal-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
@@ -2399,7 +2399,7 @@ test("implementIssue recovers a checkout wedged by a rebase `git rebase --abort`
       baseBranch: "main",
     });
 
-    assert.equal(result.branch, "vibrator/issue-1-first-task");
+    assert.equal(result.branch, "yoke/issue-1-first-task");
     assert.equal(
       await stat(join(taskGitDir, "rebase-merge"))
         .then(() => true)

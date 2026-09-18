@@ -769,7 +769,7 @@ async function main(): Promise<void> {
   if (!authResult.valid) {
     console.error(`\nError: Claude authentication is invalid or expired.`);
     console.error(`Please run:  claude auth login`);
-    console.error(`Then restart vibrator.\n`);
+    console.error(`Then restart yoke.\n`);
     process.exit(1);
   }
 
@@ -807,7 +807,7 @@ async function main(): Promise<void> {
       token: githubToken,
       apiBaseUrl: envConfig.github_api_base_url ?? "https://api.github.com",
       apiVersion: envConfig.github_api_version ?? "2022-11-28",
-      userAgent: "vibrator",
+      userAgent: "yoke",
       eventEmitter: emitter,
     });
     const gitHubClient = new GitHubClient({ owner: config.owner, repo: config.repo, gateway: githubGateway });
@@ -868,7 +868,7 @@ async function main(): Promise<void> {
 
   // ── Banner ────────────────────────────────────────────────────────────────
   write(HEAVY_RULE);
-  write(`vibrator starting · ${timestamp()}`);
+  write(`yoke starting · ${timestamp()}`);
   write(`projects (${contexts.length}): ${contexts.map((c) => `${c.repoKey} [cap ${c.cap}]`).join(", ")}`);
   if (dashboardReady) {
     write(`dashboard: ${dashboard.getUrl()}${noBrowser ? " (browser launch suppressed)" : ""}`);
@@ -901,7 +901,7 @@ async function main(): Promise<void> {
       await ctx.gitHubClient.ensureLabelExists(
         "manual",
         "e0e0e0",
-        "Prevents vibrator from automatically picking up this issue",
+        "Prevents yoke from automatically picking up this issue",
       );
       bullet("\"manual\" label is present");
     } catch (error) {
@@ -912,7 +912,7 @@ async function main(): Promise<void> {
       await ctx.gitHubClient.ensureLabelExists(
         REVIEW_LABEL,
         "d93f0b",
-        "Vibrator implements this issue but leaves the final PR for human review",
+        "Yoke implements this issue but leaves the final PR for human review",
       );
       bullet(`"${REVIEW_LABEL}" label is present`);
     } catch (error) {
@@ -924,7 +924,7 @@ async function main(): Promise<void> {
         await ctx.gitHubClient.ensureLabelExists(
           FOCUS_LABEL,
           "0075ca",
-          "Vibrator will only work on issues with this label in focus mode",
+          "Yoke will only work on issues with this label in focus mode",
         );
         bullet(`"${FOCUS_LABEL}" label is present`);
       } catch (error) {

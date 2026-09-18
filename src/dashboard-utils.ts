@@ -35,7 +35,7 @@ export interface LifecyclePair {
   /** Issue numbers blocking this issue, if any (populated for pre-implementation issues) */
   blockedByIssueNumbers?: number[];
   /**
-   * True when the PR is labelled "manual" — vibrator will not work on it, so
+   * True when the PR is labelled "manual" — yoke will not work on it, so
    * the PR half is rendered disabled (greyed out, no glow).
    */
   disabled?: boolean;
