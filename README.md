@@ -50,7 +50,7 @@ flowchart TD
     DEPS -->|No| MODE{"Project\nmode?"}
 
     MODE -->|"Simple SDLC\n(default)"| IMPLEMENT
-    MODE -->|"Project SDLC\n(GITHUB_PROJECT_NUMBER set)"| READY{"Issue status = Ready,\nor In Progress with\nno open PR?"}
+    MODE -->|"Project SDLC\n(github_project_number set)"| READY{"Issue status = Ready,\nor In Progress with\nno open PR?"}
     READY -->|No| SKIP_READY["⏭ Skipped — not Ready,\nand not In Progress\nwithout open PR"]
     READY -->|Yes| IMPLEMENT
 
@@ -83,7 +83,7 @@ flowchart TD
 
 ## Simple SDLC
 
-In Simple SDLC mode — the default when `GITHUB_PROJECT_NUMBER` is not set — Vibrator runs fully autonomously from issue to merged PR:
+In Simple SDLC mode — the default for any project whose `env.yaml` entry has no `github_project_number` — Vibrator runs fully autonomously from issue to merged PR:
 
 1. Any open, unblocked, non-`manual` issue is eligible to start.
 2. Issues are prioritized bugs-first, then by milestone, then by creation time.
@@ -94,7 +94,7 @@ This mode is ideal for personal projects, greenfield work, and any context where
 
 ## Project SDLC (Human-in-the-Loop)
 
-Enable Project SDLC by setting `GITHUB_PROJECT_NUMBER` to a GitHub Projects v2 board number. This mode adds a human review gate before any merge:
+Enable Project SDLC per project by setting `github_project_number` in `env.yaml` to a GitHub Projects v2 board number. This mode adds a human review gate before any merge:
 
 1. Issues in **Ready** status are picked up, and issues already in **In Progress** are also picked up if they have no open PR linked and no active agent session already running.
 2. When work starts on a Ready issue, it moves to **In Progress**.
@@ -104,7 +104,7 @@ Enable Project SDLC by setting `GITHUB_PROJECT_NUMBER` to a GitHub Projects v2 b
    - A new review comment arrives on the PR.
    - The issue is moved back to **Ready** on the project board.
 
-Set `VIBRATOR_REVIEWERS` to a comma-separated list of GitHub logins to notify when a PR is ready.
+List the GitHub logins to notify when a PR is ready under the project's `reviewers` key in `env.yaml`.
 
 This mode suits teams where a human QA or architect approves each merge, while Vibrator handles the full implementation-review-fix loop.
 
@@ -143,38 +143,38 @@ Install dependencies:
 npm install
 ```
 
-Configure GitHub and Claude authentication (once, if not already done):
+Log in to Claude Code (once, if not already done):
 
 ```bash
-export VIBRATOR_GITHUB_TOKEN=github_pat_...
 claude login
 ```
 
-Optionally copy the environment template to set a default repository:
+Create `env.yaml` from the template, then add a GitHub PAT under `github_tokens` and the repositories to run under `projects`:
 
 ```bash
-cp .env.example .env
-# edit .env and set GITHUB_REPOSITORY=owner/repo
+cp env.example.yaml env.yaml
+# edit env.yaml: set github_tokens[0].token and projects[].github_repository
 ```
+
+`env.yaml` is the only place Vibrator reads settings from (it is git-ignored). See [Configuration](#configuration) for every key.
 
 Run a safe one-shot preview:
 
 ```bash
-npm run build
-npm start -- owner/repo --dry-run --once
+npm start -- --dry-run --once
 ```
 
 Run the real loop:
 
 ```bash
-npm start -- owner/repo
+npm start
 ```
 
-The repository slug can be omitted from the CLI when `GITHUB_REPOSITORY` is set.
+Vibrator loads `env.yaml` from the current working directory and works every repository listed under `projects`; there are no positional CLI arguments.
 
 ## Dashboard
 
-`vibrator` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engine cylinders, and each project's own `max_concurrency` caps how many of those cylinders may work it at once. When more than one project is configured, every cylinder, lifecycle pill, broadcast-feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears in the header only. The Dashboard shows:
+`vibrator` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` (change the port with `dashboard_port`) when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engine cylinders, and each project's own `max_concurrency` caps how many of those cylinders may work it at once. When more than one project is configured, every cylinder, lifecycle pill, broadcast-feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears in the header only. The Dashboard shows:
 
 - **Issue → PR Lifecycle panel**: a row of two-halved pills, one per open issue. The left half shows the issue; the right half shows the linked pull request and transitions through states:
   - *(absent)* — no PR yet
@@ -190,7 +190,7 @@ The repository slug can be omitted from the CLI when `GITHUB_REPOSITORY` is set.
 To prevent the Dashboard from opening automatically, pass `--no-browser`:
 
 ```bash
-npm start -- owner/repo --no-browser
+npm start -- --no-browser
 ```
 
 The Dashboard server still starts; the URL is printed to stdout so you can open it manually.
@@ -201,12 +201,12 @@ The Dashboard server still starts; the URL is printed to stdout so you can open 
 
 - Node.js 18+
 - `git` on `PATH`.
-- A GitHub PAT exposed as `VIBRATOR_GITHUB_TOKEN` or `GITHUB_TOKEN`.
+- A GitHub PAT, listed under `github_tokens` in `env.yaml`.
 - The `claude` CLI (Claude Code) installed locally, on `PATH`, and logged in via `claude login`. Uses your Claude Code subscription — no API key required.
 
 ## Configuration
 
-Vibrator uses a GitHub PAT directly for API calls and Git clone/fetch/push operations. Claude Code authentication is still handled by the `claude` CLI.
+All configuration lives in `env.yaml` in the working directory; copy `env.example.yaml` to create it. No configuration is read from environment variables. Vibrator uses the GitHub PAT from `github_tokens` directly for API calls and Git clone/fetch/push operations. Claude Code authentication is still handled by the `claude` CLI: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, and `VIBRATOR_GITHUB_TOKEN` are removed from the environment of every Claude subprocess, so the agent authenticates only through your Claude Code login and the configured PAT.
 
 **GitHub token permissions**
 
@@ -224,43 +224,53 @@ Fine-grained PATs need access to the target repository with:
 
 Classic PATs may need `repo`, `project` when using project mode, and `workflow` when the agent may edit or push workflow files.
 
-**Environment variables**
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `VIBRATOR_GITHUB_TOKEN` | — | Preferred GitHub PAT used by Vibrator for API and Git operations. |
-| `GITHUB_TOKEN` | — | Fallback GitHub token / PAT used when `VIBRATOR_GITHUB_TOKEN` is unset. |
-| `GH_TOKEN` | — | Compatibility fallback only. |
-| `GITHUB_REPOSITORY` | — | Default `owner/repo` when the CLI argument is omitted. |
-| `MAX_CONCURRENCY` | `3` | Maximum active work items across open PRs and in-flight implementations. |
-| `CYCLE_MINIMUM_SECONDS` | `60` | Minimum seconds between engine cycle starts. |
-| `CLAUDE_COMMIT_MODEL` | `claude-haiku-4-5-20251001` | Model for commit message generation. A faster model is appropriate here. |
-| `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
-| `DASHBOARD_TITLE` | repository name (Simple SDLC) / project title (Project SDLC) | Title displayed in the Dashboard header. |
-| `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
-| `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
-| `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
-| `MODE` | — | Set to `focus` (case-insensitive) to activate focus mode. Only issues labelled `focus` will be picked up. |
-
-**env.yaml model configuration**
-
-Model and effort for each phase are set in `env.yaml` (not environment variables). Per-project overrides take precedence over global values.
+**Global keys** (top level of `env.yaml`)
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `github_tokens` | — | **Required.** List of named GitHub PATs, each `{ name, token, default? }`. Projects that set no `github_token_name` use the entry marked `default: true`, or the first entry. |
+| `projects` | — | **Required.** List of repositories to run; see the per-project keys below. |
+| `max_concurrency` | `3` | Total size of the shared engine-cylinder pool across all projects. |
+| `cycle_minimum_seconds` | `60` | Minimum seconds between engine cycle starts. |
 | `claude_code_initial_model` | `claude-sonnet-4-6` | Claude model used during initial implementation. |
 | `claude_code_review_model` | `claude-opus-4-8` | Claude model used during self-review. |
 | `claude_code_initial_effort` | `high` | Reasoning effort for initial implementation. |
 | `claude_code_review_effort` | `high` | Reasoning effort for self-review. |
+| `claude_describe_model` | `claude-haiku-4-5-20251001` | Claude model used to write the final PR description before merge. A faster model is appropriate here. |
+| `dashboard_port` | `3000` | HTTP port for the single shared Dashboard server. |
+| `dashboard_title` | `Outright Mental` | Title displayed in the Dashboard header. |
+| `github_api_base_url` | `https://api.github.com` | GitHub REST API base URL, for GitHub Enterprise. |
+| `github_api_version` | `2022-11-28` | Value of the `X-GitHub-Api-Version` request header. |
+
+**Per-project keys** (each entry under `projects`)
+
+Per-project values override the global ones for that project.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `github_repository` | — | **Required.** Repository slug in `owner/repo` form. |
+| `github_token_name` | default token | Name of the `github_tokens` entry to use for this project. |
+| `max_concurrency` | global `max_concurrency` | Cap on how many of the shared cylinders may work this project at once. Never exceeds the global pool. |
+| `github_project_number` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop) for this project. |
+| `reviewers` | `[]` | GitHub logins to request review from (Project SDLC only). |
+| `focus_mode` | `false` | When `true`, only issues labelled `focus` (and the PRs that advance them) are worked. |
+| `claude_code_initial_model` / `claude_code_review_model` | global value | Per-project model overrides. |
+| `claude_code_initial_effort` / `claude_code_review_effort` | global value | Per-project effort overrides. |
+| `claude_describe_model` | global value | Per-project override for the final-description model. |
+| `cycle_minimum_seconds` | global value | Per-project override of the cycle minimum. |
+| `session_store_path` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 
 **CLI flags**
+
+These are the only command-line options; there are no positional arguments.
 
 | Flag | Purpose |
 | --- | --- |
 | `--once` | Run a single iteration, then exit. |
 | `--dry-run` | Print the plan without executing any Claude or GitHub actions. |
 | `--no-browser` | Start the Dashboard server but do not auto-open a browser window. |
-| `--mode=focus` | Activate focus mode. Only issues labelled `focus` will be picked up. |
+
+Focus mode is a per-project setting, not a flag: set `focus_mode: true` on a project in `env.yaml` and Vibrator will pick up only issues labelled `focus` in that repository, plus the PRs that advance them.
 
 ## Issue language the loop understands
 
@@ -272,14 +282,14 @@ depends on #12
 blocks #34
 ```
 
-`vibrator` will not start an issue while any referenced blocker remains open. Older eligible issues start first (bugs first, then milestone order, then creation time), up to `MAX_CONCURRENCY`.
+`vibrator` will not start an issue while any referenced blocker remains open. Older eligible issues start first (bugs first, then milestone order, then creation time), up to `max_concurrency`.
 
 ### The `manual` label
 
 Apply the `manual` label to any issue or PR to remove it from automated work:
 
 - **Issues** labeled `manual` are never picked up by Vibrator.
-- **PRs** labeled `manual` receive no automated actions (no self-review, no conflict resolution, no auto-merge) and do not count against `MAX_CONCURRENCY`.
+- **PRs** labeled `manual` receive no automated actions (no self-review, no conflict resolution, no auto-merge) and do not count against `max_concurrency`.
 
 Vibrator creates the `manual` label in the repository on startup if it does not already exist.
 
@@ -297,7 +307,7 @@ unattended.
 
 - Works in every mode; in Project SDLC it is redundant (that mode already never auto-merges).
 - The label is copied onto the PR when it is opened, so the no-merge gate survives even if the issue is closed or relabelled mid-flight.
-- A parked PR does not count against `MAX_CONCURRENCY`.
+- A parked PR does not count against `max_concurrency`.
 - Converting the PR back to draft, or commenting on it, re-queues it: Vibrator addresses the feedback, self-reviews, and requests review again.
 - Removing the label from both the issue and the PR returns the PR to the normal auto-merge flow.
 
