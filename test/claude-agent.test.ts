@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import {
   createClaudeAgentClient,
@@ -2121,9 +2121,11 @@ test("implementIssue re-clones a canonical clone left unusable by an interrupted
       encoding: "utf8",
     });
     assert.equal(ancestorProbe.status, 0, "broken .git should still resolve, via the ancestor");
+    // Compare real paths: git prints the symlink-resolved location, and on macOS
+    // `os.tmpdir()` lives under /var, a symlink to /private/var.
     assert.notEqual(
-      resolve(ancestorProbe.stdout.trim()),
-      resolve(join(canonicalDir, ".git")),
+      await realpath(ancestorProbe.stdout.trim()),
+      await realpath(join(canonicalDir, ".git")),
       "the fixture must resolve to the ANCESTOR git dir, or it does not pin the bug",
     );
 
@@ -2167,8 +2169,8 @@ test("implementIssue re-clones a canonical clone left unusable by an interrupted
     // The canonical clone must have been rebuilt as a real repository.
     const rebuilt = runOrThrow("git", ["rev-parse", "--absolute-git-dir"], canonicalDir);
     assert.equal(
-      resolve(rebuilt),
-      resolve(join(canonicalDir, ".git")),
+      await realpath(rebuilt),
+      await realpath(join(canonicalDir, ".git")),
       "canonical clone should have been re-cloned in place, not resolved to an ancestor",
     );
     assert.equal(
