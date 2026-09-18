@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import type { CylinderState } from '../store/types.js';
 import { formatDuration, formatModelName } from '../shared/format.js';
+import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 
 export class CylinderRow extends LitElement {
   static override styles = css`
@@ -228,7 +229,7 @@ export class CylinderRow extends LitElement {
     return html`
       <div
         class="${rowClass}"
-        style="--cyl-color:${cyl.color};--cyl-color-rgb:${cyl.colorRgb}"
+        style="--cyl-color:${cyl.color ?? NEUTRAL_COLOR};--cyl-color-rgb:${cyl.colorRgb ?? NEUTRAL_COLOR_RGB}"
       >
         <div class="${dotClass}"></div>
         <div class="cylinder-info">

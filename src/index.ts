@@ -212,7 +212,10 @@ async function broadcastBetweenCycleActivity(
       const lastPr = lastPrMap?.get(pr.number);
       const prChanged = !lastPr || hasPrStateChanged(pr, lastPr);
       if (prChanged) {
-        broadcastPullRequestUpdate(pr, "monitoring", undefined, emitter, repoKey);
+        // A PR absent from the previous snapshot was just opened; without a
+        // baseline (first poll) everything is merely being monitored.
+        const action = lastPrMap && !lastPr ? "opened" : "monitoring";
+        broadcastPullRequestUpdate(pr, action, undefined, emitter, repoKey);
       }
       const reviewCountChanged = !lastPr ||
         lastPr.unresolvedReviewCommentCount !== pr.unresolvedReviewCommentCount;

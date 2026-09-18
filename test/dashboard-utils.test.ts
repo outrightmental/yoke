@@ -92,6 +92,21 @@ test("broadcastPullRequestUpdate uses monitoring branch for 'tracking' action", 
   assert.ok((data.stateBefore as string).includes("draft"), "stateBefore mentions draft");
 });
 
+// broadcastPullRequestUpdate — opened branch
+
+test("broadcastPullRequestUpdate emits structured fields for 'opened' action", async () => {
+  const pr = makePR({ draft: true, checksStatus: "pending" });
+  const dataPromise = captureNextEvent("broadcast-pr-update");
+  broadcastPullRequestUpdate(pr, "opened");
+  const data = await dataPromise;
+
+  assert.equal(data.action, "opened", "action is passed through for the feed's type language");
+  assert.ok((data.stateBefore as string).includes("did not exist"), "stateBefore says the PR is new");
+  assert.ok((data.changeHow as string).includes("opened"), "changeHow mentions opening");
+  assert.ok((data.stateAfter as string).includes("OPEN"), "stateAfter includes state");
+  assert.ok((data.excellence as string).length > 0, "excellence is populated");
+});
+
 // broadcastPullRequestUpdate — non-monitoring branch
 
 test("broadcastPullRequestUpdate uses non-monitoring branch for generic action", async () => {

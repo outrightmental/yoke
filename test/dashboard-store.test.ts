@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { dashboardReducer, initialState, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
+import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 
 interface WireEvent {
   type: string;
@@ -39,21 +40,33 @@ test("reducer: iteration-start with new maxConcurrency re-initialises all cylind
   assert.equal(s.cylinders.length, 2);
 });
 
-test("reducer: cylinder colors cycle through the palette via modulo (no gray fallback)", () => {
-  // Initialise more cylinders than there are palette colors (6) to exercise the
-  // modulo wrap — every cylinder must get a real neon color, never gray.
+test("reducer: cylinders are neutral when idle and adopt the working issue's stable color", () => {
+  // Cylinders no longer own colors — color is keyed to the issue being worked
+  // (issue #236), so any number of cylinders starts without a color.
   let s = initialState();
   s = dashboardReducer(s, makeEvent("iteration-start", { engineIndex: 0, iterationNumber: 1, maxConcurrency: 8 }));
   assert.equal(s.cylinders.length, 8);
-
   for (const cyl of s.cylinders) {
-    assert.notEqual(cyl.color, "#888888", "no cylinder should fall back to gray");
-    assert.notEqual(cyl.colorRgb, "136,136,136", "no cylinder should fall back to gray rgb");
+    assert.equal(cyl.color, null, "idle cylinder has no issue color");
+    assert.equal(cyl.colorRgb, null, "idle cylinder has no issue color rgb");
   }
 
-  // Cylinder 7 (index 6) wraps back to the first palette entry, cylinder 8 to the second.
-  assert.equal(s.cylinders[6]?.color, s.cylinders[0]?.color, "color should wrap via modulo");
-  assert.equal(s.cylinders[7]?.color, s.cylinders[1]?.color, "color should wrap via modulo");
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 42, description: "d" }));
+  assert.equal(s.cylinders[0]?.color, issueColor(42).hex, "active cylinder shows its issue's stable color");
+  assert.equal(s.cylinders[0]?.colorRgb, issueColor(42).rgb);
+
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "done" }));
+  assert.equal(s.cylinders[0]?.color, null, "idle cylinder returns to neutral");
+});
+
+test("reducer: the same issue keeps its color on whichever engine works it", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 7, description: "d" }));
+  const first = s.cylinders[0]?.color;
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "done" }));
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 3, totalActions: 3, type: "start-implementation", issueNumber: 7, description: "d" }));
+  assert.equal(s.cylinders[2]?.color, first, "issue #7 has the same color on engine 3 as on engine 1");
+  assert.equal(first, issueColor(7).hex);
 });
 
 // ── action-start ──────────────────────────────────────────────────────────────
@@ -317,6 +330,62 @@ test("reducer: broadcast-github-activity adds to broadcastQueue", () => {
   }));
   assert.equal(s.broadcastQueue.length, 1);
   assert.equal(s.broadcastQueue[0]?.label, "GITHUB ACTIVITY");
+});
+
+// ── stable per-issue broadcast colors (issue #236) ────────────────────────────
+
+test("reducer: broadcast events keyed to an issue use its stable color regardless of engine", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 2, type: "start-implementation", issueNumber: 7, description: "d" }));
+  s = dashboardReducer(s, makeEvent("broadcast-issue-update", { issueNumber: 7, stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  const first = s.broadcastQueue.at(-1)?.color;
+  assert.equal(first, issueColor(7).hex, "color derives from the issue, not the engine");
+
+  // Move issue 7 to a different engine — the color must not change.
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "done" }));
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 2, totalActions: 2, type: "start-implementation", issueNumber: 7, description: "d" }));
+  s = dashboardReducer(s, makeEvent("broadcast-issue-update", { issueNumber: 7, stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.color, first, "issue keeps its color forever");
+});
+
+test("reducer: broadcast PR events inherit the stable color of the issue the PR closes", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("snapshot-update", {
+    issueCount: 1, prCount: 1, sessionCount: 0,
+    issues: [{ number: 7, title: "X", state: "open" }],
+    pullRequests: [{ number: 10, title: "Fix", state: "open", closingIssueNumbers: [7], linkedIssueNumbers: [] }],
+  }));
+  s = dashboardReducer(s, makeEvent("broadcast-pr-update", { prNumber: 10, stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  const item = s.broadcastQueue.at(-1);
+  assert.equal(item?.color, issueColor(7).hex, "PR activity renders in its issue's color");
+  assert.equal(item?.issueNumber, 7, "resolved issue is recorded on the feed item");
+});
+
+test("reducer: broadcast PR events fall back to the working cylinder's issue", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 1, type: "self-review", issueNumber: 9, pullRequestNumber: 33, description: "d" }));
+  s = dashboardReducer(s, makeEvent("broadcast-ci-status", { prNumber: 33, stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.color, issueColor(9).hex);
+});
+
+test("reducer: broadcast events with no associated issue are neutral gray", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("broadcast-commit", { hash: "abc1234", stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.color, NEUTRAL_COLOR);
+  s = dashboardReducer(s, makeEvent("workflow-approval", { runName: "CI", runId: "1" }));
+  assert.equal(s.broadcastQueue.at(-1)?.color, NEUTRAL_COLOR);
+});
+
+test("reducer: broadcast labels distinguish action types without color", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("broadcast-issue-update", { issueNumber: 1, action: "opened", state: "open", stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.label, "NEW ISSUE");
+  s = dashboardReducer(s, makeEvent("broadcast-issue-update", { issueNumber: 1, action: "updated", state: "closed", stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.label, "ISSUE CLOSED");
+  s = dashboardReducer(s, makeEvent("broadcast-pr-update", { prNumber: 2, action: "opened", state: "open", stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.label, "PR OPENED");
+  s = dashboardReducer(s, makeEvent("broadcast-pr-update", { prNumber: 2, action: "monitoring", state: "closed", stateBefore: "a", changeHow: "b", stateAfter: "c" }));
+  assert.equal(s.broadcastQueue.at(-1)?.label, "PR CLOSED");
 });
 
 // ── full replay sequence ──────────────────────────────────────────────────────

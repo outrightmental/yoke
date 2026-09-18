@@ -1,6 +1,6 @@
 import { LitElement, html } from 'lit';
 import type { LifecyclePair } from '../store/types.js';
-import { CYLINDER_COLORS, CYLINDER_COLORS_RGB } from '../shared/cylinder-palette.js';
+import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
@@ -31,14 +31,14 @@ function compareLifecyclePairs(
   return aNum - bNum;
 }
 
-function resolvePillColor(issueNumber: number | null | undefined, cylinderByIssue: Map<number, number>): { hex: string; rgb: string } {
+function resolvePillColor(issueNumber: number | null | undefined): { hex: string; rgb: string } {
+  // Every issue keeps its own stable color forever; pills without an issue
+  // (orphan PRs) stay neutral gray (issue #236).
   if (issueNumber != null) {
-    const idx = cylinderByIssue.get(issueNumber);
-    if (idx !== undefined) {
-      return { hex: CYLINDER_COLORS[idx] ?? '#00ffff', rgb: CYLINDER_COLORS_RGB[idx] ?? '0,255,255' };
-    }
+    const c = issueColor(issueNumber);
+    return { hex: c.hex, rgb: c.rgb };
   }
-  return { hex: '#555577', rgb: '85,85,119' };
+  return { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
 }
 
 export class LifecycleList extends LitElement {
@@ -80,7 +80,7 @@ export class LifecycleList extends LitElement {
               ? html`<div class="lifecycle-empty">Connecting to yoke…</div>`
               : sorted.map((pair) => {
                   const issueNum = pair.issue?.number ?? null;
-                  const color = resolvePillColor(issueNum, this.cylinderByIssue);
+                  const color = resolvePillColor(issueNum);
                   // Key includes the repo so pills from different projects that
                   // happen to share an issue/PR number don't collide in the DOM.
                   const ident = pair.issue ? `#${pair.issue.number}` : `pr-${pair.pr?.number ?? '?'}`;

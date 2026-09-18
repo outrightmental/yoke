@@ -1,4 +1,4 @@
-import { CYLINDER_COLORS, CYLINDER_COLORS_RGB, CYLINDER_COLOR_NAMES } from '../shared/cylinder-palette.js';
+import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
 import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard } from './types.js';
 import { WsClient } from './ws-client.js';
 
@@ -19,14 +19,12 @@ const BROADCAST_MAX_ITEMS = 15;
 
 function initCylinders(n: number): CylinderState[] {
   return Array.from({ length: n }, (_, i) => {
-    // Cycle through the palette via modulo so any number of cylinders gets a
-    // stable neon identity instead of falling back to gray (issue #21).
-    const c = i % CYLINDER_COLORS.length;
+    // Cylinders have no color of their own — they adopt the stable color of
+    // the issue they are working, and are neutral while idle (issue #236).
     return {
       index: i + 1,
-      color: CYLINDER_COLORS[c] ?? '#888888',
-      colorRgb: CYLINDER_COLORS_RGB[c] ?? '136,136,136',
-      colorName: CYLINDER_COLOR_NAMES[c] ?? `CYL-${i + 1}`,
+      color: null,
+      colorRgb: null,
       status: 'idle' as const,
       idleStatusText: 'idle',
       actionType: null,
@@ -43,11 +41,7 @@ function initCylinders(n: number): CylinderState[] {
   });
 }
 
-function makeEventLine(text: string, cylinderIdx: number, level: string, repo = ''): EventLine {
-  const color =
-    cylinderIdx >= 0 && cylinderIdx < CYLINDER_COLORS.length
-      ? (CYLINDER_COLORS[cylinderIdx] ?? null)
-      : null;
+function makeEventLine(text: string, cylinderIdx: number, level: string, color: string | null, repo = ''): EventLine {
   return {
     text,
     cylinderIdx,
@@ -59,7 +53,10 @@ function makeEventLine(text: string, cylinderIdx: number, level: string, repo = 
 }
 
 function addToStream(state: DashboardState, text: string, cylinderIdx: number, level: string, repo = ''): DashboardState {
-  const line = makeEventLine(text, cylinderIdx, level, repo);
+  // Log lines are tinted with the stable color of the issue the cylinder is
+  // working (if any); everything else stays neutral.
+  const color = cylinderIdx >= 0 ? (state.cylinders[cylinderIdx]?.color ?? null) : null;
+  const line = makeEventLine(text, cylinderIdx, level, color, repo);
   const stream = [...state.eventStream, line];
   return {
     ...state,
@@ -68,12 +65,15 @@ function addToStream(state: DashboardState, text: string, cylinderIdx: number, l
   };
 }
 
-function getCategoryColor(category: string, workerIndex: number | undefined): string {
-  if (workerIndex !== undefined && workerIndex >= 0) {
-    return CYLINDER_COLORS[workerIndex % CYLINDER_COLORS.length] ?? '#ff00ff';
-  }
-  const map: Record<string, string> = { commit: '#00ff88', pr: '#0088ff', ci: '#ffff00', issue: '#ff6600' };
-  return map[category] ?? '#ff00ff';
+/** The issue a PR pertains to: its closing/linked issue from the latest
+ *  snapshot, else the issue of the cylinder currently working that PR. */
+function resolveIssueForPR(state: DashboardState, prNumber: number): number | undefined {
+  const pr = state.prCards.get(prNumber);
+  const linked = pr?.closingIssueNumbers?.[0] ?? pr?.linkedIssueNumbers?.[0];
+  if (linked !== undefined) return linked;
+  const cylIdx = state.cylinderByPR.get(prNumber);
+  const cyl = cylIdx !== undefined ? state.cylinders[cylIdx] : undefined;
+  return cyl?.issueNumber ?? undefined;
 }
 
 // ── Pure reducer ──────────────────────────────────────────────────────────────
@@ -169,6 +169,8 @@ function applyIterationStart(state: DashboardState, data: Record<string, unknown
       ...cyl,
       iterationNumber,
       status: 'idle',
+      color: null,
+      colorRgb: null,
       repo: null,
       issueNumber: null,
       prNumber: null,
@@ -206,10 +208,17 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>):
     if (issueNumber !== null) cylinderByIssue.set(issueNumber, idx);
     if (prNumber !== null) cylinderByPR.set(prNumber, idx);
 
+    // The cylinder adopts the stable color of the issue it's working on —
+    // resolved through the PR when the action targets a PR (issue #236).
+    const colorIssue = issueNumber ?? (prNumber !== null ? resolveIssueForPR(state, prNumber) : undefined) ?? null;
+    const ic = colorIssue !== null ? issueColor(colorIssue) : null;
+
     cylinders = [...cylinders];
     cylinders[idx] = {
       ...cyl,
       status: 'active',
+      color: ic?.hex ?? null,
+      colorRgb: ic?.rgb ?? null,
       actionType: (data['type'] as string) ?? null,
       idleStatusText: '',
       repo: (data['repo'] as string) || null,
@@ -286,6 +295,8 @@ function applyEngineIdle(state: DashboardState, data: Record<string, unknown>): 
   cylinders[engineIndex] = {
     ...cyl,
     status: 'idle',
+    color: null,
+    colorRgb: null,
     repo: null,
     issueNumber: null,
     prNumber: null,
@@ -366,6 +377,25 @@ function applyLifecycleUpdate(state: DashboardState, data: Record<string, unknow
   return { ...state, lifecycleByRepo, lastLifecyclePairs };
 }
 
+/** Action-type label for the feed — specific enough that types are
+ *  distinguishable by text alone (new issue vs update, PR opened vs closed). */
+function broadcastLabel(type: string, category: string, data: Record<string, unknown>): string {
+  const action = typeof data['action'] === 'string' ? data['action'] : '';
+  const itemState = typeof data['state'] === 'string' ? data['state'] : '';
+  if (category === 'issue') {
+    if (action === 'opened') return 'NEW ISSUE';
+    if (itemState === 'closed') return 'ISSUE CLOSED';
+    return 'ISSUE UPDATE';
+  }
+  if (category === 'pr') {
+    if (action === 'opened') return 'PR OPENED';
+    if (itemState === 'merged') return 'PR MERGED';
+    if (itemState === 'closed') return 'PR CLOSED';
+    return 'PR UPDATE';
+  }
+  return type.replace('broadcast-', '').replace(/-/g, ' ').toUpperCase();
+}
+
 function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): DashboardState {
   const data = event.data;
   const category =
@@ -374,18 +404,16 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
     event.type === 'broadcast-pr-update' ? 'pr' :
     event.type === 'broadcast-issue-update' ? 'issue' : 'info';
 
-  const label = event.type.replace('broadcast-', '').replace(/-/g, ' ').toUpperCase();
-  let workerIndex = (data['workerIndex'] as number | undefined);
-  if (workerIndex === undefined) {
-    const prNum = data['prNumber'] as number | undefined;
-    const issueNum = data['issueNumber'] as number | undefined;
-    if (prNum !== undefined) workerIndex = state.cylinderByPR.get(prNum);
-    if (issueNum !== undefined && workerIndex === undefined) workerIndex = state.cylinderByIssue.get(issueNum);
-  }
+  const label = broadcastLabel(event.type, category, data);
+  const workerIndex = (data['workerIndex'] as number | undefined);
 
-  const color = getCategoryColor(category, workerIndex);
   const prNumber = data['prNumber'] as number | undefined;
-  const issueNumber = data['issueNumber'] as number | undefined;
+  // Everything pertaining to an issue carries the issue's stable color: use
+  // the event's own issue, else resolve the issue its PR closes (issue #236).
+  const issueNumber =
+    (data['issueNumber'] as number | undefined) ??
+    (prNumber !== undefined ? resolveIssueForPR(state, prNumber) : undefined);
+  const color = issueNumber !== undefined ? issueColor(issueNumber).hex : NEUTRAL_COLOR;
   const commitHash = data['hash'] as string | undefined;
   const repo = (data['repo'] as string) || '';
   const item: BroadcastEventData = {
@@ -410,7 +438,6 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
 
 function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>): DashboardState {
   const runName = (data['runName'] as string) || 'unknown';
-  const color = getCategoryColor('ci', undefined);
   const runIdVal = data['runId'] as string | undefined;
   const item: BroadcastEventData = {
     id: `${Date.now()}-${Math.random()}`,
@@ -422,7 +449,7 @@ function applyWorkflowApproval(state: DashboardState, data: Record<string, unkno
     excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
     ...(runIdVal !== undefined ? { runId: runIdVal } : {}),
     time: new Date().toLocaleTimeString(),
-    color,
+    color: NEUTRAL_COLOR,
   };
   return { ...state, broadcastQueue: [...state.broadcastQueue, item] };
 }

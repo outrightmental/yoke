@@ -1,8 +1,9 @@
 export interface CylinderState {
   index: number;
-  color: string;
-  colorRgb: string;
-  colorName: string;
+  /** Stable color of the issue this cylinder is working, or null when it has
+   *  no issue (idle) — colors belong to issues, not cylinders (issue #236). */
+  color: string | null;
+  colorRgb: string | null;
   status: 'idle' | 'active' | 'done' | 'error' | 'shutdown';
   idleStatusText: string;
   actionType: string | null;
@@ -63,6 +64,8 @@ export interface BroadcastEventData {
   /** "owner/repo" this feed item belongs to (shown as a chip in multi-project mode). */
   repo?: string;
   time: string;
+  /** Stable color of the issue this event pertains to, or the neutral gray
+   *  when the event has no associated issue. */
   color: string;
 }
 
