@@ -148,7 +148,7 @@ export class DashboardServer {
     if (pathname === "/" || pathname === "/index.html") {
       try {
         let html = await fs.promises.readFile(STATIC_INDEX, "utf-8");
-        html = html.replace(/(<title>)Vibrator([:< ])/, (_, p1: string, p2: string) => `${p1}${this.dashboardTitle}${p2}`);
+        html = html.replace(/(<title>)Yoke([:< ])/, (_, p1: string, p2: string) => `${p1}${this.dashboardTitle}${p2}`);
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(html);
       } catch {
@@ -271,7 +271,7 @@ export class DashboardServer {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vibrator: AI SDLC Dashboard</title>
+  <title>Yoke: AI SDLC Dashboard</title>
   <style>${css}</style>
 </head>
 <body>
