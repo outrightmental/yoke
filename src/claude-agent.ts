@@ -115,7 +115,7 @@ const statusBoard = new StatusBoard();
  * repository / pull request branch so the CLI can read, modify, commit,
  * and (where applicable) push code.
  *
- * Every operation runs synchronously: `vibrator` waits for Claude to
+ * Every operation runs synchronously: `yoke` waits for Claude to
  * finish, then continues the loop. This client opens the PR itself when
  * implementing an issue.
  */
@@ -144,7 +144,7 @@ export interface ImplementIssueParams {
 }
 
 export interface ImplementIssueResult {
-  /** Name of the branch the agent pushed commits to (e.g. `vibrator/issue-42-…`). */
+  /** Name of the branch the agent pushed commits to (e.g. `yoke/issue-42-…`). */
   branch: string;
   /** Title for the new pull request. */
   pullRequestTitle: string;
@@ -253,22 +253,22 @@ export interface AgentBranchUpdate {
  * transcript chatter, so we instruct it (via the prompt) to emit the
  * description exactly between these sentinels.
  */
-export const FINAL_DESCRIPTION_START_MARKER = "<<<VIBRATOR_PR_BODY_START>>>";
-export const FINAL_DESCRIPTION_END_MARKER = "<<<VIBRATOR_PR_BODY_END>>>";
+export const FINAL_DESCRIPTION_START_MARKER = "<<<YOKE_PR_BODY_START>>>";
+export const FINAL_DESCRIPTION_END_MARKER = "<<<YOKE_PR_BODY_END>>>";
 
 /**
  * Sentinel markers wrapping the JSON implementation-summary payload
  * (PR title + body) the Claude implementer must emit.
  */
-export const IMPLEMENTATION_PAYLOAD_START_MARKER = "<<<VIBRATOR_IMPL_START>>>";
-export const IMPLEMENTATION_PAYLOAD_END_MARKER = "<<<VIBRATOR_IMPL_END>>>";
+export const IMPLEMENTATION_PAYLOAD_START_MARKER = "<<<YOKE_IMPL_START>>>";
+export const IMPLEMENTATION_PAYLOAD_END_MARKER = "<<<YOKE_IMPL_END>>>";
 
 /**
  * Sentinel markers wrapping the JSON self-review payload — a per-comment
  * narrative of how each human comment was addressed.
  */
-export const SELF_REVIEW_PAYLOAD_START_MARKER = "<<<VIBRATOR_REVIEW_START>>>";
-export const SELF_REVIEW_PAYLOAD_END_MARKER = "<<<VIBRATOR_REVIEW_END>>>";
+export const SELF_REVIEW_PAYLOAD_START_MARKER = "<<<YOKE_REVIEW_START>>>";
+export const SELF_REVIEW_PAYLOAD_END_MARKER = "<<<YOKE_REVIEW_END>>>";
 
 interface ClaudeAgentClientOptions {
   /** Root directory under which per-PR / per-issue checkouts are created. */
@@ -298,7 +298,7 @@ interface ClaudeAgentClientOptions {
 }
 
 function defaultCheckoutRootDir(): string {
-  return join(homedir(), ".vibrator", "checkouts");
+  return join(homedir(), ".yoke", "checkouts");
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -423,7 +423,7 @@ const MAX_CAPTURED_STDERR_BYTES = 256 * 1024;
  * observed descendant process group, a fresh snapshot of anything still reachable
  * from claude, and claude's own group as a backstop. This registry tracks every
  * live child so a process-exit or termination signal can reap them before
- * vibrator exits.
+ * yoke exits.
  *
  * The sweep runs often (every second) so a short claude run — e.g. the fast
  * haiku commit-model pass — still has its subtree recorded before it exits;
@@ -562,7 +562,7 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (pid === undefined) return;
 
   const { children, infoByPid } = readProcessTable();
-  // Never signal our own process group — that would take vibrator itself (and its
+  // Never signal our own process group — that would take yoke itself (and its
   // siblings) down. Claude's detached descendants live in other groups.
   const ownPgid = infoByPid.get(process.pid)?.pgid;
 
@@ -624,7 +624,7 @@ let childCleanupInstalled = false;
 
 /**
  * Install one-time handlers that reap every live child process group when
- * vibrator exits or is asked to terminate. Without this, a graceful shutdown
+ * yoke exits or is asked to terminate. Without this, a graceful shutdown
  * (`process.exit(0)` after Escape/Ctrl-C) and an out-of-band `kill <pid>` both
  * orphan whatever `claude` trees are mid-run. `exit` does only synchronous work
  * (`process.kill` is synchronous), which is exactly what that handler allows.
@@ -728,10 +728,10 @@ export function runCommand(
       // Windows passthrough: forward the child's piped stdout to ours so its
       // output still appears, but via a drained pipe instead of an inherited
       // console handle. `end: false` keeps our stdout open after the child's
-      // stream closes (otherwise the first finished command closes vibrator's
+      // stream closes (otherwise the first finished command closes yoke's
       // stdout). On POSIX child.stdout is null (inherited), so this is a no-op.
       child.stdout?.pipe(process.stdout, { end: false });
-      // A broken downstream (e.g. terminal closed) must not crash vibrator.
+      // A broken downstream (e.g. terminal closed) must not crash yoke.
       child.stdout?.on("error", () => {});
     }
 
@@ -747,7 +747,7 @@ export function runCommand(
     // Reap any process-group stragglers the direct child left behind. `claude`
     // normally tears down its own node-worker / MCP-server tree on exit, but
     // when it doesn't, those grandchildren reparent to launchd and hold ~1 GB
-    // apiece (see the killProcessTree note above). Timeouts and vibrator
+    // apiece (see the killProcessTree note above). Timeouts and yoke
     // shutdown already group-kill; the *normal completion* and *error* paths
     // did not, so a long overnight run accumulated orphans until the machine
     // ran out of memory. The leader is already gone by the time these fire, so
@@ -1360,7 +1360,7 @@ function buildPushRecoveryBackupBranchName(branch: string): string {
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
-  return `vibrator/recovery-${sanitizedBranch || "branch"}-${Date.now()}`;
+  return `yoke/recovery-${sanitizedBranch || "branch"}-${Date.now()}`;
 }
 
 export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
@@ -1445,7 +1445,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {
-    const branch = `vibrator/issue-${params.issueNumber}-${slugifyIssueTitle(params.issueTitle)}`;
+    const branch = `yoke/issue-${params.issueNumber}-${slugifyIssueTitle(params.issueTitle)}`;
     const repoDir = await this.checkoutBaseBranch({
       owner: params.owner,
       repo: params.repo,
@@ -1484,7 +1484,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     ).trim();
     if (uncommitted) {
       console.warn(
-        `[vibrator] Claude left uncommitted changes after implementation — committing automatically.`,
+        `[yoke] Claude left uncommitted changes after implementation — committing automatically.`,
       );
       await runCommand("git", ["add", "--all"], { cwd: repoDir });
       await runCommand(
@@ -1611,7 +1611,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         );
       }
       console.log(
-        `[vibrator] Rebase onto origin/${params.baseRefName} produced conflicts for PR #${params.pullRequestNumber}; delegating conflict resolution to Claude.`,
+        `[yoke] Rebase onto origin/${params.baseRefName} produced conflicts for PR #${params.pullRequestNumber}; delegating conflict resolution to Claude.`,
       );
     }
 
@@ -1831,7 +1831,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       return;
     }
     console.warn(
-      `[vibrator] Canonical clone at ${canonicalDir} is unusable (git dir "${gitDir}", origin "${originUrl}"); discarding it and re-cloning.`,
+      `[yoke] Canonical clone at ${canonicalDir} is unusable (git dir "${gitDir}", origin "${originUrl}"); discarding it and re-cloning.`,
     );
     await rm(canonicalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
@@ -2030,7 +2030,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       await runCommand("git", ["rebase", "--abort"], { cwd: repoDir, captureStderr: true }).catch(
         async (error: unknown) => {
           console.warn(
-            `[vibrator] \`git rebase --abort\` failed in ${repoDir}; clearing the rebase state with \`--quit\` and hard-resetting instead. ${error}`,
+            `[yoke] \`git rebase --abort\` failed in ${repoDir}; clearing the rebase state with \`--quit\` and hard-resetting instead. ${error}`,
           );
           await runCommand("git", ["rebase", "--quit"], { cwd: repoDir, captureStderr: true }).catch(
             () => {
@@ -2058,7 +2058,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       await runCommand("git", ["merge", "--abort"], { cwd: repoDir, captureStderr: true }).catch(
         (error: unknown) => {
           console.warn(
-            `[vibrator] \`git merge --abort\` failed in ${repoDir}; discarding the merge with a hard reset instead. ${error}`,
+            `[yoke] \`git merge --abort\` failed in ${repoDir}; discarding the merge with a hard reset instead. ${error}`,
           );
         },
       );
@@ -2083,7 +2083,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         await runCommand("git", ["clean", "-fd"], { cwd: repoDir, captureStderr: true }).catch(
           (error: unknown) => {
             console.warn(
-              `[vibrator] \`git clean -fd\` failed in ${repoDir}; continuing with the tree reset to HEAD. Surviving untracked files may be swept into the next commit by the \`git add --all\` safety net. ${error}`,
+              `[yoke] \`git clean -fd\` failed in ${repoDir}; continuing with the tree reset to HEAD. Surviving untracked files may be swept into the next commit by the \`git add --all\` safety net. ${error}`,
             );
           },
         );
@@ -2210,14 +2210,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     if (options.allowForcePush) {
       console.warn(
-        `[vibrator] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; force-pushing because this branch was started fresh and our implementation is authoritative.`,
+        `[yoke] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; force-pushing because this branch was started fresh and our implementation is authoritative.`,
       );
       await this.runAuthenticatedGit([...pushArgs, "--force"], { cwd: repoDir, captureStderr: true });
       return;
     }
 
     console.warn(
-      `[vibrator] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; integrating origin/${branch} before retrying.`,
+      `[yoke] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; integrating origin/${branch} before retrying.`,
     );
 
     const maxRetries = 3;
@@ -2241,7 +2241,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         }
 
         console.warn(
-          `[vibrator] Merge conflict while integrating origin/${branch} before push retry (${attempt}/${maxRetries}); delegating resolution to Claude.`,
+          `[yoke] Merge conflict while integrating origin/${branch} before push retry (${attempt}/${maxRetries}); delegating resolution to Claude.`,
         );
         await this.runClaude(buildPushConflictResolutionPrompt(branch), repoDir, this.claudeInitialModel, this.claudeInitialEffort);
 
@@ -2273,9 +2273,12 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
     // the subscription credentials in ~/.claude/.credentials.json.
     delete env.ANTHROPIC_API_KEY;
-    // Avoid Claude subprocesses inheriting Vibrator's GitHub token.
+    // Avoid Claude subprocesses inheriting Yoke's GitHub token.
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
+    delete env.YOKE_GITHUB_TOKEN;
+    // Legacy `VIBRATOR_GITHUB_TOKEN` still scrubbed since the 2026-09-17 rename (#237):
+    // a shell profile that has not been updated must not hand the PAT to Claude.
     delete env.VIBRATOR_GITHUB_TOKEN;
     const effectiveModel = modelOverride ?? this.claudeInitialModel;
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
@@ -2323,7 +2326,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     if (claudeTermsAcceptanceRequired) {
       throw new Error(
-        "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
+        "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart yoke.",
       );
     }
 
@@ -2359,7 +2362,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           throw error;
         }
         console.warn(
-          `[vibrator] Claude prompt exceeded command-line length limits; retrying via stdin.`,
+          `[yoke] Claude prompt exceeded command-line length limits; retrying via stdin.`,
         );
         result = await runClaudeCli(true);
       }
@@ -2382,7 +2385,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       if (isClaudeTermsAcceptanceMessage(message)) {
         claudeTermsAcceptanceRequired = true;
         throw new Error(
-          "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
+          "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart yoke.",
           { cause: error },
         );
       }

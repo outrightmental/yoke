@@ -4,7 +4,7 @@ node_modules/
 env.yaml
 
 # Local runtime files
-.vibrator/
+.yoke/
 
 # MacOS specific files
 .DS_Store

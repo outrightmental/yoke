@@ -1,16 +1,16 @@
 # Agent loop and PR lifecycle
 
-This document describes the end-to-end loop that `vibrator` runs against a GitHub repository, with Claude (the `claude` CLI / Claude Code) as the worker for every coding-agent step.
+This document describes the end-to-end loop that `yoke` runs against a GitHub repository, with Claude (the `claude` CLI / Claude Code) as the worker for every coding-agent step.
 
 ## Mental model
 
-Think of `vibrator` as a scheduler plus shepherd:
+Think of `yoke` as a scheduler plus shepherd:
 
 ```text
 schedule issue work → run Claude locally → open PR → self-review → fix → re-review → squash merge
 ```
 
-Every pass through the loop is allowed to make progress. Every step is synchronous — Vibrator waits for Claude to finish before moving on. That means sessions only ever sit in `in_progress` state inside a single iteration; on the next iteration they will be either completed (the agent finished and the session was recorded) or failed (the previous process crashed mid-action).
+Every pass through the loop is allowed to make progress. Every step is synchronous — Yoke waits for Claude to finish before moving on. That means sessions only ever sit in `in_progress` state inside a single iteration; on the next iteration they will be either completed (the agent finished and the session was recorded) or failed (the previous process crashed mid-action).
 
 Multiple independent engine loops run concurrently (up to `MAX_CONCURRENCY`). A planning mutex prevents two engines from double-booking the same issue or PR. A shared claim set prevents two engines from executing different actions against the same PR at the same time.
 
@@ -32,7 +32,7 @@ The snapshot includes:
 
 ### 3. Reconcile sessions
 
-Every Claude action runs synchronously, so any `in_progress` session observed at the start of an iteration is a leftover from a previous Vibrator process that crashed mid-action. The reconciler marks each such session as `failed` so the planner can re-plan its work cleanly. Only engine 0 runs reconciliation.
+Every Claude action runs synchronously, so any `in_progress` session observed at the start of an iteration is a leftover from a previous Yoke process that crashed mid-action. The reconciler marks each such session as `failed` so the planner can re-plan its work cleanly. Only engine 0 runs reconciliation.
 
 ### 4. Build a plan
 
@@ -59,7 +59,7 @@ In dry-run mode, execution is skipped after printing the plan. In normal mode, a
 flowchart TD
     START(["start-implementation"])
     IMPL["Claude implements issue in local checkout\nCommit + push branch"]
-    OPEN_PR["Vibrator opens draft Pull Request"]
+    OPEN_PR["Yoke opens draft Pull Request"]
 
     CONFLICTS{"Merge\nconflicts?"}
     RESOLVE["resolve-conflicts\nClaude rebases + pushes"]
@@ -75,10 +75,10 @@ flowchart TD
     REVIEW2["self-review (pass 2)\nClaude reviews diff + comments"]
     RESULT2{"Changes\npushed?"}
 
-    SQUASH["squash-merge\nVibrator generates final PR body\nand squash-merges"]
+    SQUASH["squash-merge\nYoke generates final PR body\nand squash-merges"]
     DONE(["Issue auto-closed"])
 
-    REQUEST["request-review\nVibrator marks PR ready-for-review\nrequests human review\nmoves issue → In Review"]
+    REQUEST["request-review\nYoke marks PR ready-for-review\nrequests human review\nmoves issue → In Review"]
     HUMAN{"Human\naction"}
 
     START --> IMPL --> OPEN_PR
@@ -99,7 +99,7 @@ flowchart TD
 
 ## Dependency syntax
 
-`vibrator` reads dependency hints directly from issue bodies:
+`yoke` reads dependency hints directly from issue bodies:
 
 - `blocked by #123`
 - `depends on #123`
@@ -130,7 +130,7 @@ Issues and PRs labeled `manual` are opted out of automated work:
 - **Issues** labeled `manual` are never picked up by the planner.
 - **PRs** labeled `manual` receive no automated actions and do not count against `MAX_CONCURRENCY`.
 
-Vibrator creates the `manual` label in the repository on startup if it does not already exist.
+Yoke creates the `manual` label in the repository on startup if it does not already exist.
 
 ## Closing-reference behavior
 
@@ -147,12 +147,12 @@ The six orchestrator action types each record a session in the local store. The 
 
 | Action | What happens |
 | --- | --- |
-| `start-implementation` (session: `implementation`) | Claude implements the issue in a fresh checkout and pushes a branch. Vibrator opens a draft PR. In project mode, the issue moves to "In Progress". |
-| `self-review` | Claude checks out the PR branch, reviews the diff against the base, and either pushes fixes or confirms the code is clean. Human PR comments are included as context. Vibrator posts a summary comment on the PR. |
-| `address-failing-checks` | Vibrator fetches failing CI log excerpts. Claude reads them, pushes a fix, and Vibrator posts a comment. Stuck pending checks (> 10 min) are cancelled before Claude reads logs. |
-| `resolve-conflicts` | Claude rebases the PR branch on the base branch and resolves conflicts. Vibrator posts a comment. |
-| `squash-merge` | Claude generates a final PR body from the branch commits and diff. Vibrator updates the PR body, promotes the draft to ready-for-review if needed, and squash-merges. |
-| `request-review` | (Project SDLC only) Vibrator marks the PR ready-for-review, requests human review from configured reviewers, and moves the issue to "In Review". |
+| `start-implementation` (session: `implementation`) | Claude implements the issue in a fresh checkout and pushes a branch. Yoke opens a draft PR. In project mode, the issue moves to "In Progress". |
+| `self-review` | Claude checks out the PR branch, reviews the diff against the base, and either pushes fixes or confirms the code is clean. Human PR comments are included as context. Yoke posts a summary comment on the PR. |
+| `address-failing-checks` | Yoke fetches failing CI log excerpts. Claude reads them, pushes a fix, and Yoke posts a comment. Stuck pending checks (> 10 min) are cancelled before Claude reads logs. |
+| `resolve-conflicts` | Claude rebases the PR branch on the base branch and resolves conflicts. Yoke posts a comment. |
+| `squash-merge` | Claude generates a final PR body from the branch commits and diff. Yoke updates the PR body, promotes the draft to ready-for-review if needed, and squash-merges. |
+| `request-review` | (Project SDLC only) Yoke marks the PR ready-for-review, requests human review from configured reviewers, and moves the issue to "In Review". |
 
 Each action is idempotent through session state. A later iteration observes what changed (new head SHA, clean review flag) and moves to the next phase instead of repeating completed work.
 
@@ -168,8 +168,8 @@ Each action is idempotent through session state. A later iteration observes what
 ## Failure modes to watch
 
 - **`claude` CLI not found / not authenticated**: install Claude Code and run `claude login` to authenticate with your Claude Code subscription.
-- **Missing GitHub token / repository access**: set `VIBRATOR_GITHUB_TOKEN` or `GITHUB_TOKEN` to a PAT with access to the repository.
-- **No PR appears after start-implementation**: check the iteration log — Vibrator opens the PR itself via the REST API after Claude pushes, so an error from either step will surface in the action log.
+- **Missing GitHub token / repository access**: set `YOKE_GITHUB_TOKEN` or `GITHUB_TOKEN` to a PAT with access to the repository.
+- **No PR appears after start-implementation**: check the iteration log — Yoke opens the PR itself via the REST API after Claude pushes, so an error from either step will surface in the action log.
 - **Self-review loop repeats**: the planner only advances once two consecutive clean self-reviews are recorded against the current head SHA. If Claude keeps pushing changes, review the PR diff to understand what it is fixing.
 - **Final description fails**: confirm `git`, `claude`, and the configured GitHub PAT are available locally.
 - **Too much parallel work**: lower `MAX_CONCURRENCY`.

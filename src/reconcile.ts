@@ -12,7 +12,7 @@ export interface ReconcileSessionEvent {
 /**
  * Since every Claude action runs synchronously, an `in_progress` session
  * observed at the start of a new iteration can only be the carcass of a
- * previous vibrator process that crashed mid-action. Fail it so a fresh
+ * previous yoke process that crashed mid-action. Fail it so a fresh
  * planning iteration can re-plan.
  */
 export async function reconcileSessions(

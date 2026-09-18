@@ -1,15 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-import { FileSessionStore } from "../src/session-store.js";
+import { FileSessionStore, migrateLegacySessionStore } from "../src/session-store.js";
 
 async function withTempStore<T>(
   callback: (store: FileSessionStore, filePath: string) => Promise<T>,
 ): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-session-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-session-test-"));
   const filePath = join(dir, "sessions.json");
   const store = new FileSessionStore(filePath);
   try {
@@ -163,6 +164,44 @@ test("FileSessionStore recordPostedCommentId persists ids per PR without duplica
   });
 });
 
+test("FileSessionStore persists posted comment ids under the postedCommentIds key", async () => {
+  await withTempStore(async (store, filePath) => {
+    await store.recordPostedCommentId(10, 1001);
+    const parsed = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(parsed.postedCommentIds, { "10": [1001] });
+  });
+});
+
+test("FileSessionStore reads posted comment ids persisted under the legacy vibratorCommentIds key and migrates them on write", async () => {
+  await withTempStore(async (store, filePath) => {
+    // A store written before the vibrator → yoke rename (#237). The old key is
+    // written out literally on purpose: it pins the on-disk format that
+    // existing deployments already carry.
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        sessions: [],
+        lastReadPrComments: { "10": "2024-06-01T12:00:00.000Z" },
+        vibratorCommentIds: { "10": [1001], "11": [2001] },
+      }),
+      "utf8",
+    );
+
+    assert.deepEqual(await store.getPostedCommentIds(10), [1001]);
+    assert.deepEqual(await store.getPostedCommentIds(11), [2001]);
+
+    await store.recordPostedCommentId(10, 1002);
+
+    assert.deepEqual(await store.getPostedCommentIds(10), [1001, 1002]);
+    assert.deepEqual(await store.getPostedCommentIds(11), [2001]);
+    assert.equal(await store.getLastReadCommentAt(10), "2024-06-01T12:00:00.000Z");
+
+    const parsed = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(parsed.postedCommentIds, { "10": [1001, 1002], "11": [2001] });
+    assert.equal("vibratorCommentIds" in parsed, false, "the legacy key is never written back");
+  });
+});
+
 test("FileSessionStore setLastReadCommentAt preserves existing sessions when updating", async () => {
   await withTempStore(async (store) => {
     await store.createSession({ issueNumber: 1, phase: "implementation", status: "completed" });
@@ -198,5 +237,62 @@ test("FileSessionStore completeSession preserves lastReadPrComments", async () =
     await store.completeSession(session.id, { madeChanges: false });
     const result = await store.getLastReadCommentAt(10);
     assert.equal(result, "2024-06-01T12:00:00.000Z", "completeSession must not erase lastReadPrComments");
+  });
+});
+
+// ─── migrateLegacySessionStore (vibrator → yoke default path move, #237) ─────
+
+async function withTempDir<T>(callback: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "yoke-session-migrate-test-"));
+  try {
+    return await callback(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("migrateLegacySessionStore moves a legacy store into place when nothing exists at the current path", async () => {
+  await withTempDir(async (dir) => {
+    const legacyPath = join(dir, ".vibrator", "owner-repo-sessions.json");
+    const currentPath = join(dir, ".yoke", "owner-repo-sessions.json");
+    await mkdir(dirname(legacyPath), { recursive: true });
+    await writeFile(legacyPath, JSON.stringify({ sessions: [], lastReadPrComments: { "10": "2024-06-01T12:00:00.000Z" } }), "utf8");
+
+    assert.equal(migrateLegacySessionStore(currentPath, legacyPath), true);
+
+    assert.equal(existsSync(legacyPath), false, "the legacy file is moved, not copied");
+    assert.equal(existsSync(currentPath), true);
+    // The phase history survives the move: the store at the new path reads it back.
+    const store = new FileSessionStore(currentPath);
+    assert.equal(await store.getLastReadCommentAt(10), "2024-06-01T12:00:00.000Z");
+  });
+});
+
+test("migrateLegacySessionStore never overwrites a store that already exists at the current path", async () => {
+  await withTempDir(async (dir) => {
+    const legacyPath = join(dir, ".vibrator", "owner-repo-sessions.json");
+    const currentPath = join(dir, ".yoke", "owner-repo-sessions.json");
+    await mkdir(dirname(legacyPath), { recursive: true });
+    await mkdir(dirname(currentPath), { recursive: true });
+    await writeFile(legacyPath, JSON.stringify({ sessions: [], lastReadPrComments: { "10": "legacy" } }), "utf8");
+    await writeFile(currentPath, JSON.stringify({ sessions: [], lastReadPrComments: { "10": "current" } }), "utf8");
+
+    assert.equal(migrateLegacySessionStore(currentPath, legacyPath), false);
+
+    assert.equal(existsSync(legacyPath), true, "the legacy file is left alone");
+    const store = new FileSessionStore(currentPath);
+    assert.equal(await store.getLastReadCommentAt(10), "current");
+  });
+});
+
+test("migrateLegacySessionStore is a no-op when there is no legacy store", async () => {
+  await withTempDir(async (dir) => {
+    const legacyPath = join(dir, ".vibrator", "owner-repo-sessions.json");
+    const currentPath = join(dir, ".yoke", "owner-repo-sessions.json");
+
+    assert.equal(migrateLegacySessionStore(currentPath, legacyPath), false);
+
+    assert.equal(existsSync(currentPath), false);
+    assert.equal(existsSync(dirname(currentPath)), false, "no directory is created for nothing");
   });
 });

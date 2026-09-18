@@ -1,7 +1,7 @@
 {
-  "name": "vibrator",
+  "name": "yoke",
   "version": "1.0.0",
-  "description": "Orchestrator for agentic vibe coding",
+  "description": "Yoke a team of coding agents to work through a GitHub issue queue",
   "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build:dashboard",
@@ -14,7 +14,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/outrightmental/vibrator.git"
+    "url": "git+https://github.com/outrightmental/yoke.git"
   },
   "keywords": [],
   "author": "",
@@ -24,9 +24,9 @@
     "node": ">=18"
   },
   "bugs": {
-    "url": "https://github.com/outrightmental/vibrator/issues"
+    "url": "https://github.com/outrightmental/yoke/issues"
   },
-  "homepage": "https://github.com/outrightmental/vibrator#readme",
+  "homepage": "https://github.com/outrightmental/yoke#readme",
   "devDependencies": {
     "@types/node": "^25.6.2",
     "@types/ws": "^8.18.1",

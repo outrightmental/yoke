@@ -1,6 +1,6 @@
 # Design overview
 
-`vibrator` is an orchestration loop for repositories where Claude (Anthropic, via the `claude` CLI / Claude Code) is the implementation worker. Its job is not to replace project judgment; its job is to remove the repetitive coordination work between intent, implementation, review, fixup, description, and merge.
+`yoke` is an orchestration loop for repositories where Claude (Anthropic, via the `claude` CLI / Claude Code) is the implementation worker. Its job is not to replace project judgment; its job is to remove the repetitive coordination work between intent, implementation, review, fixup, description, and merge.
 
 ## Product thesis
 
@@ -17,7 +17,7 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - produce a reviewable final description,
 - merge only when the loop is complete.
 
-`vibrator` makes that operating system explicit and inspectable.
+`yoke` makes that operating system explicit and inspectable.
 
 ## Design goals
 
@@ -34,10 +34,10 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - Replacing GitHub project management.
 - Replacing human product direction.
 - Inventing custom merge semantics outside GitHub's own controls.
-- Maintaining a central server. `vibrator` is designed as a local or scheduled process that can be stopped and restarted.
+- Maintaining a central server. `yoke` is designed as a local or scheduled process that can be stopped and restarted.
 - Inventing a custom workflow language. It intentionally leans on issue text, PR metadata, GitHub APIs, authenticated `git`, and `claude`.
 
-`vibrator` still treats GitHub as the merge authority. Its default path is a normal squash merge through the GitHub API after the review/fix loop is clean. If branch protection blocks that API merge, `vibrator` surfaces the GitHub error instead of attempting a CLI administrator-bypass retry.
+`yoke` still treats GitHub as the merge authority. Its default path is a normal squash merge through the GitHub API after the review/fix loop is clean. If branch protection blocks that API merge, `yoke` surfaces the GitHub error instead of attempting a CLI administrator-bypass retry.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Agentic coding gets interesting when a repository can keep moving after a human 
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                         vibrator                             │
+│                             yoke                             │
 │                                                              │
 │  N engine loops (up to MAX_CONCURRENCY)                      │
 │  ─────────────────────────────────────                       │
@@ -118,12 +118,12 @@ The six orchestrator action types each record a session in the local store. The 
 
 | Action | Description |
 | --- | --- |
-| `start-implementation` (session: `implementation`) | Claude implements the issue in a local checkout and Vibrator opens a draft PR. In project mode, the issue moves to "In Progress". |
-| `self-review` | Claude reviews the PR diff on the current head, optionally addresses human PR comments, and either pushes fixes or confirms clean. Vibrator posts a summary comment. |
-| `address-failing-checks` | Vibrator fetches failing CI log excerpts; Claude reads them and pushes a fix. Stuck pending checks (> 10 min) are cancelled first. |
+| `start-implementation` (session: `implementation`) | Claude implements the issue in a local checkout and Yoke opens a draft PR. In project mode, the issue moves to "In Progress". |
+| `self-review` | Claude reviews the PR diff on the current head, optionally addresses human PR comments, and either pushes fixes or confirms clean. Yoke posts a summary comment. |
+| `address-failing-checks` | Yoke fetches failing CI log excerpts; Claude reads them and pushes a fix. Stuck pending checks (> 10 min) are cancelled first. |
 | `resolve-conflicts` | Claude rebases the PR branch on the base branch and resolves any merge conflicts. |
-| `squash-merge` | Claude generates a final PR body from the branch commits and diff. Vibrator updates the PR body, promotes the draft to ready-for-review, and squash-merges. |
-| `request-review` | (Project SDLC only) Vibrator marks the PR ready-for-review, requests human review, and moves the issue to "In Review" on the project board. |
+| `squash-merge` | Claude generates a final PR body from the branch commits and diff. Yoke updates the PR body, promotes the draft to ready-for-review, and squash-merges. |
+| `request-review` | (Project SDLC only) Yoke marks the PR ready-for-review, requests human review, and moves the issue to "In Review" on the project board. |
 
 Each action is idempotence-aware through session state. A later iteration can observe what changed (new head SHA, clean review flag) and move to the next phase instead of repeating the same work.
 
@@ -145,6 +145,6 @@ A single clean self-review pass is necessary but not sufficient: Claude might fi
 
 ## Why the final-description step matters
 
-Agent-generated PRs often start with sparse or placeholder descriptions. Before merge, `vibrator` asks the local `claude` CLI to read the commits and diff on a checkout of the PR branch and write a description from that context. The result becomes both the final PR body and the squash commit body. Closing references are preserved or appended so GitHub issue automation still works.
+Agent-generated PRs often start with sparse or placeholder descriptions. Before merge, `yoke` asks the local `claude` CLI to read the commits and diff on a checkout of the PR branch and write a description from that context. The result becomes both the final PR body and the squash commit body. Closing references are preserved or appended so GitHub issue automation still works.
 
 That turns every merged unit into a useful historical artifact instead of a trail of placeholder text.

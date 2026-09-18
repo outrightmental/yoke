@@ -1,14 +1,14 @@
 import { LitElement, html } from 'lit';
 import type { DashboardState } from '../store/dashboard-store.js';
 import type { DashboardStore } from '../store/dashboard-store.js';
-import './vibrator-header.js';
+import './yoke-header.js';
 import './cylinder-engine.js';
 import './lifecycle-list.js';
 import './broadcast-feed.js';
 import './event-stream.js';
 import './status-bar.js';
 
-export class VibratorApp extends LitElement {
+export class YokeApp extends LitElement {
   static override properties = {
     store: { attribute: false },
     _state: { attribute: false, state: true },
@@ -54,7 +54,7 @@ export class VibratorApp extends LitElement {
     }, null);
 
     return html`
-      <vibrator-header
+      <yoke-header
         .owner=${s.owner}
         .repo=${s.repo}
         .title=${s.title}
@@ -63,7 +63,7 @@ export class VibratorApp extends LitElement {
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
         .tick=${this._tick}
-      ></vibrator-header>
+      ></yoke-header>
       <div class="main-content">
         <cylinder-engine
           .cylinders=${s.cylinders}
@@ -107,4 +107,4 @@ export class VibratorApp extends LitElement {
   }
 }
 
-customElements.define('vibrator-app', VibratorApp);
+customElements.define('yoke-app', YokeApp);
