@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ import { FileSessionStore } from "../src/session-store.js";
 async function withTempStore<T>(
   callback: (store: FileSessionStore, filePath: string) => Promise<T>,
 ): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-session-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-session-test-"));
   const filePath = join(dir, "sessions.json");
   const store = new FileSessionStore(filePath);
   try {
@@ -160,6 +160,44 @@ test("FileSessionStore recordPostedCommentId persists ids per PR without duplica
 
     assert.deepEqual(await store.getPostedCommentIds(10), [1001, 1002]);
     assert.deepEqual(await store.getPostedCommentIds(11), [2001]);
+  });
+});
+
+test("FileSessionStore persists posted comment ids under the postedCommentIds key", async () => {
+  await withTempStore(async (store, filePath) => {
+    await store.recordPostedCommentId(10, 1001);
+    const parsed = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(parsed.postedCommentIds, { "10": [1001] });
+  });
+});
+
+test("FileSessionStore reads posted comment ids persisted under the legacy vibratorCommentIds key and migrates them on write", async () => {
+  await withTempStore(async (store, filePath) => {
+    // A store written before the vibrator → yoke rename (#237). The old key is
+    // written out literally on purpose: it pins the on-disk format that
+    // existing deployments already carry.
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        sessions: [],
+        lastReadPrComments: { "10": "2024-06-01T12:00:00.000Z" },
+        vibratorCommentIds: { "10": [1001], "11": [2001] },
+      }),
+      "utf8",
+    );
+
+    assert.deepEqual(await store.getPostedCommentIds(10), [1001]);
+    assert.deepEqual(await store.getPostedCommentIds(11), [2001]);
+
+    await store.recordPostedCommentId(10, 1002);
+
+    assert.deepEqual(await store.getPostedCommentIds(10), [1001, 1002]);
+    assert.deepEqual(await store.getPostedCommentIds(11), [2001]);
+    assert.equal(await store.getLastReadCommentAt(10), "2024-06-01T12:00:00.000Z");
+
+    const parsed = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(parsed.postedCommentIds, { "10": [1001, 1002], "11": [2001] });
+    assert.equal("vibratorCommentIds" in parsed, false, "the legacy key is never written back");
   });
 });
 

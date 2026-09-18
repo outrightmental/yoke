@@ -14,16 +14,31 @@ interface SessionState {
   sessions: AgentSession[];
   /**
    * Maps pull request number → ISO timestamp of the most recent human
-   * comment vibrator has read for that PR. Used in project mode to detect
+   * comment yoke has read for that PR. Used in project mode to detect
    * new comments that should trigger a re-queue.
    */
   lastReadPrComments?: Record<number, string>;
   /**
-   * Maps pull request number → numeric ids of comments vibrator has posted on
-   * that PR. Persisted so vibrator never reads or parses its own comments.
+   * Maps pull request number → numeric ids of comments yoke has posted on
+   * that PR. Persisted so yoke never reads or parses its own comments.
    */
-  vibratorCommentIds?: Record<number, number[]>;
+  postedCommentIds?: Record<number, number[]>;
 }
+
+/**
+ * Key under which {@link SessionState.postedCommentIds} was persisted before
+ * the vibrator → yoke rename. Read-only: a store written under the old key is
+ * loaded transparently and migrated to `postedCommentIds` on its next write,
+ * so the ids of comments posted before the rename are never lost.
+ *
+ * Legacy `vibratorCommentIds` key retained read-only since the 2026-09-17 rename (#237).
+ */
+const LEGACY_POSTED_COMMENT_IDS_KEY = "vibratorCommentIds";
+
+/** {@link SessionState} as it may appear on disk, including the legacy key. */
+type PersistedSessionState = SessionState & {
+  [LEGACY_POSTED_COMMENT_IDS_KEY]?: SessionState["postedCommentIds"];
+};
 
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
 
@@ -57,13 +72,14 @@ export class FileSessionStore {
   private async loadState(): Promise<SessionState> {
     try {
       const contents = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(contents) as SessionState;
+      const parsed = JSON.parse(contents) as PersistedSessionState;
       const state: SessionState = { sessions: parsed.sessions ?? [] };
       if (parsed.lastReadPrComments && Object.keys(parsed.lastReadPrComments).length > 0) {
         state.lastReadPrComments = parsed.lastReadPrComments;
       }
-      if (parsed.vibratorCommentIds && Object.keys(parsed.vibratorCommentIds).length > 0) {
-        state.vibratorCommentIds = parsed.vibratorCommentIds;
+      const postedCommentIds = parsed.postedCommentIds ?? parsed[LEGACY_POSTED_COMMENT_IDS_KEY];
+      if (postedCommentIds && Object.keys(postedCommentIds).length > 0) {
+        state.postedCommentIds = postedCommentIds;
       }
       return state;
     } catch (error) {
@@ -83,8 +99,8 @@ export class FileSessionStore {
       ...(state.lastReadPrComments && Object.keys(state.lastReadPrComments).length > 0
         ? { lastReadPrComments: state.lastReadPrComments }
         : {}),
-      ...(state.vibratorCommentIds && Object.keys(state.vibratorCommentIds).length > 0
-        ? { vibratorCommentIds: state.vibratorCommentIds }
+      ...(state.postedCommentIds && Object.keys(state.postedCommentIds).length > 0
+        ? { postedCommentIds: state.postedCommentIds }
         : {}),
     };
     await writeFile(tempFilePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -168,23 +184,23 @@ export class FileSessionStore {
     });
   }
 
-  /** Returns the ids of comments vibrator has posted on the given PR. */
+  /** Returns the ids of comments yoke has posted on the given PR. */
   async getPostedCommentIds(pullRequestNumber: number): Promise<number[]> {
     const state = await this.loadState();
-    return state.vibratorCommentIds?.[pullRequestNumber] ?? [];
+    return state.postedCommentIds?.[pullRequestNumber] ?? [];
   }
 
-  /** Records a comment id vibrator has posted on the given PR. */
+  /** Records a comment id yoke has posted on the given PR. */
   async recordPostedCommentId(pullRequestNumber: number, commentId: number): Promise<void> {
     const state = await this.loadState();
-    const existing = state.vibratorCommentIds?.[pullRequestNumber] ?? [];
+    const existing = state.postedCommentIds?.[pullRequestNumber] ?? [];
     if (existing.includes(commentId)) {
       return;
     }
     await this.writeState({
       ...state,
-      vibratorCommentIds: {
-        ...(state.vibratorCommentIds ?? {}),
+      postedCommentIds: {
+        ...(state.postedCommentIds ?? {}),
         [pullRequestNumber]: [...existing, commentId],
       },
     });

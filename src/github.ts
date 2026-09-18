@@ -72,8 +72,23 @@ interface PullRequestReviewThreadsQueryResponse {
   } | null;
 }
 
-/** Identifier vibrator uses when posting reviews so we can recognize our own reviews later. */
-export const VIBRATOR_REVIEW_MARKER = "<!-- vibrator-review -->";
+/**
+ * Hidden marker yoke prepends to every review it posts, so it can recognize
+ * its own reviews later (see {@link isYokeReview}). This is the only review
+ * marker ever written.
+ */
+export const YOKE_REVIEW_MARKER = "<!-- yoke-review -->";
+
+/**
+ * Every review-marker spelling yoke recognizes on read, written spelling
+ * first. Reviews posted before the vibrator → yoke rename still carry the old
+ * spelling and must keep counting as yoke's own: otherwise an in-flight PR
+ * would collect a duplicate review on the next pass, and its old reviews
+ * would be re-read as human feedback.
+ *
+ * Legacy `vibrator-review` spelling retained read-only since the 2026-09-17 rename (#237).
+ */
+export const REVIEW_MARKERS: readonly string[] = [YOKE_REVIEW_MARKER, "<!-- vibrator-review -->"];
 
 interface ProjectMeta {
   id: string;
@@ -94,8 +109,9 @@ function isBranchProtectionMergeError(error: unknown): boolean {
   );
 }
 
-export function isVibratorReview(body: string | null | undefined): boolean {
-  return !!body && body.includes(VIBRATOR_REVIEW_MARKER);
+/** True when `body` carries any spelling of the review marker (see {@link REVIEW_MARKERS}). */
+export function isYokeReview(body: string | null | undefined): boolean {
+  return !!body && REVIEW_MARKERS.some((marker) => body.includes(marker));
 }
 
 export interface GitHubClientOptions {
@@ -114,7 +130,7 @@ export interface PullRequestComment {
   /**
    * GitHub's numeric id for the comment (the issue-comment id, review id, or
    * review-thread-comment id depending on `kind`). Used both to skip
-   * Vibrator's own comments and to attach reaction emoji.
+   * Yoke's own comments and to attach reaction emoji.
    */
   id: number;
   author: string;
@@ -127,17 +143,31 @@ export interface PullRequestComment {
 }
 
 /**
- * Hidden marker appended to every comment Vibrator posts. Used to tell
- * Vibrator's own comments apart from human comments by content rather than by
- * author login — Vibrator may run under the same GitHub account as a human
+ * Hidden marker appended to every comment Yoke posts. Used to tell
+ * Yoke's own comments apart from human comments by content rather than by
+ * author login — Yoke may run under the same GitHub account as a human
  * reviewer, in which case login-based filtering would also discard the
  * human's comments.
  */
-export const VIBRATOR_COMMENT_MARKER = "<!-- vibrator:automated-comment -->";
+export const YOKE_COMMENT_MARKER = "<!-- yoke:automated-comment -->";
+
+/**
+ * Every automated-comment-marker spelling yoke recognizes on read, written
+ * spelling first. Comments posted before the vibrator → yoke rename still
+ * carry the old spelling and must not be re-read as human feedback.
+ *
+ * Legacy `vibrator:automated-comment` spelling retained read-only since the 2026-09-17 rename (#237).
+ */
+export const COMMENT_MARKERS: readonly string[] = [YOKE_COMMENT_MARKER, "<!-- vibrator:automated-comment -->"];
+
+/** True when `body` carries any spelling of the automated-comment marker (see {@link COMMENT_MARKERS}). */
+export function isYokeComment(body: string | null | undefined): boolean {
+  return !!body && COMMENT_MARKERS.some((marker) => body.includes(marker));
+}
 
 /**
  * Login substrings (lowercased) identifying third-party code-review bots whose
- * feedback Vibrator should treat as actionable, even though they post under a
+ * feedback Yoke should treat as actionable, even though they post under a
  * `Bot` account. GitHub Copilot reviews appear under `Copilot` (inline
  * comments) and `copilot-pull-request-reviewer[bot]` (review summaries);
  * CodeRabbit posts as `coderabbitai[bot]`. Matched as substrings so the
@@ -203,7 +233,7 @@ export class GitHubClient {
       return await this.gateway.getAllPages<T>(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-        console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check GitHub token permissions or repository slug).`);
+        console.warn(`[yoke] WARNING: 404 for ${path} — skipping (check GitHub token permissions or repository slug).`);
         return [];
       }
       throw error;
@@ -219,7 +249,7 @@ export class GitHubClient {
 
   /**
    * Returns the GitHub login of the currently authenticated user (the bot
-   * account running vibrator). Result is cached per client instance.
+   * account running yoke). Result is cached per client instance.
    */
   async getAuthenticatedLogin(): Promise<string> {
     if (!this.authenticatedLoginCache) {
@@ -239,17 +269,19 @@ export class GitHubClient {
    *   - review summaries, e.g. "Request changes" (`/pulls/{n}/reviews`)
    *   - inline review-thread comments (`/pulls/{n}/comments`)
    *
-   * Vibrator's own automated comments are excluded two ways: by looking for
-   * the hidden {@link VIBRATOR_COMMENT_MARKER} (login can't be used because
-   * Vibrator may run under the same GitHub account as a human reviewer), and
+   * Yoke's own automated comments are excluded two ways: by looking for
+   * the hidden automated-comment or review marker in any spelling yoke has
+   * ever written (see {@link COMMENT_MARKERS} and {@link REVIEW_MARKERS};
+   * login can't be used because Yoke may run under the same GitHub account
+   * as a human reviewer), and
    * by skipping any comment id in `options.excludeCommentIds` — the persisted
-   * set of ids Vibrator has posted. Comments authored by noise bot accounts
+   * set of ids Yoke has posted. Comments authored by noise bot accounts
    * (e.g. `github-actions[bot]`) are also excluded — but feedback from
    * recognized code-review bots (GitHub Copilot, CodeRabbit; see
    * {@link isReviewBot}) is kept and treated exactly like human feedback.
    *
    * Comments that already carry a 👀 ("eyes") reaction are also excluded:
-   * Vibrator reacts 👀 to every comment it consumes (see {@link addEyesReaction}),
+   * Yoke reacts 👀 to every comment it consumes (see {@link addEyesReaction}),
    * so the reaction marks a comment as already read and prevents it from being
    * fed into — and addressed by — the same review again on every cycle. (PR
    * review summaries have no reactions endpoint, so this filter does not apply
@@ -287,15 +319,15 @@ export class GitHubClient {
       }>(`/repos/${owner}/${repo}/pulls/${pullRequestNumber}/comments`),
     ]);
 
-    // True when a comment already carries a 👀 reaction — Vibrator has read it.
+    // True when a comment already carries a 👀 reaction — Yoke has read it.
     const alreadyRead = (reactions?: { eyes?: number }): boolean =>
       (reactions?.eyes ?? 0) > 0;
 
     // A comment counts as actionable feedback unless it was posted by a noise
     // bot account (a bot that is not a recognized code reviewer), carries one
-    // of Vibrator's own markers (the automated-comment marker for issue
+    // of Yoke's own markers (the automated-comment marker for issue
     // comments, or the review marker for posted reviews), or its id is in the
-    // persisted set of comments Vibrator has posted.
+    // persisted set of comments Yoke has posted.
     const isActionableFeedback = (
       id: number,
       user: { login?: string; type?: string } | null,
@@ -304,8 +336,7 @@ export class GitHubClient {
       if (excluded.has(id)) return false;
       if (user?.type === "Bot" && !isReviewBot(user.login)) return false;
       if (body === null) return true;
-      if (body.includes(VIBRATOR_COMMENT_MARKER)) return false;
-      if (body.includes(VIBRATOR_REVIEW_MARKER)) return false;
+      if (isYokeComment(body) || isYokeReview(body)) return false;
       return true;
     };
 
@@ -359,7 +390,7 @@ export class GitHubClient {
 
   /**
    * Adds the 👀 ("eyes") reaction to a PR comment, marking it as read by
-   * Vibrator. Conversation comments and inline review-thread comments support
+   * Yoke. Conversation comments and inline review-thread comments support
    * reactions; PR review summaries do not have a reactions endpoint, so those
    * are silently skipped. Failures are swallowed — a missing reaction must
    * never abort the surrounding action.
@@ -383,7 +414,7 @@ export class GitHubClient {
       });
     } catch (error) {
       console.warn(
-        `[vibrator] Could not add 👀 reaction to comment ${comment.id} on PR: ${String(error)}`,
+        `[yoke] Could not add 👀 reaction to comment ${comment.id} on PR: ${String(error)}`,
       );
     }
   }
@@ -491,7 +522,7 @@ export class GitHubClient {
       } while (after);
     } catch (error) {
       console.warn(
-        `[vibrator] Could not fetch issue parent numbers — sub-issues may not be available on this repository: ` +
+        `[yoke] Could not fetch issue parent numbers — sub-issues may not be available on this repository: ` +
         `${String(error)}. Parent/child blocking will be skipped.`,
       );
     }
@@ -556,7 +587,7 @@ export class GitHubClient {
           if (!featureUnavailable) {
             featureUnavailable = true;
             console.warn(
-              `[vibrator] Could not fetch issue dependencies — the Issue Dependencies feature ` +
+              `[yoke] Could not fetch issue dependencies — the Issue Dependencies feature ` +
               `may not be enabled on this repository (${statusCode}). ` +
               `GitHub-native "blocked by" relationships will be skipped.`,
             );
@@ -568,7 +599,7 @@ export class GitHubClient {
         // (skips it this cycle) instead of mistaking it for unblocked.
         issuesWithUnknownBlockers.add(issueNumber);
         console.warn(
-          `[vibrator] Could not fetch dependencies for issue #${issueNumber}: ${String(error)}. ` +
+          `[yoke] Could not fetch dependencies for issue #${issueNumber}: ${String(error)}. ` +
           `Treating its blocker status as unknown and not starting it this cycle.`,
         );
       }
@@ -748,12 +779,12 @@ export class GitHubClient {
       for (const node of pullRequests.nodes) {
         const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
         const reviewNodes = node.reviews?.nodes ?? [];
-        // A "clean review on head" = a vibrator-tagged review on the
+        // A "clean review on head" = a yoke-tagged review on the
         // current head sha that contains no inline comments and is not
         // a CHANGES_REQUESTED review.
         const hasCleanReviewOnHead = reviewNodes.some((review) => {
           if (review.commit?.oid !== node.headRefOid) return false;
-          if (!isVibratorReview(review.body)) return false;
+          if (!isYokeReview(review.body)) return false;
           if (review.state === "CHANGES_REQUESTED") return false;
           if ((review.comments?.totalCount ?? 0) !== 0) return false;
           return review.state === "APPROVED" || review.state === "COMMENTED";
@@ -873,7 +904,7 @@ export class GitHubClient {
     body: string;
     inlineComments: ReadonlyArray<PullRequestInlineComment>;
   }): Promise<void> {
-    const bodyWithMarker = `${VIBRATOR_REVIEW_MARKER}\n\n${input.body}`.trim();
+    const bodyWithMarker = `${YOKE_REVIEW_MARKER}\n\n${input.body}`.trim();
 
     const postReview = async (
       event: "APPROVE" | "COMMENT",
@@ -918,7 +949,7 @@ export class GitHubClient {
         message.includes("Line could not be resolved")
       ) {
         console.warn(
-          `[vibrator] Review inline comments could not be resolved to diff lines on PR #${input.pullRequestNumber}. ` +
+          `[yoke] Review inline comments could not be resolved to diff lines on PR #${input.pullRequestNumber}. ` +
           `Falling back to body-only COMMENT review with ${input.inlineComments.length} comment(s) in body.`,
         );
         const commentSection = input.inlineComments
@@ -949,15 +980,15 @@ export class GitHubClient {
 
   /**
    * Posts a comment on a PR and returns its numeric id, so the caller can
-   * persist it and skip re-reading Vibrator's own comment later.
+   * persist it and skip re-reading Yoke's own comment later.
    */
   async postComment(pullRequestNumber: number, body: string): Promise<number> {
     // Append the hidden marker so listPullRequestComments can recognise this
-    // as Vibrator's own comment even when Vibrator runs under a human's
+    // as Yoke's own comment even when Yoke runs under a human's
     // GitHub account.
     const { id } = await this.createIssueComment(
       pullRequestNumber,
-      `${body}\n\n${VIBRATOR_COMMENT_MARKER}`,
+      `${body}\n\n${YOKE_COMMENT_MARKER}`,
     );
     return id;
   }
@@ -1637,7 +1668,7 @@ export class GitHubClient {
       ]);
     } catch (error) {
       console.warn(
-        `[vibrator] Could not move issue #${issueNumber} to project status "${targetStatus}": ${String(error)}`,
+        `[yoke] Could not move issue #${issueNumber} to project status "${targetStatus}": ${String(error)}`,
       );
       return;
     }
@@ -1645,7 +1676,7 @@ export class GitHubClient {
     const item = statuses.get(issueNumber);
     if (!item) {
       console.warn(
-        `[vibrator] Issue #${issueNumber} is not in project #${projectNumber} — skipping status move.`,
+        `[yoke] Issue #${issueNumber} is not in project #${projectNumber} — skipping status move.`,
       );
       return;
     }
@@ -1655,7 +1686,7 @@ export class GitHubClient {
     );
     if (!option) {
       console.warn(
-        `[vibrator] Project #${projectNumber} has no status option "${targetStatus}" — skipping status move. ` +
+        `[yoke] Project #${projectNumber} has no status option "${targetStatus}" — skipping status move. ` +
         `Available options: ${meta.statusOptions.map((o) => o.name).join(", ")}`,
       );
       return;
@@ -1736,11 +1767,11 @@ export async function loadSnapshot(
 ): Promise<RepositorySnapshot> {
   const [issues, pullRequests, agentSessions] = await Promise.all([
     gitHubClient.listOpenIssues().catch((error) => {
-      console.warn(`[vibrator] Could not list open issues: ${String(error)}`);
+      console.warn(`[yoke] Could not list open issues: ${String(error)}`);
       return [];
     }),
     gitHubClient.listOpenPullRequests().catch((error) => {
-      console.warn(`[vibrator] Could not list open pull requests: ${String(error)}`);
+      console.warn(`[yoke] Could not list open pull requests: ${String(error)}`);
       return [];
     }),
     sessionStore.load(),
@@ -1753,7 +1784,7 @@ export async function loadSnapshot(
     try {
       projectStatuses = await gitHubClient.fetchProjectIssueStatuses(projectConfig.projectNumber);
     } catch (error) {
-      console.warn(`[vibrator] Could not fetch project statuses: ${String(error)}`);
+      console.warn(`[yoke] Could not fetch project statuses: ${String(error)}`);
       projectStatuses = new Map();
     }
 
@@ -1806,5 +1837,5 @@ export async function loadSnapshot(
 }
 
 export function buildDefaultSessionStorePath(owner: string, repo: string): string {
-  return join(process.cwd(), ".vibrator", `${owner}-${repo}-sessions.json`);
+  return join(process.cwd(), ".yoke", `${owner}-${repo}-sessions.json`);
 }

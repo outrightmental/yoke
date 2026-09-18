@@ -6,12 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  COMMENT_MARKERS,
   GitHubClient,
   isReviewBot,
-  isVibratorReview,
+  isYokeComment,
+  isYokeReview,
   loadSnapshot,
-  VIBRATOR_COMMENT_MARKER,
-  VIBRATOR_REVIEW_MARKER,
+  REVIEW_MARKERS,
+  YOKE_COMMENT_MARKER,
+  YOKE_REVIEW_MARKER,
 } from "../src/github.js";
 import { FileSessionStore } from "../src/session-store.js";
 
@@ -33,17 +36,234 @@ function captureStderr(t: test.TestContext): { output: () => string } {
   };
 }
 
-test("isVibratorReview returns true when the review body carries the marker", () => {
+test("isYokeReview returns true when the review body carries the marker", () => {
   assert.equal(
-    isVibratorReview(`${VIBRATOR_REVIEW_MARKER}\n\nLooks good.`),
+    isYokeReview(`${YOKE_REVIEW_MARKER}\n\nLooks good.`),
     true,
   );
 });
 
-test("isVibratorReview returns false for reviews from other sources", () => {
-  assert.equal(isVibratorReview("LGTM"), false);
-  assert.equal(isVibratorReview(null), false);
-  assert.equal(isVibratorReview(undefined), false);
+test("isYokeReview returns false for reviews from other sources", () => {
+  assert.equal(isYokeReview("LGTM"), false);
+  assert.equal(isYokeReview(null), false);
+  assert.equal(isYokeReview(undefined), false);
+});
+
+// ─── Legacy marker dual-read (vibrator → yoke rename, #237) ──────────────────
+//
+// The two hidden markers are a wire format already embedded in every review
+// and automated comment posted before the rename. New code writes only the
+// yoke spelling but must keep recognizing the old one, or every in-flight PR
+// would collect a duplicate review and have its old comments re-read as human
+// feedback. The old spellings are written out literally on purpose: these
+// tests pin the exact strings that already exist in GitHub comment bodies.
+const LEGACY_REVIEW_MARKER = "<!-- vibrator-review -->";
+const LEGACY_COMMENT_MARKER = "<!-- vibrator:automated-comment -->";
+
+test("the yoke marker spellings are written first and the legacy spellings are read-only fallbacks", () => {
+  assert.equal(REVIEW_MARKERS[0], YOKE_REVIEW_MARKER);
+  assert.equal(COMMENT_MARKERS[0], YOKE_COMMENT_MARKER);
+  assert.ok(REVIEW_MARKERS.includes(LEGACY_REVIEW_MARKER), "legacy review marker is still recognized");
+  assert.ok(COMMENT_MARKERS.includes(LEGACY_COMMENT_MARKER), "legacy comment marker is still recognized");
+  assert.notEqual(YOKE_REVIEW_MARKER, LEGACY_REVIEW_MARKER);
+  assert.notEqual(YOKE_COMMENT_MARKER, LEGACY_COMMENT_MARKER);
+});
+
+test("isYokeReview still recognizes a review body carrying the legacy vibrator-review marker", () => {
+  assert.equal(isYokeReview(`${LEGACY_REVIEW_MARKER}\n\nAutomated review from before the rename.`), true);
+});
+
+test("isYokeComment recognizes both the yoke and the legacy automated-comment markers", () => {
+  assert.equal(isYokeComment(`Addressed failing CI checks.\n\n${YOKE_COMMENT_MARKER}`), true);
+  assert.equal(isYokeComment(`Addressed failing CI checks.\n\n${LEGACY_COMMENT_MARKER}`), true);
+  assert.equal(isYokeComment("Genuine human feedback"), false);
+  assert.equal(isYokeComment(null), false);
+  assert.equal(isYokeComment(undefined), false);
+});
+
+test("createPullRequestReview writes only the yoke review marker", async (t) => {
+  const bodies: string[] = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (String(url).endsWith("/pulls/12/reviews") && init?.method === "POST") {
+        bodies.push((JSON.parse(init.body as string) as { body: string }).body);
+        return new Response(JSON.stringify({ id: 1 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${String(url)}`);
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  await client.createPullRequestReview({
+    pullRequestNumber: 12,
+    commitId: "head-sha",
+    body: "Looks clean.",
+    inlineComments: [],
+  });
+
+  assert.equal(bodies.length, 1);
+  assert.ok(bodies[0]!.startsWith(YOKE_REVIEW_MARKER), "review body starts with the yoke marker");
+  assert.ok(!bodies[0]!.includes(LEGACY_REVIEW_MARKER), "the legacy spelling is never written");
+  assert.equal(isYokeReview(bodies[0]), true);
+});
+
+test("postComment appends only the yoke automated-comment marker", async (t) => {
+  const bodies: string[] = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (String(url).endsWith("/issues/12/comments") && init?.method === "POST") {
+        bodies.push((JSON.parse(init.body as string) as { body: string }).body);
+        return new Response(JSON.stringify({ id: 4242 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${String(url)}`);
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const id = await client.postComment(12, "Addressed failing CI checks.");
+
+  assert.equal(id, 4242);
+  assert.equal(bodies.length, 1);
+  assert.ok(bodies[0]!.endsWith(YOKE_COMMENT_MARKER), "comment body ends with the yoke marker");
+  assert.ok(!bodies[0]!.includes(LEGACY_COMMENT_MARKER), "the legacy spelling is never written");
+  assert.equal(isYokeComment(bodies[0]), true);
+});
+
+test("listPullRequestComments excludes comments and reviews that carry the legacy vibrator markers", async (t) => {
+  // A PR that was in flight across the rename: its earlier automated comment
+  // and self-review carry the old spelling and must still be told apart from
+  // the human's comment on the same shared account.
+  mockPrCommentEndpoints(t, 43, {
+    issueComments: [
+      {
+        id: 1,
+        user: { login: "charneykaye", type: "User" },
+        body: `Reviewed code, no issues found.\n\n${LEGACY_COMMENT_MARKER}`,
+        created_at: "2024-03-01T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/43#issuecomment-1",
+      },
+      {
+        id: 2,
+        user: { login: "charneykaye", type: "User" },
+        body: "Please add more tests",
+        created_at: "2024-03-02T09:00:00Z",
+        html_url: "https://github.com/o/r/pull/43#issuecomment-2",
+      },
+    ],
+    reviews: [
+      {
+        id: 3,
+        user: { login: "charneykaye", type: "User" },
+        body: `${LEGACY_REVIEW_MARKER}\n\nAutomated review from before the rename.`,
+        submitted_at: "2024-03-01T11:00:00Z",
+        html_url: "https://github.com/o/r/pull/43#pullrequestreview-3",
+      },
+    ],
+  });
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const comments = await client.listPullRequestComments(43);
+
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.id, 2);
+  assert.equal(comments[0]?.body, "Please add more tests");
+});
+
+test("listOpenPullRequests counts a legacy-marked review on the head sha as a clean review", async (t) => {
+  // The dual-read decision working end to end: an in-flight PR whose last
+  // self-review was posted under the old marker must NOT collect a duplicate
+  // review on the next pass, so hasCleanReviewOnHead stays true for it. A
+  // human review with no marker on another PR stays false.
+  const json = (payload: unknown): Response =>
+    new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  const restPr = (number: number) => ({
+    number,
+    title: `PR ${number}`,
+    body: "",
+    head: { sha: `head-${number}`, ref: `yoke/issue-${number}-thing` },
+    base: { ref: "main" },
+    state: "open",
+    draft: true,
+    created_at: "2024-03-01T10:00:00Z",
+    updated_at: "2024-03-02T10:00:00Z",
+    labels: [],
+  });
+  const graphqlPr = (number: number, reviewBody: string) => ({
+    number,
+    mergeable: "MERGEABLE",
+    headRefOid: `head-${number}`,
+    closingIssuesReferences: { nodes: [{ number }] },
+    reviews: {
+      nodes: [
+        {
+          state: "COMMENTED",
+          submittedAt: "2024-03-02T10:00:00Z",
+          commit: { oid: `head-${number}` },
+          body: reviewBody,
+          comments: { totalCount: 0 },
+        },
+      ],
+    },
+    reviewThreads: { nodes: [] },
+    commits: {
+      nodes: [
+        {
+          commit: {
+            oid: `head-${number}`,
+            pushedDate: null,
+            committedDate: null,
+            statusCheckRollup: null,
+          },
+        },
+      ],
+    },
+  });
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request): Promise<Response> => {
+      const url = String(_url);
+      if (url.includes("/pulls?state=open")) return json([restPr(5), restPr(6)]);
+      if (url.endsWith("/graphql")) {
+        return json({
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [
+                  graphqlPr(5, `${LEGACY_REVIEW_MARKER}\n\nAutomated review from before the rename.`),
+                  graphqlPr(6, "Looks good to me, but this is a human review."),
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const pullRequests = await client.listOpenPullRequests();
+
+  assert.equal(pullRequests.find((pr) => pr.number === 5)?.hasCleanReviewOnHead, true);
+  assert.equal(pullRequests.find((pr) => pr.number === 6)?.hasCleanReviewOnHead, false);
 });
 
 test("squashMergePullRequest marks draft PR ready and calls squash merge API", async (t) => {
@@ -588,15 +808,15 @@ function mockPrCommentEndpoints(
   });
 }
 
-test("listPullRequestComments excludes Vibrator's own marked comments but keeps human comments on a shared account", async (t) => {
-  // Vibrator runs under the same account ("charneykaye") as the human
+test("listPullRequestComments excludes Yoke's own marked comments but keeps human comments on a shared account", async (t) => {
+  // Yoke runs under the same account ("charneykaye") as the human
   // reviewer, so its own comments must be told apart by the hidden marker —
   // not by author login.
   mockPrCommentEndpoints(t, 42, {
     issueComments: [
       {
         user: { login: "charneykaye", type: "User" },
-        body: `Reviewed code, no issues found.\n\n${VIBRATOR_COMMENT_MARKER}`,
+        body: `Reviewed code, no issues found.\n\n${YOKE_COMMENT_MARKER}`,
         created_at: "2024-03-01T10:00:00Z",
         html_url: "https://github.com/o/r/pull/42#issuecomment-1",
       },
@@ -618,7 +838,7 @@ test("listPullRequestComments excludes Vibrator's own marked comments but keeps 
   const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
   const comments = await client.listPullRequestComments(42);
 
-  // Vibrator's own marked comment and the github-actions bot comment are
+  // Yoke's own marked comment and the github-actions bot comment are
   // dropped; the human's comment survives despite sharing the login.
   assert.equal(comments.length, 1);
   assert.equal(comments[0]?.author, "charneykaye");
@@ -651,10 +871,10 @@ test("listPullRequestComments includes PR reviews and inline review-thread comme
         submitted_at: "2024-03-02T08:05:00Z",
         html_url: "https://github.com/o/r/pull/7#pullrequestreview-2",
       },
-      // Vibrator's own posted review — excluded via the review marker.
+      // Yoke's own posted review — excluded via the review marker.
       {
         user: { login: "alice", type: "User" },
-        body: `${VIBRATOR_REVIEW_MARKER}\n\nAutomated review.`,
+        body: `${YOKE_REVIEW_MARKER}\n\nAutomated review.`,
         submitted_at: "2024-03-02T08:10:00Z",
         html_url: "https://github.com/o/r/pull/7#pullrequestreview-3",
       },
@@ -673,7 +893,7 @@ test("listPullRequestComments includes PR reviews and inline review-thread comme
   const comments = await client.listPullRequestComments(7);
 
   // Conversation comment, review summary, and review-thread comment — sorted
-  // by creation time. The empty review and Vibrator's own review are excluded.
+  // by creation time. The empty review and Yoke's own review are excluded.
   assert.equal(comments.length, 3);
   assert.deepEqual(
     comments.map((c) => c.kind),
@@ -697,7 +917,7 @@ test("isReviewBot recognizes Copilot and CodeRabbit logins but not noise bots", 
 test("listPullRequestComments keeps Copilot review-bot feedback but drops noise bots", async (t) => {
   // GitHub Copilot posts its review summary under `copilot-pull-request-reviewer[bot]`
   // and its inline comments under `Copilot` — both `Bot`-type accounts. That
-  // feedback must reach Vibrator, while CI noise bots stay excluded.
+  // feedback must reach Yoke, while CI noise bots stay excluded.
   mockPrCommentEndpoints(t, 74, {
     issueComments: [
       {
@@ -743,7 +963,7 @@ test("listPullRequestComments returns empty array when there is no human feedbac
     issueComments: [
       {
         user: { login: "charneykaye", type: "User" },
-        body: `Addressed failing CI checks.\n\n${VIBRATOR_COMMENT_MARKER}`,
+        body: `Addressed failing CI checks.\n\n${YOKE_COMMENT_MARKER}`,
         created_at: "2024-03-01T10:00:00Z",
         html_url: "https://github.com/o/r/pull/10#issuecomment-1",
       },
@@ -761,7 +981,7 @@ test("listPullRequestComments excludes comment ids passed in excludeCommentIds",
       {
         id: 7001,
         user: { login: "charneykaye", type: "User" },
-        body: "Vibrator's own comment (marker stripped by a quote)",
+        body: "Yoke's own comment (marker stripped by a quote)",
         created_at: "2024-03-01T10:00:00Z",
         html_url: "https://github.com/o/r/pull/50#issuecomment-1",
       },
@@ -786,7 +1006,7 @@ test("listPullRequestComments excludes comment ids passed in excludeCommentIds",
 });
 
 test("listPullRequestComments excludes comments that already carry a 👀 reaction", async (t) => {
-  // Vibrator reacts 👀 to every comment it reads; on the next cycle that
+  // Yoke reacts 👀 to every comment it reads; on the next cycle that
   // comment must not be fed back into the review again.
   mockPrCommentEndpoints(t, 60, {
     issueComments: [
@@ -887,7 +1107,7 @@ function makePr(overrides: Partial<{ updatedAt: string; draft: boolean }> = {}) 
 }
 
 test("loadSnapshot (project mode) sets hasNewCommentsSinceLastRead when a human comment is newer than lastReadAt", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const store = new FileSessionStore(join(dir, "sessions.json"));
@@ -911,7 +1131,7 @@ test("loadSnapshot (project mode) sets hasNewCommentsSinceLastRead when a human 
 });
 
 test("loadSnapshot (project mode) does not set hasNewCommentsSinceLastRead when all comments predate lastReadAt", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const store = new FileSessionStore(join(dir, "sessions.json"));
@@ -935,7 +1155,7 @@ test("loadSnapshot (project mode) does not set hasNewCommentsSinceLastRead when 
 });
 
 test("loadSnapshot (project mode) skips comment fetch when pr.updatedAt is not newer than lastReadAt", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const store = new FileSessionStore(join(dir, "sessions.json"));
@@ -962,7 +1182,7 @@ test("loadSnapshot (project mode) skips comment fetch when pr.updatedAt is not n
 });
 
 test("loadSnapshot does not throw when listing open issues fails", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const store = new FileSessionStore(join(dir, "sessions.json"));
@@ -979,7 +1199,7 @@ test("loadSnapshot does not throw when listing open issues fails", async (t) => 
 });
 
 test("loadSnapshot does not throw when listing open pull requests fails", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const store = new FileSessionStore(join(dir, "sessions.json"));

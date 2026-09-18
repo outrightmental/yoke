@@ -253,22 +253,22 @@ export interface AgentBranchUpdate {
  * transcript chatter, so we instruct it (via the prompt) to emit the
  * description exactly between these sentinels.
  */
-export const FINAL_DESCRIPTION_START_MARKER = "<<<VIBRATOR_PR_BODY_START>>>";
-export const FINAL_DESCRIPTION_END_MARKER = "<<<VIBRATOR_PR_BODY_END>>>";
+export const FINAL_DESCRIPTION_START_MARKER = "<<<YOKE_PR_BODY_START>>>";
+export const FINAL_DESCRIPTION_END_MARKER = "<<<YOKE_PR_BODY_END>>>";
 
 /**
  * Sentinel markers wrapping the JSON implementation-summary payload
  * (PR title + body) the Claude implementer must emit.
  */
-export const IMPLEMENTATION_PAYLOAD_START_MARKER = "<<<VIBRATOR_IMPL_START>>>";
-export const IMPLEMENTATION_PAYLOAD_END_MARKER = "<<<VIBRATOR_IMPL_END>>>";
+export const IMPLEMENTATION_PAYLOAD_START_MARKER = "<<<YOKE_IMPL_START>>>";
+export const IMPLEMENTATION_PAYLOAD_END_MARKER = "<<<YOKE_IMPL_END>>>";
 
 /**
  * Sentinel markers wrapping the JSON self-review payload — a per-comment
  * narrative of how each human comment was addressed.
  */
-export const SELF_REVIEW_PAYLOAD_START_MARKER = "<<<VIBRATOR_REVIEW_START>>>";
-export const SELF_REVIEW_PAYLOAD_END_MARKER = "<<<VIBRATOR_REVIEW_END>>>";
+export const SELF_REVIEW_PAYLOAD_START_MARKER = "<<<YOKE_REVIEW_START>>>";
+export const SELF_REVIEW_PAYLOAD_END_MARKER = "<<<YOKE_REVIEW_END>>>";
 
 interface ClaudeAgentClientOptions {
   /** Root directory under which per-PR / per-issue checkouts are created. */
