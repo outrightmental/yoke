@@ -12,7 +12,7 @@ schedule issue work → run Claude locally → open PR → self-review → fix �
 
 Every pass through the loop is allowed to make progress. Every step is synchronous — Yoke waits for Claude to finish before moving on. That means sessions only ever sit in `in_progress` state inside a single iteration; on the next iteration they will be either completed (the agent finished and the session was recorded) or failed (the previous process crashed mid-action).
 
-Multiple independent engine loops run concurrently (up to `MAX_CONCURRENCY`). A planning mutex prevents two engines from double-booking the same issue or PR. A shared claim set prevents two engines from executing different actions against the same PR at the same time.
+Multiple independent engine loops run concurrently (up to `max_concurrency`). A planning mutex prevents two engines from double-booking the same issue or PR. A shared claim set prevents two engines from executing different actions against the same PR at the same time.
 
 ## Loop phases
 
@@ -47,7 +47,7 @@ For issues, the planner:
 - excludes issues blocked by open blockers (via dependency phrases or parent/child),
 - excludes issues labeled `manual`,
 - in project mode: excludes issues whose project-board status is not "Ready",
-- starts only as many as fit inside `MAX_CONCURRENCY`.
+- starts only as many as fit inside `max_concurrency`.
 
 ### 5. Execute actions
 
@@ -128,7 +128,7 @@ Milestones order the queue but never gate it — any eligible issue can start re
 Issues and PRs labeled `manual` are opted out of automated work:
 
 - **Issues** labeled `manual` are never picked up by the planner.
-- **PRs** labeled `manual` receive no automated actions and do not count against `MAX_CONCURRENCY`.
+- **PRs** labeled `manual` receive no automated actions and do not count against `max_concurrency`.
 
 Yoke creates the `manual` label in the repository on startup if it does not already exist.
 
@@ -161,15 +161,15 @@ Each action is idempotent through session state. A later iteration observes what
 - Keep issues crisp, scoped, and independently mergeable.
 - Put real acceptance criteria in issue bodies.
 - Use dependency phrases instead of relying on issue order alone.
-- Start with `--dry-run --once` and a low `MAX_CONCURRENCY`.
+- Start with `--dry-run --once` and a low `max_concurrency`.
 - Let branch protection and CI define the normal merge gate; protected-branch merge failures surface directly from GitHub.
 - Treat the generated final description as the permanent change record.
 
 ## Failure modes to watch
 
 - **`claude` CLI not found / not authenticated**: install Claude Code and run `claude login` to authenticate with your Claude Code subscription.
-- **Missing GitHub token / repository access**: set `YOKE_GITHUB_TOKEN` or `GITHUB_TOKEN` to a PAT with access to the repository.
+- **Missing GitHub token / repository access**: add a PAT with access to the repository under `github_tokens` in `env.yaml`, and make sure the project's `github_token_name` (if set) names one of those entries.
 - **No PR appears after start-implementation**: check the iteration log — Yoke opens the PR itself via the REST API after Claude pushes, so an error from either step will surface in the action log.
 - **Self-review loop repeats**: the planner only advances once two consecutive clean self-reviews are recorded against the current head SHA. If Claude keeps pushing changes, review the PR diff to understand what it is fixing.
 - **Final description fails**: confirm `git`, `claude`, and the configured GitHub PAT are available locally.
-- **Too much parallel work**: lower `MAX_CONCURRENCY`.
+- **Too much parallel work**: lower `max_concurrency`.
