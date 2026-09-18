@@ -168,7 +168,7 @@ Each action is idempotent through session state. A later iteration observes what
 ## Failure modes to watch
 
 - **`claude` CLI not found / not authenticated**: install Claude Code and run `claude login` to authenticate with your Claude Code subscription.
-- **Missing GitHub token / repository access**: set `VIBRATOR_GITHUB_TOKEN` or `GITHUB_TOKEN` to a PAT with access to the repository.
+- **Missing GitHub token / repository access**: set `YOKE_GITHUB_TOKEN` or `GITHUB_TOKEN` to a PAT with access to the repository.
 - **No PR appears after start-implementation**: check the iteration log — Vibrator opens the PR itself via the REST API after Claude pushes, so an error from either step will surface in the action log.
 - **Self-review loop repeats**: the planner only advances once two consecutive clean self-reviews are recorded against the current head SHA. If Claude keeps pushing changes, review the PR diff to understand what it is fixing.
 - **Final description fails**: confirm `git`, `claude`, and the configured GitHub PAT are available locally.

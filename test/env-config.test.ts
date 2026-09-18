@@ -10,7 +10,7 @@ import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
 ): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "vibrator-env-config-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "yoke-env-config-test-"));
   try {
     await fn(dir);
   } finally {

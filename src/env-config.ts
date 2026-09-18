@@ -35,7 +35,7 @@ export interface ProjectEnvConfig {
   cycle_minimum_seconds?: number;
   /** @deprecated Use the top-level `dashboard_port` instead. Honoured only as a fallback. */
   dashboard_port?: number;
-  /** Path for persisted agent-session state. Defaults to .vibrator/<owner>-<repo>-sessions.json. */
+  /** Path for persisted agent-session state. Defaults to .yoke/<owner>-<repo>-sessions.json. */
   session_store_path?: string;
 }
 

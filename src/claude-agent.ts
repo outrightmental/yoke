@@ -2276,7 +2276,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // Avoid Claude subprocesses inheriting Vibrator's GitHub token.
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
-    delete env.VIBRATOR_GITHUB_TOKEN;
+    delete env.YOKE_GITHUB_TOKEN;
     const effectiveModel = modelOverride ?? this.claudeInitialModel;
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
     const effortArgs = effortOverride ? ["--effort", effortOverride] : [];

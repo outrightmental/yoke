@@ -754,15 +754,15 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
         "git add local.txt",
         "git commit -m \"agent local commit\"",
         "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-race-XXXXXX\")\"",
-        "git clone \"$VIBRATOR_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
+        "git clone \"$YOKE_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
         "cd \"$RACE_DIR/repo\"",
-        "git checkout \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git checkout \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
         "git config user.name \"Race Writer\"",
         "git config user.email \"race@example.com\"",
         "echo \"remote race change\" >> race.txt",
         "git add race.txt",
         "git commit -m \"race remote commit\" >/dev/null 2>&1",
-        "git push origin \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git push origin \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
         `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
         "echo '{\"title\":\"Test PR\",\"body\":\"Closes #173\"}'",
         `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
@@ -772,10 +772,10 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
     );
     await chmod(claudeStubPath, 0o755);
 
-    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
-    const previousBranch = process.env.VIBRATOR_TEST_BRANCH;
-    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
-    process.env.VIBRATOR_TEST_BRANCH = branch;
+    const previousRemote = process.env.YOKE_TEST_REMOTE;
+    const previousBranch = process.env.YOKE_TEST_BRANCH;
+    process.env.YOKE_TEST_REMOTE = remoteDir;
+    process.env.YOKE_TEST_BRANCH = branch;
 
     try {
       const client = createClaudeAgentClient({
@@ -808,14 +808,14 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
       assert.equal(result.headSha, remoteHeadSha);
     } finally {
       if (previousRemote === undefined) {
-        delete process.env.VIBRATOR_TEST_REMOTE;
+        delete process.env.YOKE_TEST_REMOTE;
       } else {
-        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+        process.env.YOKE_TEST_REMOTE = previousRemote;
       }
       if (previousBranch === undefined) {
-        delete process.env.VIBRATOR_TEST_BRANCH;
+        delete process.env.YOKE_TEST_BRANCH;
       } else {
-        process.env.VIBRATOR_TEST_BRANCH = previousBranch;
+        process.env.YOKE_TEST_BRANCH = previousBranch;
       }
     }
   } finally {
@@ -877,15 +877,15 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
         "git add shared.txt",
         "git commit -m \"agent local commit\"",
         "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-race-conflict-XXXXXX\")\"",
-        "git clone \"$VIBRATOR_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
+        "git clone \"$YOKE_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
         "cd \"$RACE_DIR/repo\"",
-        "git checkout \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git checkout \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
         "git config user.name \"Race Writer\"",
         "git config user.email \"race@example.com\"",
         "echo \"remote race change\" > shared.txt",
         "git add shared.txt",
         "git commit -m \"race remote conflicting commit\" >/dev/null 2>&1",
-        "git push origin \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git push origin \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
         `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
         "echo '{\"title\":\"Test PR\",\"body\":\"Closes #173\"}'",
         `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
@@ -895,10 +895,10 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
     );
     await chmod(claudeStubPath, 0o755);
 
-    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
-    const previousBranch = process.env.VIBRATOR_TEST_BRANCH;
-    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
-    process.env.VIBRATOR_TEST_BRANCH = branch;
+    const previousRemote = process.env.YOKE_TEST_REMOTE;
+    const previousBranch = process.env.YOKE_TEST_BRANCH;
+    process.env.YOKE_TEST_REMOTE = remoteDir;
+    process.env.YOKE_TEST_BRANCH = branch;
 
     try {
       const client = createClaudeAgentClient({
@@ -934,14 +934,14 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
       assert.equal(result.headSha, remoteHeadSha);
     } finally {
       if (previousRemote === undefined) {
-        delete process.env.VIBRATOR_TEST_REMOTE;
+        delete process.env.YOKE_TEST_REMOTE;
       } else {
-        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+        process.env.YOKE_TEST_REMOTE = previousRemote;
       }
       if (previousBranch === undefined) {
-        delete process.env.VIBRATOR_TEST_BRANCH;
+        delete process.env.YOKE_TEST_BRANCH;
       } else {
-        process.env.VIBRATOR_TEST_BRANCH = previousBranch;
+        process.env.YOKE_TEST_BRANCH = previousBranch;
       }
     }
   } finally {
@@ -997,15 +997,15 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
         // main with a completely different commit.  This makes our upcoming push
         // a non-fast-forward.
         "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-force-push-race-XXXXXX\")\"",
-        "git clone \"$VIBRATOR_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
+        "git clone \"$YOKE_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
         "cd \"$RACE_DIR/repo\"",
-        "git checkout -b \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git checkout -b \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
         "git config user.name \"Race Writer\"",
         "git config user.email \"race@example.com\"",
         "echo \"stale content\" > stale.txt",
         "git add stale.txt",
         "git commit -m \"stale race commit that should be overwritten\" >/dev/null 2>&1",
-        "git push origin \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git push origin \"$YOKE_TEST_BRANCH\" >/dev/null 2>&1",
         `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
         "echo '{\"title\":\"Test PR\",\"body\":\"Closes #174\"}'",
         `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
@@ -1015,10 +1015,10 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
     );
     await chmod(claudeStubPath, 0o755);
 
-    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
-    const previousBranch = process.env.VIBRATOR_TEST_BRANCH;
-    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
-    process.env.VIBRATOR_TEST_BRANCH = branch;
+    const previousRemote = process.env.YOKE_TEST_REMOTE;
+    const previousBranch = process.env.YOKE_TEST_BRANCH;
+    process.env.YOKE_TEST_REMOTE = remoteDir;
+    process.env.YOKE_TEST_BRANCH = branch;
 
     try {
       const client = createClaudeAgentClient({
@@ -1052,14 +1052,14 @@ test("implementIssue force-pushes when remote branch is created after a fresh st
       assert.equal(result.headSha, remoteHeadSha);
     } finally {
       if (previousRemote === undefined) {
-        delete process.env.VIBRATOR_TEST_REMOTE;
+        delete process.env.YOKE_TEST_REMOTE;
       } else {
-        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+        process.env.YOKE_TEST_REMOTE = previousRemote;
       }
       if (previousBranch === undefined) {
-        delete process.env.VIBRATOR_TEST_BRANCH;
+        delete process.env.YOKE_TEST_BRANCH;
       } else {
-        process.env.VIBRATOR_TEST_BRANCH = previousBranch;
+        process.env.YOKE_TEST_BRANCH = previousBranch;
       }
     }
   } finally {
@@ -1108,7 +1108,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
         "set -eu",
         "STDIN_STATE=$(node -e \"const timer = setTimeout(() => { process.stdout.write('waiting'); process.exit(0); }, 200); process.stdin.on('end', () => { clearTimeout(timer); process.stdout.write('eof'); }); process.stdin.once('data', () => { clearTimeout(timer); process.stdout.write('data'); }); process.stdin.resume();\")",
         `printf '%s' \"$STDIN_STATE\" > \"${stdinLogPath}\"`,
-        `printf '%s|%s|%s' "\${GH_TOKEN:-unset}" "\${GITHUB_TOKEN:-unset}" "\${VIBRATOR_GITHUB_TOKEN:-unset}" > \"${tokenEnvLogPath}\"`,
+        `printf '%s|%s|%s' "\${GH_TOKEN:-unset}" "\${GITHUB_TOKEN:-unset}" "\${YOKE_GITHUB_TOKEN:-unset}" > \"${tokenEnvLogPath}\"`,
         // Capture model arg: parse --model <value> from $@
         "MODEL_USED=\"(none)\"",
         "while [ $# -gt 0 ]; do",
@@ -1141,11 +1141,11 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
     const previousTokens = {
       GH_TOKEN: process.env.GH_TOKEN,
       GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-      VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+      YOKE_GITHUB_TOKEN: process.env.YOKE_GITHUB_TOKEN,
     };
     process.env.GH_TOKEN = "gh-token";
     process.env.GITHUB_TOKEN = "github-token";
-    process.env.VIBRATOR_GITHUB_TOKEN = "vibrator-token";
+    process.env.YOKE_GITHUB_TOKEN = "yoke-token";
 
     try {
       const client = createClaudeAgentClient({
