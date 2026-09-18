@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildDefaultSessionStorePath,
+  buildLegacySessionStorePath,
   COMMENT_MARKERS,
   GitHubClient,
   isReviewBot,
@@ -47,6 +49,18 @@ test("isYokeReview returns false for reviews from other sources", () => {
   assert.equal(isYokeReview("LGTM"), false);
   assert.equal(isYokeReview(null), false);
   assert.equal(isYokeReview(undefined), false);
+});
+
+test("the default session store lives under .yoke/ and the legacy path under .vibrator/, side by side", () => {
+  assert.equal(
+    buildDefaultSessionStorePath("outrightmental", "yoke"),
+    join(process.cwd(), ".yoke", "outrightmental-yoke-sessions.json"),
+  );
+  // The pre-rename location (#237), read-only: only ever moved from, never written to.
+  assert.equal(
+    buildLegacySessionStorePath("outrightmental", "yoke"),
+    join(process.cwd(), ".vibrator", "outrightmental-yoke-sessions.json"),
+  );
 });
 
 // ─── Legacy marker dual-read (vibrator → yoke rename, #237) ──────────────────

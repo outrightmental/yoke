@@ -1108,7 +1108,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
         "set -eu",
         "STDIN_STATE=$(node -e \"const timer = setTimeout(() => { process.stdout.write('waiting'); process.exit(0); }, 200); process.stdin.on('end', () => { clearTimeout(timer); process.stdout.write('eof'); }); process.stdin.once('data', () => { clearTimeout(timer); process.stdout.write('data'); }); process.stdin.resume();\")",
         `printf '%s' \"$STDIN_STATE\" > \"${stdinLogPath}\"`,
-        `printf '%s|%s|%s' "\${GH_TOKEN:-unset}" "\${GITHUB_TOKEN:-unset}" "\${YOKE_GITHUB_TOKEN:-unset}" > \"${tokenEnvLogPath}\"`,
+        `printf '%s|%s|%s|%s' "\${GH_TOKEN:-unset}" "\${GITHUB_TOKEN:-unset}" "\${YOKE_GITHUB_TOKEN:-unset}" "\${VIBRATOR_GITHUB_TOKEN:-unset}" > \"${tokenEnvLogPath}\"`,
         // Capture model arg: parse --model <value> from $@
         "MODEL_USED=\"(none)\"",
         "while [ $# -gt 0 ]; do",
@@ -1142,10 +1142,14 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
       GH_TOKEN: process.env.GH_TOKEN,
       GITHUB_TOKEN: process.env.GITHUB_TOKEN,
       YOKE_GITHUB_TOKEN: process.env.YOKE_GITHUB_TOKEN,
+      VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
     };
     process.env.GH_TOKEN = "gh-token";
     process.env.GITHUB_TOKEN = "github-token";
     process.env.YOKE_GITHUB_TOKEN = "yoke-token";
+    // The pre-rename name (#237): a shell profile that still exports it must
+    // not leak the PAT to Claude either.
+    process.env.VIBRATOR_GITHUB_TOKEN = "legacy-token";
 
     try {
       const client = createClaudeAgentClient({
@@ -1175,7 +1179,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
       const tokenEnv = (await readFile(tokenEnvLogPath, "utf8")).trim();
       assert.equal(modelUsed, "claude-haiku-test-model", "should pass claudeCommitModel to claude CLI");
       assert.equal(stdinState, "eof", "should close stdin for non-interactive Claude runs");
-      assert.equal(tokenEnv, "unset|unset|unset", "should strip GitHub token env vars from Claude");
+      assert.equal(tokenEnv, "unset|unset|unset|unset", "should strip GitHub token env vars (including the legacy name) from Claude");
     } finally {
       for (const [key, value] of Object.entries(previousTokens)) {
         if (value === undefined) delete process.env[key];

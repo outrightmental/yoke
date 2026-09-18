@@ -13,6 +13,7 @@ import {
 import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
 import {
   buildDefaultSessionStorePath,
+  buildLegacySessionStorePath,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
@@ -25,7 +26,7 @@ import {
   tryClaimFromPlan,
 } from "./scheduler.js";
 import { reconcileSessions } from "./reconcile.js";
-import { FileSessionStore } from "./session-store.js";
+import { FileSessionStore, migrateLegacySessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
 import { resolveDashboardTitle } from "./dashboard-title.js";
 import { globalEventEmitter, EventEmitter } from "./event-emitter.js";
@@ -351,8 +352,17 @@ function buildProjectConfig(
   const projectMode: ProjectModeConfig | undefined =
     projectNumber !== undefined ? { projectNumber, reviewers: resolved.reviewers } : undefined;
 
-  const sessionStorePath =
-    projectEnvConfig.session_store_path ?? buildDefaultSessionStorePath(owner, repo);
+  let sessionStorePath: string;
+  if (projectEnvConfig.session_store_path !== undefined) {
+    sessionStorePath = projectEnvConfig.session_store_path;
+  } else {
+    sessionStorePath = buildDefaultSessionStorePath(owner, repo);
+    // A store left at the pre-rename default location is moved once so the
+    // planner keeps its phase history (see buildLegacySessionStorePath).
+    if (migrateLegacySessionStore(sessionStorePath, buildLegacySessionStorePath(owner, repo))) {
+      console.log(`[yoke] Moved the ${owner}/${repo} session store to ${sessionStorePath}.`);
+    }
+  }
 
   return {
     owner,

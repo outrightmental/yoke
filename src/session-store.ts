@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -41,6 +42,27 @@ type PersistedSessionState = SessionState & {
 };
 
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
+
+/**
+ * One-time move of a session store from a legacy path to its current path,
+ * so a deployment upgraded across a default-path change keeps its phase
+ * history instead of starting from an empty store. A no-op when the current
+ * path already exists (whatever the legacy path holds) or when there is
+ * nothing at the legacy path. Returns true when a store was moved.
+ * Synchronous because it runs during startup, before any engine opens the
+ * store.
+ */
+export function migrateLegacySessionStore(
+  sessionStorePath: string,
+  legacySessionStorePath: string,
+): boolean {
+  if (existsSync(sessionStorePath) || !existsSync(legacySessionStorePath)) {
+    return false;
+  }
+  mkdirSync(dirname(sessionStorePath), { recursive: true });
+  renameSync(legacySessionStorePath, sessionStorePath);
+  return true;
+}
 
 function nowIsoString(): string {
   return new Date().toISOString();

@@ -2277,6 +2277,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
     delete env.YOKE_GITHUB_TOKEN;
+    // Legacy `VIBRATOR_GITHUB_TOKEN` still scrubbed since the 2026-09-17 rename (#237):
+    // a shell profile that has not been updated must not hand the PAT to Claude.
+    delete env.VIBRATOR_GITHUB_TOKEN;
     const effectiveModel = modelOverride ?? this.claudeInitialModel;
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
     const effortArgs = effortOverride ? ["--effort", effortOverride] : [];

@@ -82,9 +82,12 @@ export const YOKE_REVIEW_MARKER = "<!-- yoke-review -->";
 /**
  * Every review-marker spelling yoke recognizes on read, written spelling
  * first. Reviews posted before the vibrator → yoke rename still carry the old
- * spelling and must keep counting as yoke's own: otherwise an in-flight PR
- * would collect a duplicate review on the next pass, and its old reviews
- * would be re-read as human feedback.
+ * spelling and must keep counting as yoke's own: otherwise an in-flight PR's
+ * old reviews would be re-read as human feedback by
+ * {@link GitHubClient.listPullRequestComments}, and its clean-review flag
+ * (`hasCleanReviewOnHead`, shown on the dashboard) would flip off. Whether a
+ * PR gets another self-review is decided from the session store's phase
+ * history, not from these markers.
  *
  * Legacy `vibrator-review` spelling retained read-only since the 2026-09-17 rename (#237).
  */
@@ -1838,4 +1841,20 @@ export async function loadSnapshot(
 
 export function buildDefaultSessionStorePath(owner: string, repo: string): string {
   return join(process.cwd(), ".yoke", `${owner}-${repo}-sessions.json`);
+}
+
+/**
+ * Where {@link buildDefaultSessionStorePath} pointed before the vibrator →
+ * yoke rename. Read-only: at startup, a store found here with nothing yet at
+ * the yoke path is moved to the yoke path once (see
+ * `migrateLegacySessionStore`), so an upgraded deployment keeps its phase
+ * history. Without that move the planner would see no sessions and re-drive
+ * every open PR — a fresh self-review, and in project mode a second
+ * request-review — because whether a PR is re-reviewed is decided from the
+ * session store alone, not from the review markers.
+ *
+ * Legacy `.vibrator/` directory retained read-only since the 2026-09-17 rename (#237).
+ */
+export function buildLegacySessionStorePath(owner: string, repo: string): string {
+  return join(process.cwd(), ".vibrator", `${owner}-${repo}-sessions.json`);
 }
