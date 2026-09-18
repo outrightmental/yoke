@@ -148,7 +148,7 @@ export class DashboardServer {
     if (pathname === "/" || pathname === "/index.html") {
       try {
         let html = await fs.promises.readFile(STATIC_INDEX, "utf-8");
-        html = html.replace(/(<title>)Vibrator([:< ])/, (_, p1: string, p2: string) => `${p1}${this.dashboardTitle}${p2}`);
+        html = html.replace(/(<title>)Yoke([:< ])/, (_, p1: string, p2: string) => `${p1}${this.dashboardTitle}${p2}`);
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(html);
       } catch {
@@ -271,7 +271,7 @@ export class DashboardServer {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vibrator: AI SDLC Dashboard</title>
+  <title>Yoke: AI SDLC Dashboard</title>
   <style>${css}</style>
 </head>
 <body>
@@ -1347,7 +1347,7 @@ class DashboardUI {
             <div class="lifecycle-header">
               <!-- Removed the redundant title -->
               <div id="lifecycle-content" class="lifecycle-content">
-                <div class="lifecycle-empty">Connecting to vibrator…</div>
+                <div class="lifecycle-empty">Connecting to yoke…</div>
               </div>
             </div>
           </div>
@@ -1651,7 +1651,7 @@ class DashboardUI {
     this.ws.onopen = () => {
       this.connected = true;
       this.updateConnectionStatus(true);
-      this.addEventToStream('Connected to vibrator dashboard', -1, 'success');
+      this.addEventToStream('Connected to yoke dashboard', -1, 'success');
     };
 
     this.ws.onmessage = (event) => {
@@ -1913,7 +1913,7 @@ class DashboardUI {
       statusEl.style.cssText = 'background:rgba(255,102,0,0.12);border-color:#ff6600;color:#ff6600;';
       textEl.textContent = '⏹ SHUTDOWN';
     }
-    this.addEventToStream('⏹ Vibrator shutdown complete', -1, 'warning');
+    this.addEventToStream('⏹ Yoke shutdown complete', -1, 'warning');
   }
 
   handleCylinderCancel(message) {
@@ -1935,7 +1935,7 @@ class DashboardUI {
       category: 'ci',
       label: 'WORKFLOW',
       stateBefore: 'Workflow "' + runName + '" was awaiting approval',
-      changeHow: 'Vibrator automatically approved the workflow run',
+      changeHow: 'Yoke automatically approved the workflow run',
       stateAfter: '✅ Workflow "' + runName + '" approved and queued',
       excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
       workerIndex: undefined,

@@ -77,7 +77,7 @@ export class LifecycleList extends LitElement {
         <div class="panel-body">
           <div class="lifecycle-content">
             ${sorted.length === 0
-              ? html`<div class="lifecycle-empty">Connecting to vibrator…</div>`
+              ? html`<div class="lifecycle-empty">Connecting to yoke…</div>`
               : sorted.map((pair) => {
                   const issueNum = pair.issue?.number ?? null;
                   const color = resolvePillColor(issueNum, this.cylinderByIssue);

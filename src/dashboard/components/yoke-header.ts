@@ -1,7 +1,7 @@
 import { LitElement, html } from 'lit';
 import { formatDuration } from '../shared/format.js';
 
-export class VibratorHeader extends LitElement {
+export class YokeHeader extends LitElement {
   static override properties = {
     owner: { type: String },
     repo: { type: String },
@@ -45,7 +45,7 @@ export class VibratorHeader extends LitElement {
       <div class="header">
         <div>
           <div class="header-title">
-            <a class="gh-link" href="${baseUrl}" target="_blank" rel="noopener noreferrer">⚡ ${(this.title || 'VIBRATOR').toUpperCase()}</a>
+            <a class="gh-link" href="${baseUrl}" target="_blank" rel="noopener noreferrer">⚡ ${(this.title || 'YOKE').toUpperCase()}</a>
             <span>${subtitle}</span>
           </div>
         </div>
@@ -66,4 +66,4 @@ export class VibratorHeader extends LitElement {
   }
 }
 
-customElements.define('vibrator-header', VibratorHeader);
+customElements.define('yoke-header', YokeHeader);

@@ -115,7 +115,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'engine-shutdown':    return applyEngineShutdown(state, event.data);
     case 'cylinder-cancel':    return applyCylinderCancel(state, event.data);
     case 'shutdown-requested': return addToStream({ ...state, shutdownRequested: true }, '⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
-    case 'app-shutdown':       return addToStream({ ...state, appShutdown: true }, '⏹ Vibrator shutdown complete', -1, 'warning');
+    case 'app-shutdown':       return addToStream({ ...state, appShutdown: true }, '⏹ Yoke shutdown complete', -1, 'warning');
     case 'snapshot-update':    return applySnapshotUpdate(state, event.data);
     case 'lifecycle-update':   return applyLifecycleUpdate(state, event.data);
     case 'phase-update':       return addToStream(state, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
@@ -417,7 +417,7 @@ function applyWorkflowApproval(state: DashboardState, data: Record<string, unkno
     category: 'ci',
     label: 'WORKFLOW',
     stateBefore: `Workflow "${runName}" was awaiting approval`,
-    changeHow: 'Vibrator automatically approved the workflow run',
+    changeHow: 'Yoke automatically approved the workflow run',
     stateAfter: `✅ Workflow "${runName}" approved and queued`,
     excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
     ...(runIdVal !== undefined ? { runId: runIdVal } : {}),

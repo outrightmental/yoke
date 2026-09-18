@@ -3,7 +3,7 @@ import type { OrchestratorAction } from "./types.js";
 /**
  * Shared-pool scheduling primitives.
  *
- * Vibrator runs a single global pool of `max_concurrency` engine cylinders that
+ * Yoke runs a single global pool of `max_concurrency` engine cylinders that
  * roam across every configured project. Each project additionally declares its
  * own concurrency cap — the maximum number of those shared cylinders that may
  * work that project at any one time. These pure helpers encode the claim

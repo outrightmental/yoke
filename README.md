@@ -1,20 +1,20 @@
-[![Test](https://github.com/outrightmental/vibrator/actions/workflows/test.yml/badge.svg)](https://github.com/outrightmental/vibrator/actions/workflows/test.yml)
+[![Test](https://github.com/outrightmental/yoke/actions/workflows/test.yml/badge.svg)](https://github.com/outrightmental/yoke/actions/workflows/test.yml)
 
-# Vibrator
+# Yoke
 
-**Turn a GitHub issue queue into a self-driving Claude vibe-coding factory.**
+**Yoke a team of coding agents to work through a GitHub issue queue.**
 
-`vibrator` is a TypeScript orchestrator that closes the loop on agentic software development. Write issues. Vibrator handles the rest: it picks up each issue, asks Claude to implement it in a local checkout, opens a draft pull request, self-reviews the diff, fixes anything that needs fixing — review comments, merge conflicts, failing CI — writes a polished final description, and squash-merges. Then it moves on to the next issue.
+`yoke` is a TypeScript orchestrator that closes the loop on agentic software development. Write issues. Yoke handles the rest: it picks up each issue, asks Claude to implement it in a local checkout, opens a draft pull request, self-reviews the diff, fixes anything that needs fixing — review comments, merge conflicts, failing CI — writes a polished final description, and squash-merges. Then it moves on to the next issue.
 
 It is for developers who want the creative part of software development — expressing intent and reviewing outcomes — without babysitting every agent handoff.
 
-<img width="1512" height="945" alt="Vibrator by Outright Mental" src="design/screenshot/outrightmental-vibrator-screenshot.png" />
+<img width="1512" height="945" alt="Yoke by Outright Mental" src="design/screenshot/outrightmental-yoke-screenshot.png" />
 
 ## Why this exists
 
 Modern coding agents are powerful, but they still need a conductor — someone to decide what starts next, avoid overloading the repo, notice blocked tasks, run a review pass, route fixes back for another round, preserve closing references, and merge the finished work.
 
-`vibrator` makes that conductor programmable and autonomous, with Claude as the worker behind every step.
+`yoke` makes that conductor programmable and autonomous, with Claude as the worker behind every step.
 
 Give your repository a prioritized issue backlog and run the loop. The project becomes a living assembly line:
 
@@ -24,20 +24,20 @@ issues → Claude implementation → PR → self-review → fixes → squash mer
 
 ## For the solo developer
 
-Vibrator is a force multiplier for a solo developer who wants to stay in the creative and strategic flow. You decide what matters — write the issues, set the acceptance criteria, shape the architecture. Vibrator handles the mechanical work:
+Yoke is a force multiplier for a solo developer who wants to stay in the creative and strategic flow. You decide what matters — write the issues, set the acceptance criteria, shape the architecture. Yoke handles the mechanical work:
 
 - **Picks up the next unblocked issue automatically**, so you never lose momentum between tasks.
 - **Implements, reviews, and merges in the background** while you focus on design, testing, and product direction.
-- **Resolves merge conflicts quietly** — when branches diverge, Vibrator asks Claude to rebase and fix the conflicts before continuing the review cycle, without you ever touching a rebase command.
+- **Resolves merge conflicts quietly** — when branches diverge, Yoke asks Claude to rebase and fix the conflicts before continuing the review cycle, without you ever touching a rebase command.
 - **Fixes failing CI without being asked** — it reads the check logs and pushes a fix.
 - **Keeps the PR queue clean** — only finished, merged work accumulates; no half-baked draft PRs or stale branches.
 - **Respects your control** via the `manual` label — apply it to any issue or PR you want to keep under your direct hand.
 
-The result: you stay in your highest-value role while Vibrator pulls weight in the background to maintain the project's forward momentum.
+The result: you stay in your highest-value role while Yoke pulls weight in the background to maintain the project's forward momentum.
 
 ## SDLC decision tree
 
-The diagram below shows the full lifecycle of an issue through Vibrator, covering both **Simple SDLC** (fully automated, the default) and **Project SDLC** (human-in-the-loop via a GitHub Projects board).
+The diagram below shows the full lifecycle of an issue through Yoke, covering both **Simple SDLC** (fully automated, the default) and **Project SDLC** (human-in-the-loop via a GitHub Projects board).
 
 ```mermaid
 flowchart TD
@@ -55,7 +55,7 @@ flowchart TD
     READY -->|Yes| IMPLEMENT
 
     IMPLEMENT["⚙ Claude: Implement issue\nin fresh local checkout\ncommit + push branch"]
-    IMPLEMENT --> OPEN_PR["📬 Vibrator opens draft Pull Request"]
+    IMPLEMENT --> OPEN_PR["📬 Yoke opens draft Pull Request"]
 
     OPEN_PR --> CONFLICTS{"Merge\nconflicts?"}
     CONFLICTS -->|Yes| RESOLVE["🔧 Claude: Rebase branch\nresolve conflicts + push"]
@@ -72,10 +72,10 @@ flowchart TD
     BRANCH -->|Simple SDLC| REVIEW2["🔍 Claude: Second\nself-review pass"]
     REVIEW2 --> RESULT2{"Changes\npushed?"}
     RESULT2 -->|Yes| CI
-    RESULT2 -->|"No — second\nclean pass"| MERGE["✅ Vibrator: Generate final PR body\n+ squash merge"]
+    RESULT2 -->|"No — second\nclean pass"| MERGE["✅ Yoke: Generate final PR body\n+ squash merge"]
     MERGE --> CLOSED(["🎉 Issue auto-closed by GitHub"])
 
-    BRANCH -->|Project SDLC| REQUEST["👤 Vibrator: Mark PR ready-for-review\nrequest human review\nmove issue → In Review"]
+    BRANCH -->|Project SDLC| REQUEST["👤 Yoke: Mark PR ready-for-review\nrequest human review\nmove issue → In Review"]
     REQUEST --> HUMAN{"Human\naction"}
     HUMAN -->|"Converts PR to draft\nor adds comments\nor moves issue back to Ready"| REVIEW
     HUMAN -->|"Approves and merges"| CLOSED
@@ -83,11 +83,11 @@ flowchart TD
 
 ## Simple SDLC
 
-In Simple SDLC mode — the default for any project whose `env.yaml` entry has no `github_project_number` — Vibrator runs fully autonomously from issue to merged PR:
+In Simple SDLC mode — the default for any project whose `env.yaml` entry has no `github_project_number` — Yoke runs fully autonomously from issue to merged PR:
 
 1. Any open, unblocked, non-`manual` issue is eligible to start.
 2. Issues are prioritized bugs-first, then by milestone, then by creation time.
-3. Claude implements, the PR opens as a draft, Claude self-reviews twice (CI gates apply after any code-changing pass; two consecutive clean passes trigger the merge), and Vibrator squash-merges — no human action required.
+3. Claude implements, the PR opens as a draft, Claude self-reviews twice (CI gates apply after any code-changing pass; two consecutive clean passes trigger the merge), and Yoke squash-merges — no human action required.
 4. Merge conflicts and CI failures are handled quietly in the background.
 
 This mode is ideal for personal projects, greenfield work, and any context where CI and branch protections serve as the safety net.
@@ -98,19 +98,19 @@ Enable Project SDLC per project by setting `github_project_number` in `env.yaml`
 
 1. Issues in **Ready** status are picked up, and issues already in **In Progress** are also picked up if they have no open PR linked and no active agent session already running.
 2. When work starts on a Ready issue, it moves to **In Progress**.
-3. After one clean self-review, Vibrator marks the PR ready-for-review, requests human review, and moves the issue to **In Review** — it never auto-merges.
-4. Vibrator resumes work automatically if:
+3. After one clean self-review, Yoke marks the PR ready-for-review, requests human review, and moves the issue to **In Review** — it never auto-merges.
+4. Yoke resumes work automatically if:
    - A human converts the PR back to a draft (wants more changes).
    - A new review comment arrives on the PR.
    - The issue is moved back to **Ready** on the project board.
 
 List the GitHub logins to notify when a PR is ready under the project's `reviewers` key in `env.yaml`.
 
-This mode suits teams where a human QA or architect approves each merge, while Vibrator handles the full implementation-review-fix loop.
+This mode suits teams where a human QA or architect approves each merge, while Yoke handles the full implementation-review-fix loop.
 
 ## What it does
 
-On every iteration, `vibrator`:
+On every iteration, `yoke`:
 
 1. Loads open GitHub issues, open pull requests, pending workflow approvals, and local agent-session state.
 2. Builds a dependency-aware work plan from issue age plus relationships like `blocked by #123`, `depends on #123`, and `blocks #123`.
@@ -123,7 +123,7 @@ On every iteration, `vibrator`:
 
 ## The big idea
 
-`vibrator` treats GitHub as the source of truth and Claude as the worker behind every action:
+`yoke` treats GitHub as the source of truth and Claude as the worker behind every action:
 
 - **Issues are intent.** Write clear issues and dependencies; the loop decides when they are safe to start.
 - **Pull requests are work cells.** Each PR moves through review, fix, re-review, and merge phases automatically.
@@ -156,7 +156,7 @@ cp env.example.yaml env.yaml
 # edit env.yaml: set github_tokens[0].token and projects[].github_repository
 ```
 
-`env.yaml` is the only place Vibrator reads settings from (it is git-ignored). See [Configuration](#configuration) for every key.
+`env.yaml` is the only place Yoke reads settings from (it is git-ignored). See [Configuration](#configuration) for every key.
 
 Run a safe one-shot preview:
 
@@ -170,11 +170,11 @@ Run the real loop:
 npm start
 ```
 
-Vibrator loads `env.yaml` from the current working directory and works every repository listed under `projects`; there are no positional CLI arguments.
+Yoke loads `env.yaml` from the current working directory and works every repository listed under `projects`; there are no positional CLI arguments.
 
 ## Dashboard
 
-`vibrator` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` (change the port with `dashboard_port`) when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engine cylinders, and each project's own `max_concurrency` caps how many of those cylinders may work it at once. When more than one project is configured, every cylinder, lifecycle pill, broadcast-feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears in the header only. The Dashboard shows:
+`yoke` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` (change the port with `dashboard_port`) when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engine cylinders, and each project's own `max_concurrency` caps how many of those cylinders may work it at once. When more than one project is configured, every cylinder, lifecycle pill, broadcast-feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears in the header only. The Dashboard shows:
 
 - **Issue → PR Lifecycle panel**: a row of two-halved pills, one per open issue. The left half shows the issue; the right half shows the linked pull request and transitions through states:
   - *(absent)* — no PR yet
@@ -195,7 +195,7 @@ npm start -- --no-browser
 
 The Dashboard server still starts; the URL is printed to stdout so you can open it manually.
 
-**Graceful shutdown**: Press **Escape** while the loop is running to let Vibrator finish any in-flight actions before exiting. Press **Ctrl+C** to exit immediately.
+**Graceful shutdown**: Press **Escape** while the loop is running to let Yoke finish any in-flight actions before exiting. Press **Ctrl+C** to exit immediately.
 
 ## Requirements
 
@@ -206,7 +206,7 @@ The Dashboard server still starts; the URL is printed to stdout so you can open 
 
 ## Configuration
 
-All configuration lives in `env.yaml` in the working directory; copy `env.example.yaml` to create it. No configuration is read from environment variables. Vibrator uses the GitHub PAT from `github_tokens` directly for API calls and Git clone/fetch/push operations. Claude Code authentication is still handled by the `claude` CLI: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, and `VIBRATOR_GITHUB_TOKEN` are removed from the environment of every Claude subprocess, so the agent authenticates only through your Claude Code login and the configured PAT.
+All configuration lives in `env.yaml` in the working directory; copy `env.example.yaml` to create it. No configuration is read from environment variables. Yoke uses the GitHub PAT from `github_tokens` directly for API calls and Git clone/fetch/push operations. Claude Code authentication is still handled by the `claude` CLI: `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, and `YOKE_GITHUB_TOKEN` (plus the legacy `VIBRATOR_GITHUB_TOKEN`) are removed from the environment of every Claude subprocess, so the agent authenticates only through your Claude Code login and the configured PAT.
 
 **GitHub token permissions**
 
@@ -258,7 +258,7 @@ Per-project values override the global ones for that project.
 | `claude_code_initial_effort` / `claude_code_review_effort` | global value | Per-project effort overrides. |
 | `claude_describe_model` | global value | Per-project override for the final-description model. |
 | `cycle_minimum_seconds` | global value | Per-project override of the cycle minimum. |
-| `session_store_path` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
+| `session_store_path` | `<cwd>/.yoke/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 
 **CLI flags**
 
@@ -270,7 +270,7 @@ These are the only command-line options; there are no positional arguments.
 | `--dry-run` | Print the plan without executing any Claude or GitHub actions. |
 | `--no-browser` | Start the Dashboard server but do not auto-open a browser window. |
 
-Focus mode is a per-project setting, not a flag: set `focus_mode: true` on a project in `env.yaml` and Vibrator will pick up only issues labelled `focus` in that repository, plus the PRs that advance them.
+Focus mode is a per-project setting, not a flag: set `focus_mode: true` on a project in `env.yaml` and Yoke will pick up only issues labelled `focus` in that repository, plus the PRs that advance them.
 
 ## Issue language the loop understands
 
@@ -282,23 +282,23 @@ depends on #12
 blocks #34
 ```
 
-`vibrator` will not start an issue while any referenced blocker remains open. Older eligible issues start first (bugs first, then milestone order, then creation time), up to `max_concurrency`.
+`yoke` will not start an issue while any referenced blocker remains open. Older eligible issues start first (bugs first, then milestone order, then creation time), up to `max_concurrency`.
 
 ### The `manual` label
 
 Apply the `manual` label to any issue or PR to remove it from automated work:
 
-- **Issues** labeled `manual` are never picked up by Vibrator.
+- **Issues** labeled `manual` are never picked up by Yoke.
 - **PRs** labeled `manual` receive no automated actions (no self-review, no conflict resolution, no auto-merge) and do not count against `max_concurrency`.
 
-Vibrator creates the `manual` label in the repository on startup if it does not already exist.
+Yoke creates the `manual` label in the repository on startup if it does not already exist.
 
 ### The `review` label
 
 Apply the `review` label to an issue to opt it into the
 **implement-then-wait-for-review** workflow
 ([outrightmental.com#409](https://github.com/outrightmental/outrightmental.com/issues/409)):
-Vibrator implements the issue, self-reviews, and fixes failing checks exactly
+Yoke implements the issue, self-reviews, and fixes failing checks exactly
 as usual — but after the clean self-review it marks the PR ready and **stops**.
 The final PR is never squash-merged; it waits for a human. This is the flag
 that automated intake (e.g. Mailbot's note-to-issue pipeline) applies so a
@@ -308,10 +308,10 @@ unattended.
 - Works in every mode; in Project SDLC it is redundant (that mode already never auto-merges).
 - The label is copied onto the PR when it is opened, so the no-merge gate survives even if the issue is closed or relabelled mid-flight.
 - A parked PR does not count against `max_concurrency`.
-- Converting the PR back to draft, or commenting on it, re-queues it: Vibrator addresses the feedback, self-reviews, and requests review again.
+- Converting the PR back to draft, or commenting on it, re-queues it: Yoke addresses the feedback, self-reviews, and requests review again.
 - Removing the label from both the issue and the PR returns the PR to the normal auto-merge flow.
 
-Vibrator creates the `review` label in the repository on startup if it does not already exist.
+Yoke creates the `review` label in the repository on startup if it does not already exist.
 
 ### Milestone ordering
 

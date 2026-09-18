@@ -14,7 +14,7 @@ body {
   height: 100vh;
 }
 
-vibrator-app {
+yoke-app {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -23,7 +23,7 @@ vibrator-app {
   overflow: hidden;
 }
 
-vibrator-app::before {
+yoke-app::before {
   content: '';
   position: fixed;
   top: 0;
@@ -47,7 +47,7 @@ vibrator-app::before {
   100% { transform: translateY(10px); }
 }
 
-vibrator-header { display: contents; }
+yoke-header { display: contents; }
 cylinder-engine { display: contents; }
 lifecycle-list  { display: contents; }
 broadcast-feed  { display: contents; }

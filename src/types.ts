@@ -41,7 +41,7 @@ export interface Issue {
    * could not be completed (a transient API failure such as a rate-limit
    * 403, a 5xx, or a network error — distinct from a 404/410 that means the
    * feature is simply unavailable on the repository). When set, the issue's
-   * blocker status is UNKNOWN: vibrator must NOT start it, because doing so
+   * blocker status is UNKNOWN: yoke must NOT start it, because doing so
    * could begin work on an issue whose dependencies are still open. The flag
    * clears on the next cycle once the lookup succeeds. Failing closed here is
    * deliberate — silently treating a failed lookup as "no blockers" is what
@@ -76,7 +76,7 @@ export interface PullRequest {
   draft: boolean;
   hasMergeConflicts: boolean;
   /**
-   * True when the most recent vibrator-posted review on the PR was
+   * True when the most recent yoke-posted review on the PR was
    * submitted against the current `headSha` and contained no inline
    * comments (i.e. the reviewer was satisfied). When true, the PR is
    * ready to advance to the final-description / merge phase.
@@ -106,7 +106,7 @@ export interface PullRequest {
   linkedIssueNumbers: number[];
   /**
    * True when there are human PR comments newer than the last comment
-   * vibrator processed. Only set (true) in project mode when the latest
+   * yoke processed. Only set (true) in project mode when the latest
    * completed session for this PR is `request-review`.
    */
   hasNewCommentsSinceLastRead?: boolean;

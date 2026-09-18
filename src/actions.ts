@@ -122,11 +122,11 @@ export interface ActionSessionStore {
     status?: AgentSessionStatus;
     result?: AgentSessionResult;
   }): Promise<unknown>;
-  /** Record the ISO timestamp of the most recent PR comment vibrator has read. */
+  /** Record the ISO timestamp of the most recent PR comment yoke has read. */
   setLastReadCommentAt?(pullRequestNumber: number, createdAt: string): Promise<void>;
-  /** Returns the ids of comments vibrator has already posted on a PR. */
+  /** Returns the ids of comments yoke has already posted on a PR. */
   getPostedCommentIds?(pullRequestNumber: number): Promise<number[]>;
-  /** Persist the id of a comment vibrator just posted on a PR. */
+  /** Persist the id of a comment yoke just posted on a PR. */
   recordPostedCommentId?(pullRequestNumber: number, commentId: number): Promise<void>;
 }
 
@@ -166,7 +166,7 @@ function findPullRequest(
 }
 
 /**
- * Fetches the human comments on a PR, excluding any comment vibrator has
+ * Fetches the human comments on a PR, excluding any comment yoke has
  * itself posted (tracked by persisted comment id) and any comment already
  * marked read with a 👀 reaction — so a comment is addressed exactly once,
  * not re-read on every cycle.
@@ -183,7 +183,7 @@ async function fetchHumanComments(
 }
 
 /**
- * Posts a comment on a PR and persists its id so vibrator never re-reads its
+ * Posts a comment on a PR and persists its id so yoke never re-reads its
  * own comment.
  */
 async function postAndRecordComment(
@@ -196,7 +196,7 @@ async function postAndRecordComment(
   await sessionStore.recordPostedCommentId?.(pullRequestNumber, commentId);
 }
 
-/** Adds the 👀 reaction to each comment, marking it as read by vibrator. */
+/** Adds the 👀 reaction to each comment, marking it as read by yoke. */
 async function markCommentsAsRead(
   gitHubClient: ActionGitHubClient,
   comments: ReadonlyArray<{ id: number; kind?: string }>,
@@ -277,7 +277,7 @@ export async function executeAction(
             );
           } catch (revertError) {
             console.warn(
-              `[vibrator] Failed to revert issue #${issue.number} to "Ready" after implementation error: ${String(revertError)}`,
+              `[yoke] Failed to revert issue #${issue.number} to "Ready" after implementation error: ${String(revertError)}`,
             );
           }
         }
@@ -303,7 +303,7 @@ export async function executeAction(
           await gitHubClient.addLabelsToPullRequest(created.number, [REVIEW_LABEL]);
         } catch (error) {
           console.warn(
-            `[vibrator] Failed to copy the "${REVIEW_LABEL}" label onto PR #${created.number}: ${String(error)}`,
+            `[yoke] Failed to copy the "${REVIEW_LABEL}" label onto PR #${created.number}: ${String(error)}`,
           );
         }
       }
@@ -426,7 +426,7 @@ export async function executeAction(
             : "unknown duration";
         const thresholdMin = Math.round(CHECKS_TIMEOUT_MS / 60_000);
         console.log(
-          `[vibrator] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} ` +
+          `[yoke] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} ` +
           `because CI checks have been pending for ${pendingDesc}, exceeding the ${thresholdMin}-minute timeout threshold.`,
         );
       }
@@ -451,7 +451,7 @@ export async function executeAction(
       const checksNoCommits = update.headSha === pullRequest.headSha;
       if (checksNoCommits) {
         console.warn(
-          `[vibrator] WARNING: address-failing-checks on PR #${pullRequest.number} ` +
+          `[yoke] WARNING: address-failing-checks on PR #${pullRequest.number} ` +
           `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
           `Claude ran but pushed no new commits. ` +
           `Failing checks that were sent to Claude: ${failingChecks.map((c) => c.name).join(", ") || "(none)"}`,
@@ -491,7 +491,7 @@ export async function executeAction(
       const conflictsNoCommits = update.headSha === pullRequest.headSha;
       if (conflictsNoCommits) {
         console.warn(
-          `[vibrator] WARNING: resolve-conflicts on PR #${pullRequest.number} ` +
+          `[yoke] WARNING: resolve-conflicts on PR #${pullRequest.number} ` +
           `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
           `Claude ran but pushed no new commits.`,
         );

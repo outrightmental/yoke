@@ -29,7 +29,7 @@ interface Harness {
   calls: string[];
   sessions: SessionInput[];
   capturedUserComments: Array<Array<{ author: string; body: string; createdAt: string }>>;
-  /** Comment ids vibrator persisted via recordPostedCommentId, keyed by PR. */
+  /** Comment ids yoke persisted via recordPostedCommentId, keyed by PR. */
   postedCommentIds: Map<number, number[]>;
   gitHubClient: ActionGitHubClient;
   sessionStore: ActionSessionStore;
@@ -173,7 +173,7 @@ function createHarness(input: {
       calls.push(`implement:${params.issueNumber}:${params.baseBranch}`);
       return (
         input.implementation ?? {
-          branch: `vibrator/issue-${params.issueNumber}`,
+          branch: `yoke/issue-${params.issueNumber}`,
           pullRequestTitle: `Resolve issue #${params.issueNumber}`,
           pullRequestBody: `Closes #${params.issueNumber}`,
           headSha: "sha-impl",
@@ -245,7 +245,7 @@ test("executeAction implements an issue, opens a PR, and records the session", a
   const harness = createHarness({
     issues: [createIssue({ number: 7, title: "Add widget", body: "Make it." })],
     implementation: {
-      branch: "vibrator/issue-7-add-widget",
+      branch: "yoke/issue-7-add-widget",
       pullRequestTitle: "Add widget",
       pullRequestBody: "Added widget.\n\nCloses #7",
       headSha: "sha-impl-7",
@@ -258,7 +258,7 @@ test("executeAction implements an issue, opens a PR, and records the session", a
   assert.deepEqual(harness.calls, [
     "get-default-branch",
     "implement:7:main",
-    "create-pr:vibrator/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
+    "create-pr:yoke/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
   ]);
   assert.deepEqual(harness.sessions, [
     {
@@ -281,12 +281,12 @@ test("executeAction backfills the closing reference when reusing an existing PR"
       createPullRequest({
         number: 100,
         linkedIssueNumbers: [7],
-        headRefName: "vibrator/issue-7-add-widget",
+        headRefName: "yoke/issue-7-add-widget",
         body: "Added widget.",
       }),
     ],
     implementation: {
-      branch: "vibrator/issue-7-add-widget",
+      branch: "yoke/issue-7-add-widget",
       pullRequestTitle: "Add widget",
       pullRequestBody: "Added widget.",
       headSha: "sha-impl-7",
@@ -299,7 +299,7 @@ test("executeAction backfills the closing reference when reusing an existing PR"
   assert.deepEqual(harness.calls, [
     "get-default-branch",
     "implement:7:main",
-    "create-pr:vibrator/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
+    "create-pr:yoke/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
     "update-body:100:Added widget.\n\nCloses #7",
   ]);
   assert.deepEqual(harness.sessions, []);
@@ -694,21 +694,21 @@ test("executeAction marks read comments with 👀 and records its own posted com
 
   assert.ok(harness.calls.includes("react-eyes:101"), "reacts to the first comment");
   assert.ok(harness.calls.includes("react-eyes:102"), "reacts to the second comment");
-  // The summary comment vibrator posted was recorded so it is never re-read.
+  // The summary comment yoke posted was recorded so it is never re-read.
   assert.equal(harness.postedCommentIds.get(30)?.length, 1);
 });
 
-test("executeAction never re-reads or reacts to a comment vibrator previously posted", async () => {
+test("executeAction never re-reads or reacts to a comment yoke previously posted", async () => {
   const pullRequest = createPullRequest({ number: 31, linkedIssueNumbers: [5] });
   const harness = createHarness({
     pullRequests: [pullRequest],
     issues: [createIssue({ number: 5 })],
     pullRequestComments: [
-      { id: 999, author: "vibrator", body: "Reviewed code.", createdAt: "2024-02-01T10:00:00.000Z" },
+      { id: 999, author: "yoke", body: "Reviewed code.", createdAt: "2024-02-01T10:00:00.000Z" },
       { id: 200, author: "alice", body: "Real feedback", createdAt: "2024-02-02T10:00:00.000Z" },
     ],
   });
-  // Vibrator already posted comment id 999 on this PR.
+  // Yoke already posted comment id 999 on this PR.
   harness.postedCommentIds.set(31, [999]);
 
   await run(harness, {

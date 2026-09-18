@@ -12,7 +12,7 @@ export const CHECKS_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Configuration for Human-in-the-Loop project mode.
- * When provided to `buildPlan`, vibrator filters issues by project status,
+ * When provided to `buildPlan`, yoke filters issues by project status,
  * skips issues labelled "manual", never auto-merges, and instead requests
  * human review after self-review passes.
  */
@@ -48,7 +48,7 @@ export const FOCUS_LABEL = "focus";
 
 /**
  * The label that opts an issue into the implement-then-wait-for-review
- * workflow: vibrator implements it, self-reviews, and fixes CI exactly as
+ * workflow: yoke implements it, self-reviews, and fixes CI exactly as
  * usual, but after the clean self-review it requests human review instead
  * of squash-merging — the final PR is always left for a human
  * (outrightmental.com#409). Works in every mode; in project mode it is
@@ -449,7 +449,7 @@ export function buildPlan(
   const openIssueNumbers = new Set(issues.map((issue) => issue.number));
   // In focus mode, the only issues in scope are open issues carrying the
   // "focus" label. A pull request is in scope only when it advances one of
-  // these issues; otherwise vibrator would keep reviewing/merging PRs for
+  // these issues; otherwise yoke would keep reviewing/merging PRs for
   // non-focus issues, defeating focus mode (the bug where focus mode still
   // worked on every issue that already had a PR).
   const focusIssueNumbers = new Set(
@@ -496,7 +496,7 @@ export function buildPlan(
   // where three PRs ready-for-review froze all three cylinders.
   let livePullRequestCount = 0;
   for (const pullRequest of pullRequests) {
-    // PRs labelled "manual" are parked: vibrator plans no action for them and
+    // PRs labelled "manual" are parked: yoke plans no action for them and
     // does not count them against concurrency. Their linked issues are still
     // marked unavailable below, so the issue is not re-implemented.
     if (isManualPullRequest(pullRequest)) {
