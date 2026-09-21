@@ -240,6 +240,21 @@ export class DashboardServer {
   }
 
   private broadcastEvent(event: DashboardEvent): void {
+    try {
+      this.broadcastEventUnsafe(event);
+    } catch (error) {
+      // This runs on the emitter's synchronous path, i.e. inside an engine's
+      // call stack. A serialization failure or a socket that dies mid-send must
+      // never propagate back into the work that produced the event.
+      process.stderr.write(
+        `[Dashboard] dropping "${event.type}" broadcast: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
+  }
+
+  private broadcastEventUnsafe(event: DashboardEvent): void {
     this.updateStateCache(event);
     const message = JSON.stringify(event);
     // High-frequency, ephemeral events (log lines) are skipped for any client
@@ -254,7 +269,11 @@ export class DashboardServer {
       if (droppableUnderBackpressure && client.bufferedAmount > MAX_CLIENT_BUFFER_BYTES) {
         continue;
       }
-      client.send(message);
+      try {
+        client.send(message);
+      } catch {
+        // One dead client must not stop the others from being served.
+      }
     }
   }
 

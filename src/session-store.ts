@@ -113,6 +113,27 @@ export class FileSessionStore {
     }
   }
 
+  /**
+   * Serializes read-modify-write sequences against this store.
+   *
+   * One FileSessionStore instance is shared by every engine working a project,
+   * and each mutator loads the whole state, edits it and writes it back. The
+   * individual write is atomic (temp file + rename), but two interleaved
+   * sequences still lose one of the two updates — with six cylinders that is a
+   * routine occurrence, not a rare race.
+   */
+  private mutationChain: Promise<unknown> = Promise.resolve();
+
+  private serialize<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.mutationChain.then(work, work);
+    // Keep the chain alive regardless of how this link settled.
+    this.mutationChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   private async writeState(state: SessionState): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempFilePath = `${this.filePath}.${randomUUID()}.tmp`;
@@ -134,6 +155,14 @@ export class FileSessionStore {
   }
 
   async save(sessions: AgentSession[]): Promise<void> {
+    await this.serialize(async () => {
+      const state = await this.loadState();
+      await this.writeState({ ...state, sessions });
+    });
+  }
+
+  /** save() without taking the lock, for callers already holding it. */
+  private async saveLocked(sessions: AgentSession[]): Promise<void> {
     const state = await this.loadState();
     await this.writeState({ ...state, sessions });
   }
@@ -145,49 +174,59 @@ export class FileSessionStore {
     status?: AgentSessionStatus;
     result?: AgentSessionResult;
   }): Promise<AgentSession> {
-    const sessions = await this.load();
-    const createdAt = nowIsoString();
-    const session: AgentSession = {
-      id: randomUUID(),
-      issueNumber: input.issueNumber,
-      phase: input.phase,
-      status: input.status ?? "in_progress",
-      createdAt,
-      updatedAt: createdAt,
-    };
-    if (input.pullRequestNumber !== undefined) {
-      session.pullRequestNumber = input.pullRequestNumber;
-    }
-    if (input.result !== undefined) {
-      session.result = input.result;
-    }
-    if (session.status === "completed" || session.status === "failed") {
-      session.completedAt = createdAt;
-    }
-    sessions.push(session);
-    await this.save(sessions);
-    return session;
+    return this.serialize(async () => {
+      const sessions = await this.load();
+      const createdAt = nowIsoString();
+      const session: AgentSession = {
+        id: randomUUID(),
+        issueNumber: input.issueNumber,
+        phase: input.phase,
+        status: input.status ?? "in_progress",
+        createdAt,
+        updatedAt: createdAt,
+      };
+      if (input.pullRequestNumber !== undefined) {
+        session.pullRequestNumber = input.pullRequestNumber;
+      }
+      if (input.result !== undefined) {
+        session.result = input.result;
+      }
+      if (session.status === "completed" || session.status === "failed") {
+        session.completedAt = createdAt;
+      }
+      sessions.push(session);
+      await this.saveLocked(sessions);
+      return session;
+    });
   }
 
   async completeSession(
     sessionId: string,
     result?: AgentSessionResult,
+    pullRequestNumber?: number,
   ): Promise<AgentSession | undefined> {
-    const sessions = await this.load();
-    const session = sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) {
-      return undefined;
-    }
+    return this.serialize(async () => {
+      const sessions = await this.load();
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) {
+        return undefined;
+      }
 
-    const completedAt = nowIsoString();
-    session.status = "completed";
-    session.updatedAt = completedAt;
-    session.completedAt = completedAt;
-    if (result !== undefined) {
-      session.result = result;
-    }
-    await this.save(sessions);
-    return session;
+      const completedAt = nowIsoString();
+      session.status = "completed";
+      session.updatedAt = completedAt;
+      session.completedAt = completedAt;
+      if (result !== undefined) {
+        session.result = result;
+      }
+      // The pull request only exists once the run has succeeded, so a session
+      // opened before the run learns its number here.
+      if (pullRequestNumber !== undefined) {
+        session.pullRequestNumber = pullRequestNumber;
+      }
+      await this.saveLocked(sessions);
+      return session;
+    });
   }
 
   async getLastReadCommentAt(pullRequestNumber: number): Promise<string | undefined> {
@@ -196,13 +235,15 @@ export class FileSessionStore {
   }
 
   async setLastReadCommentAt(pullRequestNumber: number, createdAt: string): Promise<void> {
-    const state = await this.loadState();
-    await this.writeState({
-      ...state,
-      lastReadPrComments: {
-        ...(state.lastReadPrComments ?? {}),
-        [pullRequestNumber]: createdAt,
-      },
+    await this.serialize(async () => {
+      const state = await this.loadState();
+      await this.writeState({
+        ...state,
+        lastReadPrComments: {
+          ...(state.lastReadPrComments ?? {}),
+          [pullRequestNumber]: createdAt,
+        },
+      });
     });
   }
 
@@ -214,32 +255,36 @@ export class FileSessionStore {
 
   /** Records a comment id yoke has posted on the given PR. */
   async recordPostedCommentId(pullRequestNumber: number, commentId: number): Promise<void> {
-    const state = await this.loadState();
-    const existing = state.postedCommentIds?.[pullRequestNumber] ?? [];
-    if (existing.includes(commentId)) {
-      return;
-    }
-    await this.writeState({
-      ...state,
-      postedCommentIds: {
-        ...(state.postedCommentIds ?? {}),
-        [pullRequestNumber]: [...existing, commentId],
-      },
+    await this.serialize(async () => {
+      const state = await this.loadState();
+      const existing = state.postedCommentIds?.[pullRequestNumber] ?? [];
+      if (existing.includes(commentId)) {
+        return;
+      }
+      await this.writeState({
+        ...state,
+        postedCommentIds: {
+          ...(state.postedCommentIds ?? {}),
+          [pullRequestNumber]: [...existing, commentId],
+        },
+      });
     });
   }
 
   async failSession(sessionId: string): Promise<AgentSession | undefined> {
-    const sessions = await this.load();
-    const session = sessions.find((candidate) => candidate.id === sessionId);
-    if (!session) {
-      return undefined;
-    }
+    return this.serialize(async () => {
+      const sessions = await this.load();
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) {
+        return undefined;
+      }
 
-    const failedAt = nowIsoString();
-    session.status = "failed";
-    session.updatedAt = failedAt;
-    session.completedAt = failedAt;
-    await this.save(sessions);
-    return session;
+      const failedAt = nowIsoString();
+      session.status = "failed";
+      session.updatedAt = failedAt;
+      session.completedAt = failedAt;
+      await this.saveLocked(sessions);
+      return session;
+    });
   }
 }

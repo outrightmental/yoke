@@ -154,10 +154,37 @@ function createHarness(input: {
     },
   };
 
+  // Ids are tracked alongside the recorded sessions rather than on them, so
+  // assertions still see exactly the session shape the store was asked for.
+  let nextSessionId = 0;
+  const sessionIds = new Map<string, SessionInput>();
   const sessionStore: ActionSessionStore = {
     async createSession(session: SessionInput): Promise<unknown> {
+      const id = `session-${(nextSessionId += 1)}`;
       sessions.push(session);
-      return session;
+      sessionIds.set(id, session);
+      return { id };
+    },
+    // Mirrors FileSessionStore: an implementation session is opened
+    // `in_progress` before the run and resolved afterwards, so an interrupted
+    // run still leaves a record behind.
+    async completeSession(
+      sessionId: string,
+      result?: AgentSessionResult,
+      pullRequestNumber?: number,
+    ): Promise<unknown> {
+      const stored = sessionIds.get(sessionId);
+      if (!stored) return undefined;
+      stored.status = "completed";
+      if (result !== undefined) stored.result = result;
+      if (pullRequestNumber !== undefined) stored.pullRequestNumber = pullRequestNumber;
+      return stored;
+    },
+    async failSession(sessionId: string): Promise<unknown> {
+      const stored = sessionIds.get(sessionId);
+      if (!stored) return undefined;
+      stored.status = "failed";
+      return stored;
     },
     async getPostedCommentIds(pullRequestNumber: number): Promise<number[]> {
       return postedCommentIds.get(pullRequestNumber) ?? [];
@@ -302,7 +329,21 @@ test("executeAction backfills the closing reference when reusing an existing PR"
     "create-pr:yoke/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
     "update-body:100:Added widget.\n\nCloses #7",
   ]);
-  assert.deepEqual(harness.sessions, []);
+  // The implementation session is opened before the run and must be resolved
+  // even when the PR already existed — otherwise it would sit `in_progress`
+  // forever and permanently occupy a slot in the concurrency accounting.
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 7,
+      phase: "implementation",
+      status: "completed",
+      pullRequestNumber: 100,
+      result: {
+        pullRequestHeadSha: "sha-impl-7",
+        pullRequestBody: "Added widget.\n\nCloses #7",
+      },
+    },
+  ]);
 });
 
 test("executeAction runs a self-review and records whether changes were made", async () => {
