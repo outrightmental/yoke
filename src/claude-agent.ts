@@ -28,6 +28,46 @@ class StatusBoard {
     return process.stderr.isTTY === true;
   }
 
+  /**
+   * True only when the board (stderr) and the log stream (stdout) are the same
+   * terminal. The board's cursor arithmetic assumes it owns the bottom `count`
+   * rows; that assumption only holds — and only needs repairing — when another
+   * writer shares those rows. Under `yoke > log.txt` stdout is a file, so the
+   * board owns the terminal outright and must not try to erase anything.
+   */
+  private get sharedTty(): boolean {
+    return process.stderr.isTTY === true && process.stdout.isTTY === true;
+  }
+
+  /**
+   * Print a log line without the board eating it.
+   *
+   * `redraw()` walks the cursor up `slots.size` rows and clears them, but it
+   * tracks no absolute position and cannot see that someone else printed in the
+   * meantime. A bare `console.log` therefore lands inside the board's rows and
+   * is erased within 500 ms — which is how every explanation of a failed Claude
+   * run was destroyed before it could be read. Routing log output through here
+   * tears the board down, prints above it, and re-reserves its rows, so the
+   * next redraw's arithmetic still lands on the board's own lines.
+   */
+  log(line: string): void {
+    const count = this.slots.size;
+    if (!this.sharedTty || count === 0) {
+      process.stdout.write(`${line}\n`);
+      return;
+    }
+    // Erase the board in place and park the cursor back at its top row.
+    let teardown = `\x1b[${count}A`;
+    for (let i = 0; i < count; i += 1) teardown += "\r\x1b[2K\n";
+    teardown += `\x1b[${count}A`;
+    process.stderr.write(teardown);
+    process.stdout.write(`${line}\n`);
+    // Re-reserve one row per live slot, redrawn in place below the new line.
+    for (const slot of this.slots.values()) {
+      process.stderr.write(`\r\x1b[2K${this.renderSlot(slot)}\n`);
+    }
+  }
+
   allocate(label: string): number {
     const id = this.nextId++;
     this.slots.set(id, { label, startTime: Date.now() });
@@ -107,6 +147,34 @@ class StatusBoard {
 
 const statusBoard = new StatusBoard();
 
+/** Optional mirror for every log line, e.g. a persistent log file. */
+type LogSink = (line: string) => void;
+let logSink: LogSink | undefined;
+
+/** Install (or clear) a mirror that receives every line passed to writeLogLine. */
+export function setLogSink(sink: LogSink | undefined): void {
+  logSink = sink;
+}
+
+/**
+ * Write one line of yoke's own log output. Always use this instead of
+ * `console.log` while Claude runs may be in flight: it cooperates with the
+ * multi-run status board so the line survives the board's next redraw.
+ */
+export function writeLogLine(line: string): void {
+  statusBoard.log(line);
+  try {
+    logSink?.(line);
+  } catch {
+    // A broken log file must never be the thing that stops yoke.
+  }
+}
+
+/** Number of child processes (Claude runs and git commands) currently alive. */
+export function countLiveClaudeRuns(): number {
+  return liveChildren.size;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -152,6 +220,14 @@ export interface ImplementIssueResult {
   pullRequestBody: string;
   /** SHA of the latest pushed commit on `branch`. */
   headSha: string;
+  /**
+   * True when the Claude run did not finish (timeout, kill, crash) but had
+   * already committed usable work, which was pushed anyway. The pull request is
+   * a salvage of a partial implementation and needs a human to finish it.
+   */
+  incomplete?: boolean;
+  /** Why the run did not finish. Present whenever `incomplete` is true. */
+  failureReason?: string;
 }
 
 export interface UserComment {
@@ -293,7 +369,7 @@ interface ClaudeAgentClientOptions {
   claudeReviewEffort?: string;
   /** Model used specifically for commit message generation. Defaults to claude-haiku-4-5-20251001. */
   claudeCommitModel?: string;
-  /** Maximum milliseconds the Claude CLI is allowed to run before being killed. Defaults to 30 minutes. */
+  /** Maximum milliseconds the Claude CLI is allowed to run before being killed. Defaults to 3 hours; set `claude_timeout_seconds` in env.yaml to change it. */
   claudeTimeoutMs?: number;
 }
 
@@ -641,14 +717,45 @@ function ensureChildCleanupHandlers(): void {
   };
 
   process.on("exit", reapAll);
+  const signalNumbers: Record<string, number> = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => {
+      // Say what is happening and how much work is being discarded. Exiting 0
+      // on SIGTERM/SIGHUP made an external kill indistinguishable from a
+      // successful run — both to whoever was watching and to `npm`, which
+      // reported `info ok` over a run that had just lost six in-flight agents.
+      const live = liveChildren.size;
+      process.stderr.write(
+        `\n[yoke] received ${signal} — killing ${live} in-flight Claude run(s) and exiting.\n`,
+      );
       reapAll();
-      // Re-raise the default disposition by exiting; 128 + signal number is the
-      // conventional code (SIGINT = 2 → 130).
-      process.exit(signal === "SIGINT" ? 130 : 0);
+      // Conventional code for a signal death: 128 + signal number.
+      process.exit(128 + (signalNumbers[signal] ?? 0));
     });
   }
+}
+
+/** Longest argv element reproduced verbatim in an error message. */
+const MAX_LOGGED_ARG_CHARS = 120;
+
+/** Render one argv element for a human, eliding a prompt-sized one. */
+function summarizeArg(arg: string): string {
+  if (arg.length <= MAX_LOGGED_ARG_CHARS) return arg;
+  return `<${arg.length} chars: ${arg.slice(0, 60).replace(/\s+/g, " ")}…>`;
+}
+
+/** Error carrying the full argv of the command that produced it. */
+export interface CommandError extends Error {
+  command?: string;
+  args?: readonly string[];
+}
+
+/** Attach full argv to an error whose message only shows the elided form. */
+function withCommandArgs(error: Error, command: string, args: readonly string[]): CommandError {
+  const enriched = error as CommandError;
+  enriched.command = command;
+  enriched.args = args;
+  return enriched;
 }
 
 export function runCommand(
@@ -719,6 +826,15 @@ export function runCommand(
         stderrBytes -= stderrChunks.shift()!.length;
       }
     };
+    // Every pipe needs an `error` listener, on both the capture and the
+    // passthrough paths. A stream that emits `error` with no listener throws it
+    // as an uncaughtException, and since captureStdout/captureStderr are both
+    // true for every Claude run, the capture path previously left all three
+    // pipes unguarded — one EIO/ECONNRESET would have taken the process down.
+    child.stdout?.on("error", () => {});
+    child.stderr?.on("error", () => {});
+    child.stdin?.on("error", () => {});
+
     if (options.captureStdout) {
       child.stdout?.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
@@ -795,19 +911,40 @@ export function runCommand(
 
       const outputSummary = summarizeOutput(stderrText) || summarizeOutput(stdoutText);
 
+      // Put the verdict first and elide oversized argv elements. The prompt is
+      // passed as an argv element, so a verbatim `args.join(" ")` buried the
+      // one sentence that explains the failure at the end of a multi-KB string
+      // — past the point where terminals, log truncation and the status board
+      // all cut it off. Full argv stays available on `error.args`.
+      const commandSummary = [command, ...args.map(summarizeArg)].join(" ");
+
       if (timedOut) {
         reject(
-          new Error(
-            `Command \`${command} ${args.join(" ")}\` timed out after ${options.timeoutMs! / 1000}s and was killed.`,
+          withCommandArgs(
+            new Error(
+              `Claude command timed out after ${options.timeoutMs! / 1000}s and was killed.` +
+                `\ncommand: ${commandSummary}` +
+                // The child's dying output was already captured above; the
+                // timeout branch used to discard it, which is precisely the
+                // branch where it is the only evidence of what went wrong.
+                (outputSummary ? `\nlast output:\n${outputSummary}` : ""),
+            ),
+            command,
+            args,
           ),
         );
         return;
       }
       if (code !== 0) {
         reject(
-          new Error(
-            `Command \`${command} ${args.join(" ")}\` exited with non-zero status ${code ?? "unknown"}.` +
-              (outputSummary ? `\n${outputSummary}` : ""),
+          withCommandArgs(
+            new Error(
+              `Command exited with non-zero status ${code ?? "unknown"}.` +
+                `\ncommand: ${commandSummary}` +
+                (outputSummary ? `\nlast output:\n${outputSummary}` : ""),
+            ),
+            command,
+            args,
           ),
         );
         return;
@@ -966,7 +1103,46 @@ export function formatUserCommentsSection(userComments: ReadonlyArray<UserCommen
   ];
 }
 
-function buildImplementationPrompt(params: ImplementIssueParams, branch: string): string {
+/**
+ * PR body for a salvaged, unfinished implementation. It has to be obvious at a
+ * glance that this is partial work: it opens as a draft, says what stopped it,
+ * and deliberately omits any `Closes #N` line so merging it cannot silently
+ * close an issue that is not actually done.
+ */
+function buildIncompletePullRequestBody(
+  params: ImplementIssueParams,
+  commitCount: string,
+  failureReason: string,
+  claudeBody?: string,
+): string {
+  const reason = failureReason.split("\n").slice(0, 6).join("\n");
+  return [
+    `> **Incomplete — this implementation did not finish.**`,
+    `>`,
+    `> The agent working issue #${params.issueNumber} was interrupted after ${commitCount} commit(s).`,
+    `> What is here has been pushed so it is not lost, but it is unreviewed and probably partial.`,
+    `> Pick it up, finish it, and mark the PR ready for review.`,
+    "",
+    `Refs #${params.issueNumber}`,
+    "",
+    "<details><summary>Why the run stopped</summary>",
+    "",
+    "```",
+    reason,
+    "```",
+    "",
+    "</details>",
+    ...(claudeBody
+      ? ["", "---", "", "Partial notes from the agent before it was interrupted:", "", claudeBody]
+      : []),
+  ].join("\n");
+}
+
+function buildImplementationPrompt(
+  params: ImplementIssueParams,
+  branch: string,
+  resumedCommits = 0,
+): string {
   return [
     `You are implementing GitHub issue #${params.issueNumber} in the repository ${params.owner}/${params.repo}.`,
     "",
@@ -979,6 +1155,15 @@ function buildImplementationPrompt(params: ImplementIssueParams, branch: string)
     "",
     "Working directory: the current directory is a checkout of the repository, with",
     `branch \`${branch}\` already checked out (it is based on \`${params.baseBranch}\`).`,
+    ...(resumedCommits > 0
+      ? [
+          "",
+          `NOTE: a previous attempt at this issue was interrupted before it finished, and left ${resumedCommits} commit(s) on this branch.`,
+          "That work is yours to continue, not a conflict to resolve. Read the existing commits with `git log` and",
+          "`git diff " + `origin/${params.baseBranch}...HEAD` + "` before you start, build on what is already correct,",
+          "and revise or revert anything you disagree with. Do not start over from scratch unless the existing work is unusable.",
+        ]
+      : []),
     "",
     "Instructions:",
     `1. Implement the change required by issue #${params.issueNumber}. Read the existing code, make the necessary edits, and add or update tests when relevant.`,
@@ -1160,7 +1345,18 @@ function slugifyIssueTitle(title: string): string {
     .slice(0, 40);
 }
 
-const DEFAULT_CLAUDE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+/**
+ * Default ceiling on a single Claude CLI run.
+ *
+ * This was 60 minutes, which silently destroyed most of a real run: six of
+ * eight implementation attempts on a large repository were SIGTERMed at exactly
+ * 59m59s, having produced 355k-528k output tokens apiece, and every one of them
+ * was discarded. Generation is server-side and runs at a roughly fixed rate, so
+ * the ceiling has to be sized to the scope of an issue, not to a machine. Three
+ * hours clears observed worst-case implementation runs with headroom; override
+ * per project with `claude_timeout_seconds` in env.yaml.
+ */
+const DEFAULT_CLAUDE_TIMEOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
 const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 
 let claudeQuotaBlockedUntilMs: number | undefined;
@@ -1454,9 +1650,31 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     });
 
     const branchAlreadyExistsRemotely = await this.remoteBranchExists(repoDir, branch);
+
+    // A previous attempt that was killed before it could push leaves its work
+    // as commits on the local branch. Resuming from them is the difference
+    // between continuing that work and destroying it: `checkout -B <branch>
+    // origin/<base>` after a timeout silently discarded 25 commits across five
+    // issues in a single observed run, and the retry then started over from the
+    // original prompt with no idea an attempt had ever been made.
+    const salvageableCommits = branchAlreadyExistsRemotely
+      ? 0
+      : await this.countCommitsAhead(repoDir, `origin/${params.baseBranch}`, branch);
     const branchStartPoint = branchAlreadyExistsRemotely
       ? `origin/${branch}`
-      : `origin/${params.baseBranch}`;
+      : salvageableCommits > 0
+        ? branch
+        : `origin/${params.baseBranch}`;
+
+    if (salvageableCommits > 0) {
+      writeLogLine(
+        `[yoke] Issue #${params.issueNumber}: resuming ${salvageableCommits} commit(s) left by an interrupted attempt on ${branch}.`,
+      );
+    } else if (branchAlreadyExistsRemotely) {
+      // Resetting onto the remote branch can still drop unpushed local commits,
+      // so park them on a recovery ref first rather than relying on the reflog.
+      await this.preserveUnpushedCommits(repoDir, branch, `origin/${branch}`);
+    }
 
     // Create or reset the feature branch from an up-to-date starting point.
     // A linked worktree shares the canonical clone's ref store, so `checkout
@@ -1469,8 +1687,24 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       }),
     );
 
-    const prompt = buildImplementationPrompt(params, branch);
-    const stdout = await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
+    const prompt = buildImplementationPrompt(params, branch, salvageableCommits);
+
+    // Do not let a failed run discard finished work. Everything durable — the
+    // commit sweep, the push, the pull request, the session record — used to
+    // live after this await, so a timeout or a Ctrl-C at minute 59 threw away
+    // the entire implementation. Capture the failure, salvage whatever Claude
+    // committed, and surface it as an incomplete draft PR instead.
+    let stdout = "";
+    let runFailure: unknown;
+    try {
+      stdout = await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
+    } catch (error) {
+      runFailure = error;
+      const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+      writeLogLine(
+        `[yoke] Issue #${params.issueNumber}: Claude run failed (${reason}) — salvaging any committed work.`,
+      );
+    }
     const payload = extractImplementationPayload(stdout);
 
     // Safety net: if Claude edited files but did not commit them (e.g. because
@@ -1505,6 +1739,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       )
     ).trim();
     if (commitsAhead === "0") {
+      // Nothing to salvage. When the run itself failed, that is the real cause
+      // and must not be masked by a "produced no commits" message.
+      if (runFailure !== undefined) throw runFailure;
       throw new Error(
         `Claude produced no commits for issue #${params.issueNumber} ("${params.issueTitle}"). ` +
         `The branch "${branch}" has no changes relative to "${params.baseBranch}".`,
@@ -1531,14 +1768,66 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       await runCommand("git", ["rev-parse", "HEAD"], { cwd: repoDir, captureStdout: true })
     ).trim();
 
+    const failureReason =
+      runFailure === undefined
+        ? undefined
+        : runFailure instanceof Error
+          ? runFailure.message
+          : String(runFailure);
+
     return {
       branch,
       pullRequestTitle:
-        payload?.pullRequestTitle ?? params.issueTitle,
+        (failureReason !== undefined ? "[incomplete] " : "") +
+        (payload?.pullRequestTitle ?? params.issueTitle),
       pullRequestBody:
-        payload?.pullRequestBody ?? `Closes #${params.issueNumber}`,
+        failureReason !== undefined
+          ? buildIncompletePullRequestBody(params, commitsAhead, failureReason, payload?.pullRequestBody)
+          : (payload?.pullRequestBody ?? `Closes #${params.issueNumber}`),
       headSha,
+      ...(failureReason !== undefined ? { incomplete: true, failureReason } : {}),
     };
+  }
+
+  /** Count commits on `head` that are not reachable from `base`. Missing refs count as zero. */
+  private async countCommitsAhead(repoDir: string, base: string, head: string): Promise<number> {
+    try {
+      const out = await runCommand("git", ["rev-list", "--count", `${base}..${head}`], {
+        cwd: repoDir,
+        captureStdout: true,
+        captureStderr: true,
+      });
+      const n = Number.parseInt(out.trim(), 10);
+      return Number.isFinite(n) ? n : 0;
+    } catch {
+      // The local branch does not exist yet — nothing to resume.
+      return 0;
+    }
+  }
+
+  /**
+   * Park commits that exist only locally on a recovery ref before a reset that
+   * would orphan them. Best effort: a missing branch or a failed ref write must
+   * never block the implementation that follows.
+   */
+  private async preserveUnpushedCommits(
+    repoDir: string,
+    branch: string,
+    startPoint: string,
+  ): Promise<void> {
+    const ahead = await this.countCommitsAhead(repoDir, startPoint, branch);
+    if (ahead === 0) return;
+    const recoveryBranch = buildPushRecoveryBackupBranchName(branch);
+    try {
+      await runCommand("git", ["branch", recoveryBranch, branch], { cwd: repoDir });
+      writeLogLine(
+        `[yoke] Preserved ${ahead} unpushed commit(s) from ${branch} at ${recoveryBranch} before resetting onto ${startPoint}.`,
+      );
+    } catch (error) {
+      writeLogLine(
+        `[yoke] Could not preserve unpushed commits on ${branch}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async selfReview(params: SelfReviewParams): Promise<SelfReviewResult> {
@@ -2372,11 +2661,17 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const quotaMessage = tryBuildQuotaMessage(message);
+      // Carry the reason on the board's own line. This is the only line that
+      // reliably survives on a busy terminal, and printing just the model and
+      // the elapsed time made a 60-minute timeout look like an unexplained
+      // "Claude API error" repeating forever.
+      const reason = message.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
+      const shortReason = reason.length > 140 ? `${reason.slice(0, 137)}…` : reason;
       statusBoard.free(
         slotId,
         quotaMessage
           ? `Claude [${modelDisplay}] quota limit [${formatElapsed()}]`
-          : `Claude [${modelDisplay}] error [${formatElapsed()}]`,
+          : `Claude [${modelDisplay}] FAILED [${formatElapsed()}]${shortReason ? `: ${shortReason}` : ""}`,
       );
       if (quotaMessage) {
         claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;

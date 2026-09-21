@@ -61,6 +61,10 @@ export interface ActionClaudeAgentClient {
     pullRequestTitle: string;
     pullRequestBody: string;
     headSha: string;
+    /** Set when the run was interrupted but its committed work was salvaged. */
+    incomplete?: boolean;
+    /** Why the run did not finish. Present whenever `incomplete` is true. */
+    failureReason?: string;
   }>;
   selfReview(params: {
     owner: string;
@@ -122,6 +126,14 @@ export interface ActionSessionStore {
     status?: AgentSessionStatus;
     result?: AgentSessionResult;
   }): Promise<unknown>;
+  /** Mark a session completed, optionally attaching the PR it produced. */
+  completeSession?(
+    sessionId: string,
+    result?: AgentSessionResult,
+    pullRequestNumber?: number,
+  ): Promise<unknown>;
+  /** Mark a session failed, so an interrupted run still leaves a record. */
+  failSession?(sessionId: string): Promise<unknown>;
   /** Record the ISO timestamp of the most recent PR comment yoke has read. */
   setLastReadCommentAt?(pullRequestNumber: number, createdAt: string): Promise<void>;
   /** Returns the ids of comments yoke has already posted on a PR. */
@@ -213,6 +225,11 @@ export interface ExecuteActionResult {
    * SHA did not change — i.e. Claude ran but pushed no new commits.
    */
   noCommitsPushed?: boolean;
+  /**
+   * True when the implementation run was interrupted but its committed work was
+   * salvaged and pushed as an incomplete draft PR. The issue is not done.
+   */
+  incompleteImplementation?: boolean;
 }
 
 export async function executeAction(
@@ -243,6 +260,22 @@ export async function executeAction(
       let implementation: Awaited<ReturnType<typeof claudeAgentClient.implementIssue>>;
       let pullRequestBody: string;
       let created: { number: number; headSha: string; created: boolean };
+      // Open the session record *before* the run, not after the PR exists.
+      // Recording only on success meant a killed run left no trace at all: no
+      // evidence the issue had ever been attempted, and nothing for the
+      // concurrency accounting in countImplementationSessionsWithoutPullRequests
+      // to see. It is marked failed or completed below.
+      const implementationSession = await sessionStore.createSession({
+        issueNumber: issue.number,
+        phase: "implementation",
+        status: "in_progress",
+      });
+      const sessionId =
+        typeof implementationSession === "object" &&
+        implementationSession !== null &&
+        "id" in implementationSession
+          ? String((implementationSession as { id: unknown }).id)
+          : undefined;
       try {
         const baseBranch = await gitHubClient.getDefaultBranch();
         implementation = await claudeAgentClient.implementIssue({
@@ -253,9 +286,12 @@ export async function executeAction(
           issueBody: issue.body,
           baseBranch,
         });
-        pullRequestBody = buildMergedPullRequestBody(implementation.pullRequestBody, [
-          issue.number,
-        ]);
+        // An incomplete implementation deliberately keeps its "Refs #N" wording:
+        // adding "Closes #N" would let merging a half-finished draft close an
+        // issue that nobody has actually finished.
+        pullRequestBody = implementation.incomplete
+          ? implementation.pullRequestBody
+          : buildMergedPullRequestBody(implementation.pullRequestBody, [issue.number]);
         created = await gitHubClient.createPullRequest({
           title: implementation.pullRequestTitle,
           body: pullRequestBody,
@@ -264,6 +300,7 @@ export async function executeAction(
           draft: true,
         });
       } catch (error) {
+        if (sessionId !== undefined) await sessionStore.failSession?.(sessionId);
         // Implementation (or PR open) failed after we already moved the issue
         // to "In Progress". Without this revert the issue would be stuck:
         // the planner only picks up "Ready" issues, so it would never be
@@ -307,18 +344,32 @@ export async function executeAction(
           );
         }
       }
-      // Only create a session if this is a new PR.
-      if (created.created) {
+      if (sessionId !== undefined && sessionStore.completeSession) {
+        await sessionStore.completeSession(
+          sessionId,
+          { pullRequestHeadSha: created.headSha, pullRequestBody },
+          created.number,
+        );
+      } else if (created.created) {
+        // Store implementation without completeSession (test fakes, older
+        // adapters): fall back to the original write-on-success behaviour.
         await sessionStore.createSession({
           issueNumber: issue.number,
           pullRequestNumber: created.number,
           phase: "implementation",
           status: "completed",
-          result: {
-            pullRequestHeadSha: created.headSha,
-            pullRequestBody,
-          },
+          result: { pullRequestHeadSha: created.headSha, pullRequestBody },
         });
+      }
+      if (implementation.incomplete) {
+        // The run was cut short but had committed usable work, which has been
+        // pushed and opened as a draft. Say so loudly: it needs a human, and it
+        // must not be mistaken for a finished implementation.
+        console.warn(
+          `[yoke] Issue #${issue.number}: opened PR #${created.number} as an INCOMPLETE draft — ` +
+            `the agent was interrupted (${implementation.failureReason?.split("\n")[0] ?? "unknown reason"}).`,
+        );
+        return { incompleteImplementation: true };
       }
       return {};
     }

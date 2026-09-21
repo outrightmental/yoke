@@ -237,6 +237,7 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `claude_code_initial_effort` | `high` | Reasoning effort for initial implementation. |
 | `claude_code_review_effort` | `high` | Reasoning effort for self-review. |
 | `claude_describe_model` | `claude-haiku-4-5-20251001` | Claude model used to write the final PR description before merge. A faster model is appropriate here. |
+| `claude_timeout_seconds` | `10800` (3 h) | How long one Claude run may take before it is killed. Size it to the scope of your issues — generation is server-side, so a large implementation takes the time it takes regardless of your machine. A run cut short is salvaged as an incomplete draft PR rather than discarded. |
 | `dashboard_port` | `3000` | HTTP port for the single shared Dashboard server. |
 | `dashboard_title` | `Outright Mental` | Title displayed in the Dashboard header. |
 | `github_api_base_url` | `https://api.github.com` | GitHub REST API base URL, for GitHub Enterprise. |
@@ -257,6 +258,7 @@ Per-project values override the global ones for that project.
 | `claude_code_initial_model` / `claude_code_review_model` | global value | Per-project model overrides. |
 | `claude_code_initial_effort` / `claude_code_review_effort` | global value | Per-project effort overrides. |
 | `claude_describe_model` | global value | Per-project override for the final-description model. |
+| `claude_timeout_seconds` | global value | Per-project override of the per-run timeout. |
 | `cycle_minimum_seconds` | global value | Per-project override of the cycle minimum. |
 | `session_store_path` | `<cwd>/.yoke/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 

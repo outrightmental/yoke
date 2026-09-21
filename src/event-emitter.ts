@@ -48,8 +48,20 @@ export class EventEmitter {
       timestamp: new Date().toISOString(),
       data,
     };
+    // Listeners are called synchronously, so a throw from one used to propagate
+    // straight back into whatever emitted the event — a dashboard WebSocket
+    // send failing could therefore unwind an engine loop. A subscriber's
+    // problem is never the publisher's problem.
     for (const listener of this.listeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (error) {
+        process.stderr.write(
+          `[yoke] event listener for "${type}" threw: ${
+            error instanceof Error ? (error.stack ?? error.message) : String(error)
+          }\n`,
+        );
+      }
     }
   }
 
