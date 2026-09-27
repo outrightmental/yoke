@@ -76,16 +76,26 @@ export function tryClaimFromPlan(
   cap: number,
   actions: readonly OrchestratorAction[],
   claimedActions: Set<string>,
+  /**
+   * Action key → epoch millis before which the action must not be retried.
+   * Without this a failing action is re-claimed immediately: after a long
+   * action the cycle-minimum wait computes to zero, so six cylinders re-picked
+   * the same six timed-out issues roughly twenty seconds later and burned
+   * another full timeout on each.
+   */
+  cooldownUntilMs?: ReadonlyMap<string, number>,
+  now: number = Date.now(),
 ): OrchestratorAction | null {
   if (claimsForRepo(claimedActions, repoKey) >= cap) {
     return null;
   }
   for (const action of actions) {
     const key = repoActionKey(repoKey, action);
-    if (!claimedActions.has(key)) {
-      claimedActions.add(key);
-      return action;
-    }
+    if (claimedActions.has(key)) continue;
+    const until = cooldownUntilMs?.get(key);
+    if (until !== undefined && now < until) continue;
+    claimedActions.add(key);
+    return action;
   }
   return null;
 }

@@ -121,7 +121,7 @@ On every iteration, `yoke`:
 7. Asks Claude to self-review the diff and push fixes if needed. Requires two consecutive clean self-reviews before advancing.
 8. Generates a polished final PR description with Claude, updates the PR body, preserves closing references, and squash-merges. Retries with `--admin` if GitHub's branch policy requires it.
 
-When the Claude CLI reports that the subscription's usage limit is exhausted, every engine pauses until the reset time the CLI printed (the Dashboard shows the countdown) instead of claiming issues and failing on them cycle after cycle; GitHub-only maintenance such as workflow approvals and reconciliation keeps running. A Claude run that reaches `claude_timeout_minutes` is killed, and an implementation run commits and pushes whatever it had left uncommitted so the next attempt on that issue resumes from the partial work rather than starting over.
+When the Claude CLI reports that the subscription's usage limit is exhausted, every engine pauses until the reset time the CLI printed (the Dashboard shows the countdown) instead of claiming issues and failing on them cycle after cycle; GitHub-only maintenance such as workflow approvals and reconciliation keeps running.
 
 ## The big idea
 
@@ -234,12 +234,12 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `projects` | — | **Required.** List of repositories to run; see the per-project keys below. |
 | `max_concurrency` | `3` | Total size of the shared engine-cylinder pool across all projects. |
 | `cycle_minimum_seconds` | `60` | Minimum seconds between engine cycle starts. |
-| `claude_timeout_minutes` | `120` | Wall-clock cap on a single Claude run. A run that reaches it is killed; an implementation run first commits and pushes its uncommitted work to the issue branch so the next attempt resumes from it. |
 | `claude_code_initial_model` | `claude-sonnet-4-6` | Claude model used during initial implementation. |
 | `claude_code_review_model` | `claude-opus-4-8` | Claude model used during self-review. |
 | `claude_code_initial_effort` | `high` | Reasoning effort for initial implementation. |
 | `claude_code_review_effort` | `high` | Reasoning effort for self-review. |
 | `claude_describe_model` | `claude-haiku-4-5-20251001` | Claude model used to write the final PR description before merge. A faster model is appropriate here. |
+| `claude_timeout_seconds` | `10800` (3 h) | How long one Claude run may take before it is killed. Size it to the scope of your issues — generation is server-side, so a large implementation takes the time it takes regardless of your machine. A run cut short is salvaged as an incomplete draft PR rather than discarded. |
 | `dashboard_port` | `3000` | HTTP port for the single shared Dashboard server. |
 | `dashboard_title` | `Outright Mental` | Title displayed in the Dashboard header. |
 | `github_api_base_url` | `https://api.github.com` | GitHub REST API base URL, for GitHub Enterprise. |
@@ -260,8 +260,8 @@ Per-project values override the global ones for that project.
 | `claude_code_initial_model` / `claude_code_review_model` | global value | Per-project model overrides. |
 | `claude_code_initial_effort` / `claude_code_review_effort` | global value | Per-project effort overrides. |
 | `claude_describe_model` | global value | Per-project override for the final-description model. |
+| `claude_timeout_seconds` | global value | Per-project override of the per-run timeout. |
 | `cycle_minimum_seconds` | global value | Per-project override of the cycle minimum. |
-| `claude_timeout_minutes` | global value | Per-project override of the Claude run time cap. |
 | `session_store_path` | `<cwd>/.yoke/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 
 **CLI flags**

@@ -9,6 +9,9 @@ import {
   isClaudeUsageLimitMessage,
   getClaudeQuotaBlockedUntilMs,
   validateClaudeAuth,
+  writeLogLine,
+  setLogSink,
+  countLiveClaudeRuns,
 } from "./claude-agent.js";
 import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
 import {
@@ -63,25 +66,107 @@ function timestamp(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
+// ─── Exit diagnostics ────────────────────────────────────────────────────────
+//
+// Four different code paths used to end this process silently, three of them
+// with status 0: Ctrl-C, SIGTERM/SIGHUP, and a normal finish. That made a
+// deliberate stop, an external kill and a fatal error indistinguishable — from
+// the terminal, from `npm`, and from anything left on disk afterwards. An
+// incident that destroyed six in-flight agent runs had to be reconstructed from
+// the mtime of an npm debug log, because yoke itself wrote nothing.
+
+let exitReason: string | undefined;
+
+/** Record why the process is about to end, for the exit banner and the log. */
+export function setExitReason(reason: string): void {
+  exitReason = exitReason ?? reason;
+}
+
+/**
+ * Install the process-level diagnostics: a persistent log file, an exit banner
+ * naming the reason, and handlers for the two failure modes that previously
+ * died with nothing but whatever Node printed to a terminal nobody kept.
+ */
+function installExitDiagnostics(): void {
+  let appendToLog: ((line: string) => void) | undefined;
+  try {
+    const logDir = path.join(process.cwd(), ".yoke");
+    fs.mkdirSync(logDir, { recursive: true });
+    const stream = fs.createWriteStream(path.join(logDir, "yoke.log"), { flags: "a" });
+    stream.on("error", () => {});
+    appendToLog = (line: string) => stream.write(`[${timestamp()}] ${line}\n`);
+    setLogSink(appendToLog);
+  } catch {
+    // Running somewhere unwritable is not a reason to refuse to run.
+  }
+
+  const record = (line: string): void => {
+    try {
+      appendToLog?.(line);
+    } catch {
+      // Ignore: diagnostics must never throw from a handler.
+    }
+    process.stderr.write(`${line}\n`);
+  };
+
+  process.on("uncaughtException", (error) => {
+    setExitReason("uncaughtException");
+    record(`[yoke] FATAL uncaughtException: ${error?.stack ?? String(error)}`);
+    process.exit(1);
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    setExitReason("unhandledRejection");
+    record(
+      `[yoke] FATAL unhandledRejection: ${
+        reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)
+      }`,
+    );
+    process.exit(1);
+  });
+
+  process.on("exit", (code) => {
+    const live = countLiveClaudeRuns();
+    record(
+      `[yoke] exiting code=${code} reason=${exitReason ?? "normal"}` +
+        (live > 0 ? ` (killing ${live} in-flight child process(es))` : ""),
+    );
+  });
+}
+
+// All terminal output goes through writeLogLine rather than console.log: the
+// Claude status board owns the bottom rows of the terminal and erases whatever
+// it finds there every 500 ms, which silently destroyed every error yoke
+// printed while any run was in flight.
 function write(line: string): void {
-  console.log(line);
+  writeLogLine(line);
   emitLogMessage("info", line);
 }
 
 function blank(): void {
-  console.log("");
+  writeLogLine("");
+}
+
+/** Log a failure at top level, one line per line so nothing is swallowed. */
+function failure(text: string): void {
+  for (const line of String(text).split("\n")) write(line);
 }
 
 function createLogger(emitter: EventEmitter, repo = "") {
   function write(line: string): void {
-    console.log(line);
+    writeLogLine(line);
     emitLogMessage("info", line, emitter, repo);
   }
-  function blank(): void { console.log(""); }
+  function blank(): void { writeLogLine(""); }
   function section(title: string): void { blank(); write(title); write(RULE); }
   function bullet(text: string, indent = 1): void { write(`${"  ".repeat(indent)}• ${text}`); }
   function note(text: string, indent = 1): void { write(`${"  ".repeat(indent)}${text}`); }
-  return { write, blank, section, bullet, note };
+  /** Log a failure. Multi-line reasons are indented so none of it is mistaken for a new event. */
+  function failure(text: string, indent = 1): void {
+    const pad = "  ".repeat(indent);
+    for (const line of String(text).split("\n")) write(`${pad}${line}`);
+  }
+  return { write, blank, section, bullet, note, failure };
 }
 
 function formatDuration(milliseconds: number): string {
@@ -125,6 +210,51 @@ class PlanningMutex {
       }
     }
   }
+}
+
+/**
+ * Per-action failure memory, shared by the whole engine pool.
+ *
+ * A failed action used to be retried as fast as the pool could pick it up: the
+ * cycle-minimum wait is computed as `cycleMinimum - elapsed`, so after any
+ * action longer than the cycle minimum it is zero. Six cylinders therefore
+ * re-claimed the same six issues about twenty seconds after they failed and
+ * spent another full run failing the same way.
+ */
+interface ActionCooldowns {
+  /** Action key → epoch millis before which it must not be claimed again. */
+  until: Map<string, number>;
+  /** Action key → consecutive failure count, for the backoff schedule. */
+  failures: Map<string, number>;
+  /** Record a failure and start the next cooldown. Returns its length in ms. */
+  recordFailure(key: string): number;
+  /** Clear the memory for an action that has now succeeded. */
+  recordSuccess(key: string): void;
+}
+
+/** Backoff after consecutive failures of the same action, capped at the last entry. */
+const ACTION_FAILURE_BACKOFF_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
+
+function createActionCooldowns(): ActionCooldowns {
+  const until = new Map<string, number>();
+  const failures = new Map<string, number>();
+  return {
+    until,
+    failures,
+    recordFailure(key: string): number {
+      const count = (failures.get(key) ?? 0) + 1;
+      failures.set(key, count);
+      const backoff =
+        ACTION_FAILURE_BACKOFF_MS[Math.min(count, ACTION_FAILURE_BACKOFF_MS.length) - 1] ??
+        ACTION_FAILURE_BACKOFF_MS[ACTION_FAILURE_BACKOFF_MS.length - 1]!;
+      until.set(key, Date.now() + backoff);
+      return backoff;
+    },
+    recordSuccess(key: string): void {
+      failures.delete(key);
+      until.delete(key);
+    },
+  };
 }
 
 interface PollingState {
@@ -318,7 +448,7 @@ interface Config {
   claudeReviewEffort: string | undefined;
   /** Model used for commit message generation. Defaults to claude-haiku when unset. */
   claudeCommitModel: string | undefined;
-  /** Wall-clock cap on a single Claude run. */
+  /** Milliseconds a single Claude run may take before it is killed. */
   claudeTimeoutMs: number;
   /** Per-project concurrency cap (a subset of the global pool). */
   maxConcurrency: number;
@@ -378,7 +508,7 @@ function buildProjectConfig(
     claudeInitialEffort: resolved.claude_code_initial_effort,
     claudeReviewEffort: resolved.claude_code_review_effort,
     claudeCommitModel: resolved.claude_describe_model,
-    claudeTimeoutMs: Math.round(resolved.claude_timeout_minutes * 60 * 1000),
+    claudeTimeoutMs: resolved.claude_timeout_seconds * 1000,
     maxConcurrency: resolved.max_concurrency,
     cycleMinimumMs: Math.round(resolved.cycle_minimum_seconds * 1000),
     once: runtimeFlags.once,
@@ -512,6 +642,7 @@ async function planNextAction(
   contexts: ProjectContext[],
   claimedActions: Set<string>,
   emitter: EventEmitter,
+  actionCooldowns: ActionCooldowns,
 ): Promise<PlannedWork | null> {
   for (const ctx of contexts) {
     // Respect the per-project cap: never let more than `cap` of the shared
@@ -528,7 +659,13 @@ async function planNextAction(
     }
     const plan = buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode);
 
-    const claimed = tryClaimFromPlan(ctx.repoKey, ctx.cap, plan.actions, claimedActions);
+    const claimed = tryClaimFromPlan(
+      ctx.repoKey,
+      ctx.cap,
+      plan.actions,
+      claimedActions,
+      actionCooldowns.until,
+    );
 
     // Refresh this project's lifecycle pane on every planning pass so pills
     // reflect the freshest snapshot (and any claim we just made).
@@ -557,11 +694,12 @@ async function runEngine(
   globalCycleMinimumMs: number,
   planningMutex: PlanningMutex,
   claimedActions: Set<string>,
+  actionCooldowns: ActionCooldowns,
   shutdownSignal: { requested: boolean },
   cancelSignal: { requested: boolean },
   emitter: EventEmitter,
 ): Promise<void> {
-  const { write, blank, section, bullet, note } = createLogger(emitter);
+  const { write, blank, section, bullet, note, failure } = createLogger(emitter);
   const isOnceMode = contexts[0]?.config.once ?? false;
   let iterationNumber = 0;
   // The Claude hold this engine last announced, so a multi-hour pause logs
@@ -594,228 +732,266 @@ async function runEngine(
   };
 
   do {
-    if (shutdownSignal.requested) {
-      emitter.emit("engine-shutdown", { engineIndex });
-      write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
-      return;
-    }
-
-    cancelSignal.requested = false;
-    const cycleStart = Date.now();
-    iterationNumber++;
-
-    // GitHub rate-limit holds are per-gateway (per project). Pause this engine
-    // while ANY project's gateway is on hold.
-    const heldCtx = contexts.find((c) => {
-      const hold = c.githubGateway.currentRateLimitHold();
-      return hold && Date.now() < hold.blockedUntilMs;
-    });
-    if (heldCtx) {
-      const hold = heldCtx.githubGateway.currentRateLimitHold()!;
-      emitter.emit("engine-idle", {
-        engineIndex,
-        reason: "github-rate-limit",
-        rateLimitedUntilMs: hold.blockedUntilMs,
-        nextCycleAtMs: hold.blockedUntilMs,
-      });
-      await heldCtx.githubGateway.waitUntilReady();
-      continue;
-    }
-
-    emitter.emit("iteration-start", {
-      iterationNumber,
-      engineIndex,
-      maxConcurrency: globalMaxConcurrency,
-    });
-
-    // ── Per-project maintenance (engine 0 only, outside the mutex) ──────────
-    if (engineIndex === 0) {
-      for (const ctx of contexts) {
-        if (Date.now() - ctx.lastMaintenanceAtMs < ctx.config.cycleMinimumMs) continue;
-        ctx.lastMaintenanceAtMs = Date.now();
-        try {
-          await runProjectMaintenance(ctx, claimedActions, emitter);
-        } catch (error) {
-          bullet(`${ctx.repoKey}: maintenance failed: ${(error as Error).message}`);
-        }
-      }
-    }
-
-    // ── Claude usage-limit hold ─────────────────────────────────────────────
-    // The CLI's subscription quota is shared by every engine, so once one run
-    // has hit it, every Claude action fails until the reset. Pause here rather
-    // than claim an issue, prepare its checkout and fail on it every cycle.
-    // Maintenance above is GitHub-only and keeps running on engine 0.
-    const claudeHoldUntilMs = getClaudeQuotaBlockedUntilMs();
-    const claudeHoldWaitMs = claudeQuotaHoldWaitMs({
-      blockedUntilMs: claudeHoldUntilMs,
-      nowMs: Date.now(),
-      engineIndex,
-      cycleMinimumMs: globalCycleMinimumMs,
-    });
-    if (claudeHoldWaitMs > 0 && claudeHoldUntilMs !== undefined) {
-      emitter.emit("engine-idle", {
-        engineIndex,
-        reason: "claude-usage-limit",
-        rateLimitedUntilMs: claudeHoldUntilMs,
-        nextCycleAtMs: claudeHoldUntilMs,
-      });
-      if (announcedClaudeHoldUntilMs !== claudeHoldUntilMs) {
-        announcedClaudeHoldUntilMs = claudeHoldUntilMs;
-        write(
-          `Engine ${engineIndex + 1}: Claude usage limit reached — paused until approximately ${new Date(claudeHoldUntilMs).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", hour12: true, month: "short", day: "numeric" })} (${formatDuration(claudeHoldUntilMs - Date.now())} from now).`,
-        );
-      }
-      if (isOnceMode) {
-        write(`Engine ${engineIndex + 1}: shutdown — Claude usage limit reached in --once mode.`);
-        emitter.emit("engine-shutdown", { engineIndex });
-        return;
-      }
-      await idleWait(claudeHoldWaitMs);
-      continue;
-    }
-    announcedClaudeHoldUntilMs = undefined;
-
-    // ── Planning phase (serialised via the shared mutex) ────────────────────
-    const planned = await planningMutex.withLock(() =>
-      planNextAction(contexts, claimedActions, emitter),
-    );
-
-    // ── Execution phase ─────────────────────────────────────────────────────
-    let cycleRateLimitedUntilMs: number | undefined;
-    if (planned) {
-      const { ctx, action, snapshot, blockedIssueNumbers } = planned;
-      const { config } = ctx;
-
-      section(`Engine ${engineIndex + 1} · ${ctx.repoKey}: Action`);
-      bullet(describeAction(action, snapshot, ctx.gitHubClient));
-
-      emitter.emit("phase-update", { phase: "implementation" });
-      emitter.emit("action-start", {
-        actionIndex: engineIndex + 1,
-        totalActions: globalMaxConcurrency,
-        repo: ctx.repoKey,
-        description: describeAction(action, snapshot, ctx.gitHubClient),
-        type: action.type,
-        issueNumber: action.issueNumber ?? null,
-        pullRequestNumber:
-          action.type !== "start-implementation" ? action.pullRequestNumber : null,
-        model: action.type === "squash-merge"
-          ? (config.claudeCommitModel ?? DEFAULT_COMMIT_MODEL)
-          : action.type === "self-review"
-            ? (config.claudeReviewModel ?? null)
-            : (config.claudeInitialModel ?? null),
-        startedAt: Date.now(),
-      });
-
-      const actionContext = {
-        owner: config.owner,
-        repo: config.repo,
-        issues: snapshot.issues,
-        pullRequests: snapshot.pullRequests,
-        ...(config.projectMode ? { projectMode: config.projectMode } : {}),
-      };
-
-      try {
-        const result: ExecuteActionResult = await executeAction(
-          ctx.gitHubClient,
-          ctx.sessionStore,
-          ctx.claudeAgentClient,
-          action,
-          config.dryRun,
-          actionContext,
-        );
-
-        emitter.emit("action-complete", {
-          actionIndex: engineIndex + 1,
-          totalActions: globalMaxConcurrency,
-          repo: ctx.repoKey,
-          noCommitsPushed: result.noCommitsPushed || false,
-        });
-
-        if (result.noCommitsPushed) {
-          note(`✓ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
-        } else {
-          note(`✓ done`, 2);
-        }
-
-        if (action.type === "squash-merge") {
-          const mergedIssueNumbers = new Set<number>();
-          const mergedPR = snapshot.pullRequests.find((p) => p.number === action.pullRequestNumber);
-          if (mergedPR) {
-            const linked =
-              mergedPR.closingIssueNumbers.length > 0
-                ? mergedPR.closingIssueNumbers
-                : mergedPR.linkedIssueNumbers;
-            for (const n of linked) mergedIssueNumbers.add(n);
-          }
-          if (mergedIssueNumbers.size > 0) {
-            broadcastLifecycleUpdate(
-              snapshot,
-              new Set(),
-              mergedIssueNumbers,
-              blockedIssueNumbers,
-              config.projectMode !== undefined,
-              config.focusMode,
-              emitter,
-              ctx.repoKey,
-            );
-          }
-        }
-      } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (isClaudeUsageLimitMessage(errorMessage)) {
-          cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
-        }
-        emitter.emit("action-error", {
-          actionIndex: engineIndex + 1,
-          totalActions: globalMaxConcurrency,
-          repo: ctx.repoKey,
-          error: errorMessage,
-        });
-        note(`✗ failed: ${errorMessage}`, 2);
-      } finally {
-        claimedActions.delete(repoActionKey(ctx.repoKey, action));
-        // The project's state changed; force a fresh snapshot next plan so the
-        // just-finished action is not re-proposed from a stale cache.
-        ctx.snapshotCache = null;
-      }
-    } else {
-      section(`Engine ${engineIndex + 1}: Idle`);
-      bullet("nothing to do this cycle");
-      emitter.emit("engine-idle", {
-        engineIndex,
-        reason: "nothing to do this cycle",
-      });
-    }
-
-    if (isOnceMode) {
+    // One cycle, fully isolated. Only executeAction used to be guarded, so a
+    // throw from planning, from a rate-limit read, or from any emit — including
+    // one raised inside the catch below — escaped runEngine, rejected the
+    // Promise.all over the whole pool, and killed every other engine's
+    // in-flight Claude run along with the process.
+    try {
       if (shutdownSignal.requested) {
         emitter.emit("engine-shutdown", { engineIndex });
         write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
+        return;
       }
-      return;
-    }
 
-    // ── Wait phase ──────────────────────────────────────────────────────────
-    const elapsed = Date.now() - cycleStart;
-    const remainingMs = Math.max(0, globalCycleMinimumMs - elapsed);
-    if (remainingMs > 0) {
-      emitter.emit("engine-idle", {
+      cancelSignal.requested = false;
+      const cycleStart = Date.now();
+      iterationNumber++;
+
+      // GitHub rate-limit holds are per-gateway (per project). Pause this engine
+      // while ANY project's gateway is on hold.
+      // Read the hold once. `currentRateLimitHold()` expires holds as it reads
+      // them, so finding one and then re-reading it with a non-null assertion
+      // crashes the engine whenever the hold lapses between the two calls.
+      const held = contexts
+        .map((c) => ({ ctx: c, hold: c.githubGateway.currentRateLimitHold() }))
+        .find((entry) => entry.hold !== undefined && Date.now() < entry.hold.blockedUntilMs);
+      if (held?.hold) {
+        const heldCtx = held.ctx;
+        const hold = held.hold;
+        emitter.emit("engine-idle", {
+          engineIndex,
+          reason: "github-rate-limit",
+          rateLimitedUntilMs: hold.blockedUntilMs,
+          nextCycleAtMs: hold.blockedUntilMs,
+        });
+        await heldCtx.githubGateway.waitUntilReady();
+        continue;
+      }
+
+      emitter.emit("iteration-start", {
+        iterationNumber,
         engineIndex,
-        nextCycleAtMs: Date.now() + remainingMs,
-        ...(cycleRateLimitedUntilMs !== undefined
-          ? { rateLimitedUntilMs: cycleRateLimitedUntilMs }
-          : {}),
+        maxConcurrency: globalMaxConcurrency,
       });
-      blank();
-      write(`Engine ${engineIndex + 1}: next cycle in ${formatDuration(remainingMs)}.`);
-      await idleWait(remainingMs);
+
+      // ── Per-project maintenance (engine 0 only, outside the mutex) ──────────
+      if (engineIndex === 0) {
+        for (const ctx of contexts) {
+          if (Date.now() - ctx.lastMaintenanceAtMs < ctx.config.cycleMinimumMs) continue;
+          ctx.lastMaintenanceAtMs = Date.now();
+          try {
+            await runProjectMaintenance(ctx, claimedActions, emitter);
+          } catch (error) {
+            bullet(`${ctx.repoKey}: maintenance failed: ${(error as Error).message}`);
+          }
+        }
+      }
+
+      // ── Claude usage-limit hold ─────────────────────────────────────────────
+      // The CLI's subscription quota is shared by every engine, so once one run
+      // has hit it, every Claude action fails until the reset. Pause here rather
+      // than claim an issue, prepare its checkout and fail on it every cycle.
+      // Maintenance above is GitHub-only and keeps running on engine 0.
+      const claudeHoldUntilMs = getClaudeQuotaBlockedUntilMs();
+      const claudeHoldWaitMs = claudeQuotaHoldWaitMs({
+        blockedUntilMs: claudeHoldUntilMs,
+        nowMs: Date.now(),
+        engineIndex,
+        cycleMinimumMs: globalCycleMinimumMs,
+      });
+      if (claudeHoldWaitMs > 0 && claudeHoldUntilMs !== undefined) {
+        emitter.emit("engine-idle", {
+          engineIndex,
+          reason: "claude-usage-limit",
+          rateLimitedUntilMs: claudeHoldUntilMs,
+          nextCycleAtMs: claudeHoldUntilMs,
+        });
+        if (announcedClaudeHoldUntilMs !== claudeHoldUntilMs) {
+          announcedClaudeHoldUntilMs = claudeHoldUntilMs;
+          write(
+            `Engine ${engineIndex + 1}: Claude usage limit reached — paused until approximately ${new Date(claudeHoldUntilMs).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", hour12: true, month: "short", day: "numeric" })} (${formatDuration(claudeHoldUntilMs - Date.now())} from now).`,
+          );
+        }
+        if (isOnceMode) {
+          write(`Engine ${engineIndex + 1}: shutdown — Claude usage limit reached in --once mode.`);
+          emitter.emit("engine-shutdown", { engineIndex });
+          return;
+        }
+        await idleWait(claudeHoldWaitMs);
+        continue;
+      }
+      announcedClaudeHoldUntilMs = undefined;
+
+      // ── Planning phase (serialised via the shared mutex) ────────────────────
+      const planned = await planningMutex.withLock(() =>
+        planNextAction(contexts, claimedActions, emitter, actionCooldowns),
+      );
+
+      // ── Execution phase ─────────────────────────────────────────────────────
+      let cycleRateLimitedUntilMs: number | undefined;
+      if (planned) {
+        const { ctx, action, snapshot, blockedIssueNumbers } = planned;
+        const { config } = ctx;
+
+        section(`Engine ${engineIndex + 1} · ${ctx.repoKey}: Action`);
+        bullet(describeAction(action, snapshot, ctx.gitHubClient));
+
+        emitter.emit("phase-update", { phase: "implementation" });
+        emitter.emit("action-start", {
+          actionIndex: engineIndex + 1,
+          totalActions: globalMaxConcurrency,
+          repo: ctx.repoKey,
+          description: describeAction(action, snapshot, ctx.gitHubClient),
+          type: action.type,
+          issueNumber: action.issueNumber ?? null,
+          pullRequestNumber:
+            action.type !== "start-implementation" ? action.pullRequestNumber : null,
+          model: action.type === "squash-merge"
+            ? (config.claudeCommitModel ?? DEFAULT_COMMIT_MODEL)
+            : action.type === "self-review"
+              ? (config.claudeReviewModel ?? null)
+              : (config.claudeInitialModel ?? null),
+          startedAt: Date.now(),
+        });
+
+        const actionContext = {
+          owner: config.owner,
+          repo: config.repo,
+          issues: snapshot.issues,
+          pullRequests: snapshot.pullRequests,
+          ...(config.projectMode ? { projectMode: config.projectMode } : {}),
+        };
+
+        try {
+          const result: ExecuteActionResult = await executeAction(
+            ctx.gitHubClient,
+            ctx.sessionStore,
+            ctx.claudeAgentClient,
+            action,
+            config.dryRun,
+            actionContext,
+          );
+
+          emitter.emit("action-complete", {
+            actionIndex: engineIndex + 1,
+            totalActions: globalMaxConcurrency,
+            repo: ctx.repoKey,
+            noCommitsPushed: result.noCommitsPushed || false,
+          });
+
+          actionCooldowns.recordSuccess(repoActionKey(ctx.repoKey, action));
+
+          if (result.incompleteImplementation) {
+            note(`⚠ interrupted — pushed what was finished as an INCOMPLETE draft PR`, 2);
+          } else if (result.noCommitsPushed) {
+            note(`✓ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
+          } else {
+            note(`✓ done`, 2);
+          }
+
+          if (action.type === "squash-merge") {
+            const mergedIssueNumbers = new Set<number>();
+            const mergedPR = snapshot.pullRequests.find((p) => p.number === action.pullRequestNumber);
+            if (mergedPR) {
+              const linked =
+                mergedPR.closingIssueNumbers.length > 0
+                  ? mergedPR.closingIssueNumbers
+                  : mergedPR.linkedIssueNumbers;
+              for (const n of linked) mergedIssueNumbers.add(n);
+            }
+            if (mergedIssueNumbers.size > 0) {
+              broadcastLifecycleUpdate(
+                snapshot,
+                new Set(),
+                mergedIssueNumbers,
+                blockedIssueNumbers,
+                config.projectMode !== undefined,
+                config.focusMode,
+                emitter,
+                ctx.repoKey,
+              );
+            }
+          }
+        } catch (error) {
+          // `(error as Error).message` throws when the rejection reason is not an
+          // Error — i.e. it throws *from inside the catch block*, escaping
+          // runEngine entirely and taking the whole process with it.
+          const errorMessage =
+            error instanceof Error
+              ? (error.stack ?? error.message)
+              : `non-Error rejection: ${String(error)}`;
+          if (isClaudeUsageLimitMessage(errorMessage)) {
+            cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
+          }
+          emitter.emit("action-error", {
+            actionIndex: engineIndex + 1,
+            totalActions: globalMaxConcurrency,
+            repo: ctx.repoKey,
+            error: errorMessage,
+          });
+          const backoffMs = actionCooldowns.recordFailure(repoActionKey(ctx.repoKey, action));
+          failure(`✗ failed: ${errorMessage}`, 2);
+          note(`retrying this action no sooner than ${formatDuration(backoffMs)} from now.`, 2);
+        } finally {
+          claimedActions.delete(repoActionKey(ctx.repoKey, action));
+          // The project's state changed; force a fresh snapshot next plan so the
+          // just-finished action is not re-proposed from a stale cache.
+          ctx.snapshotCache = null;
+        }
+      } else {
+        section(`Engine ${engineIndex + 1}: Idle`);
+        bullet("nothing to do this cycle");
+        emitter.emit("engine-idle", {
+          engineIndex,
+          reason: "nothing to do this cycle",
+        });
+      }
+
+      if (isOnceMode) {
+        if (shutdownSignal.requested) {
+          emitter.emit("engine-shutdown", { engineIndex });
+          write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
+        }
+        return;
+      }
+
+      // ── Wait phase ──────────────────────────────────────────────────────────
+      const elapsed = Date.now() - cycleStart;
+      const remainingMs = Math.max(0, globalCycleMinimumMs - elapsed);
+      if (remainingMs > 0) {
+        emitter.emit("engine-idle", {
+          engineIndex,
+          nextCycleAtMs: Date.now() + remainingMs,
+          ...(cycleRateLimitedUntilMs !== undefined
+            ? { rateLimitedUntilMs: cycleRateLimitedUntilMs }
+            : {}),
+        });
+        blank();
+        write(`Engine ${engineIndex + 1}: next cycle in ${formatDuration(remainingMs)}.`);
+        await idleWait(remainingMs);
+      }
+    } catch (error) {
+      // Retire the cycle, not the pool. Back off briefly so a persistent fault
+      // cannot spin the loop.
+      const detail =
+        error instanceof Error
+          ? (error.stack ?? error.message)
+          : `non-Error rejection: ${String(error)}`;
+      try {
+        failure(`Engine ${engineIndex + 1}: cycle failed — continuing.\n${detail}`, 1);
+      } catch {
+        // Logging must never be the thing that kills the engine.
+        process.stderr.write(`[yoke] Engine ${engineIndex + 1} cycle failed: ${detail}\n`);
+      }
+      if (isOnceMode) return;
+      await delay(5000);
     }
   } while (true);
 }
 
 async function main(): Promise<void> {
+  installExitDiagnostics();
   const argv = process.argv.slice(2);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
@@ -840,8 +1016,29 @@ async function main(): Promise<void> {
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", (chunk: Buffer) => {
-      if (chunk[0] === 0x03) {
-        process.exit(0);
+      // Ctrl-C. Raw mode clears ISIG, so this arrives as a byte rather than as
+      // SIGINT. It used to call process.exit(0) on the spot, which SIGKILLed
+      // every in-flight Claude run without a word and reported success to the
+      // shell — a single keystroke could silently discard hours of agent work.
+      // First press drains; second press aborts and says what it is discarding.
+      if (chunk[0] === 0x03 && chunk.length === 1) {
+        if (shutdownSignal.requested) {
+          setExitReason("ctrl-c (forced)");
+          const live = countLiveClaudeRuns();
+          writeLogLine(
+            `\nCtrl-C again: aborting now and discarding ${live} in-flight Claude run(s).`,
+          );
+          process.exit(130);
+        }
+        shutdownSignal.requested = true;
+        setExitReason("ctrl-c (graceful)");
+        blank();
+        write(
+          `Ctrl-C: finishing ${countLiveClaudeRuns()} in-flight Claude run(s), then quitting. ` +
+            `Press Ctrl-C again to abort and discard them.`,
+        );
+        emitter.emit("shutdown-requested", {});
+        return;
       }
       if (chunk[0] === 0x1b && chunk.length === 1 && !shutdownSignal.requested) {
         shutdownSignal.requested = true;
@@ -996,6 +1193,7 @@ async function main(): Promise<void> {
   // ── Launch the shared engine pool ─────────────────────────────────────────
   const planningMutex = new PlanningMutex();
   const claimedActions = new Set<string>();
+  const actionCooldowns = createActionCooldowns();
   const cancelSignals = Array.from({ length: globalMaxConcurrency }, () => ({ requested: false }));
 
   emitter.subscribe((event) => {
@@ -1016,25 +1214,41 @@ async function main(): Promise<void> {
       globalCycleMinimumMs,
       planningMutex,
       claimedActions,
+      actionCooldowns,
       shutdownSignal,
       cancelSignals[i]!,
       emitter,
     ),
   );
 
-  await Promise.all(engines);
+  // allSettled, not all: `all` rejects on the first engine to fail and unwinds
+  // main() while every other engine is still mid-run, so one bad cycle took the
+  // whole pool — and every in-flight Claude run — down with it.
+  const engineOutcomes = await Promise.allSettled(engines);
+  for (const [i, outcome] of engineOutcomes.entries()) {
+    if (outcome.status === "rejected") {
+      const reason = outcome.reason;
+      failure(
+        `Engine ${i + 1} exited abnormally: ${
+          reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)
+        }`,
+      );
+    }
+  }
 
   blank();
   if (shutdownSignal.requested) {
+    setExitReason("graceful shutdown");
     write("All engines shut down. Exiting.");
     emitter.emit("app-shutdown", {});
     await delay(500);
   } else {
+    setExitReason("--once complete");
     write(`Done (--once mode). Exiting.`);
-    if (process.stdin.isTTY) {
-      process.stdin.pause();
-      process.stdin.setRawMode(false);
-    }
+  }
+  if (process.stdin.isTTY) {
+    process.stdin.pause();
+    process.stdin.setRawMode(false);
   }
   if (dashboardReady) {
     dashboard.close();
@@ -1043,6 +1257,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
+  setExitReason("fatal error in main");
   console.error(`[${timestamp()}] Fatal error:`, error);
   process.exit(1);
 });

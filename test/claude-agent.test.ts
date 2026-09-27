@@ -7,7 +7,6 @@ import { join } from "node:path";
 
 import {
   createClaudeAgentClient,
-  DEFAULT_CLAUDE_TIMEOUT_MS,
   extractFinalDescription,
   extractImplementationPayload,
   extractSelfReviewPayload,
@@ -19,7 +18,6 @@ import {
   SELF_REVIEW_PAYLOAD_START_MARKER,
   formatUserCommentsSection,
   isRebaseInProgress,
-  isCommandTimeoutError,
   isClaudeUsageLimitMessage,
   isClaudeTermsAcceptanceMessage,
   isNonFastForwardPushError,
@@ -299,19 +297,6 @@ test("parseUsageResetTimeMs parses a dated reset that names the year", () => {
 test("parseUsageResetTimeMs rejects an impossible hour", () => {
   assert.equal(parseUsageResetTimeMs("resets 13pm"), undefined);
   assert.equal(parseUsageResetTimeMs("resets 0:30am"), undefined);
-});
-
-test("isCommandTimeoutError recognises runCommand's timeout rejection", async () => {
-  await assert.rejects(
-    runCommand("sh", ["-c", "sleep 5"], { timeoutMs: 100 }),
-    (error: unknown) => isCommandTimeoutError(error),
-  );
-  assert.equal(isCommandTimeoutError(new Error("exited with non-zero status 1")), false);
-  assert.equal(isCommandTimeoutError("timed out after 3s and was killed"), false);
-});
-
-test("DEFAULT_CLAUDE_TIMEOUT_MS gives a large implementation more than an hour", () => {
-  assert.ok(DEFAULT_CLAUDE_TIMEOUT_MS > 60 * 60 * 1000);
 });
 
 test("parseUsageResetTimeMs returns undefined when reset time is missing", () => {
@@ -770,140 +755,6 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
     } finally {
       // no env cleanup needed
     }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("implementIssue checkpoints uncommitted work to the branch when the Claude run times out", async () => {
-  const root = await mkdtemp(join(tmpdir(), "yoke-timeout-checkpoint-test-"));
-  const remoteDir = join(root, "remote.git");
-  const seedDir = join(root, "seed");
-  const binDir = join(root, "bin");
-  const checkoutRootDir = join(root, "checkouts");
-  const verifyDir = join(root, "verify");
-  const claudeStubPath = join(binDir, "claude-stub.sh");
-  const issueNumber = 22;
-  const issueTitle = "Redesign reports as versioned owner records";
-  const branch = "yoke/issue-22-redesign-reports-as-versioned-owner-reco";
-
-  await mkdir(binDir, { recursive: true });
-
-  try {
-    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
-    runOrThrow("git", ["clone", remoteDir, seedDir], root);
-    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
-    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
-    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
-    runOrThrow("git", ["add", "README.md"], seedDir);
-    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
-    runOrThrow("git", ["branch", "-M", "main"], seedDir);
-    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
-
-    // The stub behaves like a run cut off mid-implementation: it commits one
-    // step, leaves a second step uncommitted, then hangs until it is killed.
-    await writeFile(
-      claudeStubPath,
-      [
-        "#!/bin/sh",
-        "set -eu",
-        "git config user.name \"Claude Stub\"",
-        "git config user.email \"claude-stub@example.com\"",
-        "echo \"step one\" > step-one.txt",
-        "git add step-one.txt",
-        "git commit -q -m \"agent step one\"",
-        "echo \"half-written step two\" > step-two.txt",
-        "sleep 30",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(claudeStubPath, 0o755);
-
-    const client = createClaudeAgentClient({
-      checkoutRootDir,
-      claudeCommand: claudeStubPath,
-      githubToken: "test-token",
-      repositoryCloneUrl: remoteDir,
-      claudeTimeoutMs: 1500,
-    });
-
-    await assert.rejects(
-      client.implementIssue({
-        owner: "example",
-        repo: "repo",
-        issueNumber,
-        issueTitle,
-        issueBody: "Make the report versioned.",
-        baseBranch: "main",
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /timed out after 1\.5s and was killed/);
-        assert.match(error.message, /Partial work was checkpointed to "yoke\/issue-22-[^"]+" \(2 commit\(s\) ahead of "main"\)/);
-        return true;
-      },
-    );
-
-    runOrThrow("git", ["clone", remoteDir, verifyDir], root);
-    runOrThrow("git", ["checkout", branch], verifyDir);
-    const history = runOrThrow("git", ["log", "--format=%s", "main..HEAD"], verifyDir);
-    assert.match(history, /agent step one/);
-    assert.match(history, /Checkpoint partial work on #22: Redesign reports as versioned owner records/);
-    const stepTwo = await import("node:fs/promises").then((fs) => fs.readFile(join(verifyDir, "step-two.txt"), "utf8"));
-    assert.equal(stepTwo, "half-written step two\n");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("implementIssue does not report a checkpoint when the timed-out run left nothing behind", async () => {
-  const root = await mkdtemp(join(tmpdir(), "yoke-timeout-empty-test-"));
-  const remoteDir = join(root, "remote.git");
-  const seedDir = join(root, "seed");
-  const binDir = join(root, "bin");
-  const checkoutRootDir = join(root, "checkouts");
-  const claudeStubPath = join(binDir, "claude-stub.sh");
-  const branch = "yoke/issue-23-quiet-timeout";
-
-  await mkdir(binDir, { recursive: true });
-
-  try {
-    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
-    runOrThrow("git", ["clone", remoteDir, seedDir], root);
-    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
-    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
-    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
-    runOrThrow("git", ["add", "README.md"], seedDir);
-    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
-    runOrThrow("git", ["branch", "-M", "main"], seedDir);
-    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
-
-    await writeFile(claudeStubPath, ["#!/bin/sh", "sleep 30", ""].join("\n"), "utf8");
-    await chmod(claudeStubPath, 0o755);
-
-    const client = createClaudeAgentClient({
-      checkoutRootDir,
-      claudeCommand: claudeStubPath,
-      githubToken: "test-token",
-      repositoryCloneUrl: remoteDir,
-      claudeTimeoutMs: 1000,
-    });
-
-    await assert.rejects(
-      client.implementIssue({
-        owner: "example",
-        repo: "repo",
-        issueNumber: 23,
-        issueTitle: "Quiet timeout",
-        issueBody: "",
-        baseBranch: "main",
-      }),
-      /timed out after 1s and was killed\. No partial work was left to checkpoint\./,
-    );
-
-    const remoteBranches = runOrThrow("git", ["ls-remote", "--heads", remoteDir, branch], root);
-    assert.equal(remoteBranches, "", "an empty run must not push a branch");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
