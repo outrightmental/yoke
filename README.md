@@ -121,6 +121,8 @@ On every iteration, `yoke`:
 7. Asks Claude to self-review the diff and push fixes if needed. Requires two consecutive clean self-reviews before advancing.
 8. Generates a polished final PR description with Claude, updates the PR body, preserves closing references, and squash-merges. Retries with `--admin` if GitHub's branch policy requires it.
 
+When the Claude CLI reports that the subscription's usage limit is exhausted, every engine pauses until the reset time the CLI printed (the Dashboard shows the countdown) instead of claiming issues and failing on them cycle after cycle; GitHub-only maintenance such as workflow approvals and reconciliation keeps running.
+
 ## The big idea
 
 `yoke` treats GitHub as the source of truth and Claude as the worker behind every action:

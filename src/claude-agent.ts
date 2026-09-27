@@ -1504,32 +1504,63 @@ async function resolveBaseBranch(repoDir: string, preferredBaseBranch?: string):
   }
 }
 
+const MONTH_INDEX_BY_ABBREVIATION: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
 /**
  * Parse a quota-reset timestamp from Claude CLI output.
  *
- * Supported examples:
+ * The CLI renders the reset moment with `toLocaleTimeString("en-US")` in the
+ * machine's own zone, dropping the minutes when they are zero and prefixing a
+ * date when the reset is more than a day away. Supported examples:
  * - "resets 6:40pm (America/Los_Angeles)"
- * - "reset at 10:15 AM"
+ * - "resets 3am"
+ * - "resets at 10:15 AM"
+ * - "resets Sep 28, 3pm"
+ * - "resets Sep 28, 2027, 3:30pm"
  *
  * Returns an epoch-millis timestamp in local time, or undefined if parsing fails.
  */
 export function parseUsageResetTimeMs(message: string, now: Date = new Date()): number | undefined {
-  const match = message.match(/\breset(?:s)?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*([ap]m)\b/i);
+  const match = message.match(
+    /\breset(?:s)?\s+(?:at\s+)?(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:(\d{4}),?\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b/i,
+  );
   if (!match) {
     return undefined;
   }
 
-  const rawHour = Number.parseInt(match[1]!, 10);
-  const minute = Number.parseInt(match[2]!, 10);
-  const period = match[3]!.toLowerCase();
+  const monthAbbreviation = match[1]?.toLowerCase();
+  const dayOfMonth = match[2] !== undefined ? Number.parseInt(match[2], 10) : undefined;
+  const year = match[3] !== undefined ? Number.parseInt(match[3], 10) : undefined;
+  const rawHour = Number.parseInt(match[4]!, 10);
+  const minute = match[5] !== undefined ? Number.parseInt(match[5], 10) : 0;
+  const period = match[6]!.toLowerCase();
 
   if (Number.isNaN(rawHour) || Number.isNaN(minute) || rawHour < 1 || rawHour > 12 || minute < 0 || minute > 59) {
     return undefined;
   }
 
-  const hours24 = (rawHour % 12) + (period === "pm" ? 12 : 0);
+  const hours24 = (rawHour % 12) + (period === "p" ? 12 : 0);
   const reset = new Date(now);
   reset.setSeconds(0, 0);
+
+  if (monthAbbreviation !== undefined && dayOfMonth !== undefined) {
+    const monthIndex = MONTH_INDEX_BY_ABBREVIATION[monthAbbreviation];
+    if (monthIndex === undefined || dayOfMonth < 1 || dayOfMonth > 31) {
+      return undefined;
+    }
+    reset.setFullYear(year ?? now.getFullYear(), monthIndex, dayOfMonth);
+    reset.setHours(hours24, minute, 0, 0);
+    if (year === undefined && reset.getTime() <= now.getTime()) {
+      // A dated reset with no year is always in the future; a date that reads
+      // as past can only mean the year has rolled over since it was printed.
+      reset.setFullYear(now.getFullYear() + 1);
+    }
+    return reset.getTime();
+  }
+
   reset.setHours(hours24, minute, 0, 0);
 
   if (reset.getTime() <= now.getTime()) {

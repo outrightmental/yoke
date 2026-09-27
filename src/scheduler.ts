@@ -99,3 +99,25 @@ export function tryClaimFromPlan(
   }
   return null;
 }
+
+/**
+ * How long an engine should sleep before re-checking the shared Claude usage
+ * limit, or 0 when no hold is active.
+ *
+ * While the CLI reports its subscription quota exhausted, every Claude action
+ * is doomed until the reset, so engines pause instead of claiming work,
+ * preparing checkouts and failing on every cycle. Engine 0 still owns the
+ * between-cycle maintenance (workflow approvals, reconciliation, the feed), so
+ * it sleeps at most one cycle minimum at a time; the others sleep out the hold.
+ */
+export function claudeQuotaHoldWaitMs(params: {
+  blockedUntilMs: number | undefined;
+  nowMs: number;
+  engineIndex: number;
+  cycleMinimumMs: number;
+}): number {
+  const { blockedUntilMs, nowMs, engineIndex, cycleMinimumMs } = params;
+  if (blockedUntilMs === undefined || blockedUntilMs <= nowMs) return 0;
+  const remainingMs = blockedUntilMs - nowMs;
+  return engineIndex === 0 ? Math.min(remainingMs, Math.max(cycleMinimumMs, 1)) : remainingMs;
+}

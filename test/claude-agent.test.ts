@@ -250,6 +250,55 @@ test("parseUsageResetTimeMs rolls to next day when time already passed", () => {
   assert.equal(date.getMinutes(), 40);
 });
 
+test("parseUsageResetTimeMs parses the CLI's minute-less hour form", () => {
+  // The CLI drops ":00" when the reset lands on the hour: "resets 3am".
+  const now = new Date(2026, 8, 27, 0, 20, 0, 0);
+  const parsed = parseUsageResetTimeMs(
+    "You've hit your limit \u00b7 resets 3am (America/New_York)",
+    now,
+  );
+  assert.equal(parsed !== undefined, true);
+  const date = new Date(parsed!);
+  assert.equal(date.getDate(), 27);
+  assert.equal(date.getHours(), 3);
+  assert.equal(date.getMinutes(), 0);
+});
+
+test("parseUsageResetTimeMs parses 'resets at' with 12am and no minutes", () => {
+  const now = new Date(2026, 8, 27, 22, 0, 0, 0);
+  const parsed = parseUsageResetTimeMs("usage limit reached \u00b7 resets at 12am", now);
+  const date = new Date(parsed!);
+  assert.equal(date.getDate(), 28);
+  assert.equal(date.getHours(), 0);
+  assert.equal(date.getMinutes(), 0);
+});
+
+test("parseUsageResetTimeMs parses a dated reset more than a day away", () => {
+  const now = new Date(2026, 8, 27, 0, 20, 0, 0);
+  const parsed = parseUsageResetTimeMs("usage limit reached \u00b7 resets Sep 29, 3:30pm (America/New_York)", now);
+  const date = new Date(parsed!);
+  assert.equal(date.getFullYear(), 2026);
+  assert.equal(date.getMonth(), 8);
+  assert.equal(date.getDate(), 29);
+  assert.equal(date.getHours(), 15);
+  assert.equal(date.getMinutes(), 30);
+});
+
+test("parseUsageResetTimeMs parses a dated reset that names the year", () => {
+  const now = new Date(2026, 11, 30, 0, 20, 0, 0);
+  const parsed = parseUsageResetTimeMs("resets Jan 2, 2027, 9am", now);
+  const date = new Date(parsed!);
+  assert.equal(date.getFullYear(), 2027);
+  assert.equal(date.getMonth(), 0);
+  assert.equal(date.getDate(), 2);
+  assert.equal(date.getHours(), 9);
+});
+
+test("parseUsageResetTimeMs rejects an impossible hour", () => {
+  assert.equal(parseUsageResetTimeMs("resets 13pm"), undefined);
+  assert.equal(parseUsageResetTimeMs("resets 0:30am"), undefined);
+});
+
 test("parseUsageResetTimeMs returns undefined when reset time is missing", () => {
   assert.equal(parseUsageResetTimeMs("You're out of extra usage"), undefined);
 });
