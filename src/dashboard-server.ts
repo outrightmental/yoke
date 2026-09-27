@@ -1432,7 +1432,12 @@ class DashboardUI {
         // idle — show live countdown or rate-limit info
         const now = Date.now();
         if (cyl.rateLimitedUntilMs && cyl.rateLimitedUntilMs > now) {
-          statusHTML = \`rate limited · \${this.formatDuration(cyl.rateLimitedUntilMs - now)}\`;
+          const limitLabel = cyl.idleStatusText === 'claude-usage-limit'
+            ? 'Claude usage limit'
+            : cyl.idleStatusText === 'github-rate-limit'
+              ? 'GitHub rate limit'
+              : 'rate limited';
+          statusHTML = \`\${limitLabel} · \${this.formatDuration(cyl.rateLimitedUntilMs - now)}\`;
         } else if (cyl.nextCycleAtMs && cyl.nextCycleAtMs > now) {
           statusHTML = this.formatDuration(cyl.nextCycleAtMs - now);
         } else {

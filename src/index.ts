@@ -23,6 +23,7 @@ import {
   repoActionKey,
   claimsForRepo,
   claimedImplementationIssueNumbers,
+  claudeQuotaHoldWaitMs,
   tryClaimFromPlan,
 } from "./scheduler.js";
 import { reconcileSessions } from "./reconcile.js";
@@ -317,6 +318,8 @@ interface Config {
   claudeReviewEffort: string | undefined;
   /** Model used for commit message generation. Defaults to claude-haiku when unset. */
   claudeCommitModel: string | undefined;
+  /** Wall-clock cap on a single Claude run. */
+  claudeTimeoutMs: number;
   /** Per-project concurrency cap (a subset of the global pool). */
   maxConcurrency: number;
   cycleMinimumMs: number;
@@ -375,6 +378,7 @@ function buildProjectConfig(
     claudeInitialEffort: resolved.claude_code_initial_effort,
     claudeReviewEffort: resolved.claude_code_review_effort,
     claudeCommitModel: resolved.claude_describe_model,
+    claudeTimeoutMs: Math.round(resolved.claude_timeout_minutes * 60 * 1000),
     maxConcurrency: resolved.max_concurrency,
     cycleMinimumMs: Math.round(resolved.cycle_minimum_seconds * 1000),
     once: runtimeFlags.once,
@@ -560,6 +564,34 @@ async function runEngine(
   const { write, blank, section, bullet, note } = createLogger(emitter);
   const isOnceMode = contexts[0]?.config.once ?? false;
   let iterationNumber = 0;
+  // The Claude hold this engine last announced, so a multi-hour pause logs
+  // once per engine rather than once per poll.
+  let announcedClaudeHoldUntilMs: number | undefined;
+
+  // Sleep for `waitMs`, waking early on shutdown or cancel. Engine 0 keeps
+  // every project's feed alive while it waits.
+  const idleWait = async (waitMs: number): Promise<void> => {
+    const pollIntervalMs = 10000;
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < waitMs && !shutdownSignal.requested && !cancelSignal.requested) {
+      const timeLeft = waitMs - (Date.now() - waitStart);
+      if (timeLeft <= 0) break;
+      await delay(Math.min(pollIntervalMs, timeLeft));
+
+      if (engineIndex === 0) {
+        for (const ctx of contexts) {
+          const now = Date.now();
+          if (
+            now - ctx.pollingState.lastPolledAt >= pollIntervalMs &&
+            Date.now() - waitStart < waitMs - 1000
+          ) {
+            ctx.pollingState.lastPolledAt = now;
+            await broadcastBetweenCycleActivity(ctx, claimedActions, emitter);
+          }
+        }
+      }
+    }
+  };
 
   do {
     if (shutdownSignal.requested) {
@@ -608,6 +640,41 @@ async function runEngine(
         }
       }
     }
+
+    // ── Claude usage-limit hold ─────────────────────────────────────────────
+    // The CLI's subscription quota is shared by every engine, so once one run
+    // has hit it, every Claude action fails until the reset. Pause here rather
+    // than claim an issue, prepare its checkout and fail on it every cycle.
+    // Maintenance above is GitHub-only and keeps running on engine 0.
+    const claudeHoldUntilMs = getClaudeQuotaBlockedUntilMs();
+    const claudeHoldWaitMs = claudeQuotaHoldWaitMs({
+      blockedUntilMs: claudeHoldUntilMs,
+      nowMs: Date.now(),
+      engineIndex,
+      cycleMinimumMs: globalCycleMinimumMs,
+    });
+    if (claudeHoldWaitMs > 0 && claudeHoldUntilMs !== undefined) {
+      emitter.emit("engine-idle", {
+        engineIndex,
+        reason: "claude-usage-limit",
+        rateLimitedUntilMs: claudeHoldUntilMs,
+        nextCycleAtMs: claudeHoldUntilMs,
+      });
+      if (announcedClaudeHoldUntilMs !== claudeHoldUntilMs) {
+        announcedClaudeHoldUntilMs = claudeHoldUntilMs;
+        write(
+          `Engine ${engineIndex + 1}: Claude usage limit reached — paused until approximately ${new Date(claudeHoldUntilMs).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", hour12: true, month: "short", day: "numeric" })} (${formatDuration(claudeHoldUntilMs - Date.now())} from now).`,
+        );
+      }
+      if (isOnceMode) {
+        write(`Engine ${engineIndex + 1}: shutdown — Claude usage limit reached in --once mode.`);
+        emitter.emit("engine-shutdown", { engineIndex });
+        return;
+      }
+      await idleWait(claudeHoldWaitMs);
+      continue;
+    }
+    announcedClaudeHoldUntilMs = undefined;
 
     // ── Planning phase (serialised via the shared mutex) ────────────────────
     const planned = await planningMutex.withLock(() =>
@@ -743,28 +810,7 @@ async function runEngine(
       });
       blank();
       write(`Engine ${engineIndex + 1}: next cycle in ${formatDuration(remainingMs)}.`);
-
-      const pollIntervalMs = 10000;
-      const waitStart = Date.now();
-      while (Date.now() - waitStart < remainingMs && !shutdownSignal.requested && !cancelSignal.requested) {
-        const timeLeft = remainingMs - (Date.now() - waitStart);
-        if (timeLeft <= 0) break;
-        await delay(Math.min(pollIntervalMs, timeLeft));
-
-        // Engine 0 keeps every project's feed alive between cycles.
-        if (engineIndex === 0) {
-          for (const ctx of contexts) {
-            const now = Date.now();
-            if (
-              now - ctx.pollingState.lastPolledAt >= pollIntervalMs &&
-              Date.now() - waitStart < remainingMs - 1000
-            ) {
-              ctx.pollingState.lastPolledAt = now;
-              await broadcastBetweenCycleActivity(ctx, claimedActions, emitter);
-            }
-          }
-        }
-      }
+      await idleWait(remainingMs);
     }
   } while (true);
 }
@@ -832,6 +878,7 @@ async function main(): Promise<void> {
       ...(config.claudeInitialEffort !== undefined ? { claudeInitialEffort: config.claudeInitialEffort } : {}),
       ...(config.claudeReviewEffort !== undefined ? { claudeReviewEffort: config.claudeReviewEffort } : {}),
       ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
+      claudeTimeoutMs: config.claudeTimeoutMs,
     });
     return {
       config,

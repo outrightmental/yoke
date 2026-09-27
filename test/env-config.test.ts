@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dump as dumpYaml } from "js-yaml";
 
-import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "../src/env-config.js";
+import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, DEFAULT_CLAUDE_TIMEOUT_MINUTES, type EnvConfig, type ProjectEnvConfig } from "../src/env-config.js";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -429,6 +429,53 @@ test("applyProjectDefaults falls back to global cycle_minimum_seconds", () => {
 test("applyProjectDefaults defaults cycle_minimum_seconds to 60", () => {
   const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
   assert.equal(result.cycle_minimum_seconds, 60);
+});
+
+test("applyProjectDefaults uses per-project claude_timeout_minutes over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", claude_timeout_minutes: 45 },
+    { ...baseEnvConfig, claude_timeout_minutes: 180 },
+  );
+  assert.equal(result.claude_timeout_minutes, 45);
+});
+
+test("applyProjectDefaults falls back to global claude_timeout_minutes", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, claude_timeout_minutes: 180 },
+  );
+  assert.equal(result.claude_timeout_minutes, 180);
+});
+
+test("applyProjectDefaults defaults claude_timeout_minutes to 120", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(DEFAULT_CLAUDE_TIMEOUT_MINUTES, 120);
+  assert.equal(result.claude_timeout_minutes, 120);
+});
+
+test("loadEnvConfig accepts a positive claude_timeout_minutes at both levels", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      claude_timeout_minutes: 240,
+      projects: [{ github_repository: "owner/repo", claude_timeout_minutes: 90 }],
+    });
+    const config = loadEnvConfig(filePath);
+    assert.equal(config.claude_timeout_minutes, 240);
+    assert.equal(config.projects[0]!.claude_timeout_minutes, 90);
+  });
+});
+
+test("loadEnvConfig rejects a non-positive or non-numeric claude_timeout_minutes", async () => {
+  await withTempDir(async (dir) => {
+    const zero = await writeEnvYaml(dir, { ...minimalValidConfig, claude_timeout_minutes: 0 });
+    assert.throws(() => loadEnvConfig(zero), /"claude_timeout_minutes" must be a positive number of minutes/);
+    const text = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      projects: [{ github_repository: "owner/repo", claude_timeout_minutes: "soon" }],
+    });
+    assert.throws(() => loadEnvConfig(text), /"projects\[0\]\.claude_timeout_minutes" must be a positive number of minutes/);
+  });
 });
 
 test("applyProjectDefaults applies focus_mode from project config", () => {

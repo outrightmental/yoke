@@ -5,6 +5,7 @@ import {
   repoActionKey,
   claimsForRepo,
   claimedImplementationIssueNumbers,
+  claudeQuotaHoldWaitMs,
   tryClaimFromPlan,
 } from "../src/scheduler.js";
 import type { OrchestratorAction } from "../src/types.js";
@@ -129,4 +130,45 @@ test("releasing a claim frees a cap slot for the next cylinder", () => {
   assert.equal(tryClaimFromPlan("o/a", 2, [impl(3)], claimed), null, "at cap");
   claimed.delete("o/a pr:2"); // a cylinder finished its PR work
   assert.deepEqual(tryClaimFromPlan("o/a", 2, [impl(3)], claimed), impl(3), "slot freed");
+});
+
+// ── claudeQuotaHoldWaitMs ───────────────────────────────────────────────────
+
+test("claudeQuotaHoldWaitMs is 0 when no Claude usage-limit hold is active", () => {
+  assert.equal(
+    claudeQuotaHoldWaitMs({ blockedUntilMs: undefined, nowMs: 1_000, engineIndex: 1, cycleMinimumMs: 60_000 }),
+    0,
+  );
+});
+
+test("claudeQuotaHoldWaitMs is 0 once the hold has expired", () => {
+  assert.equal(
+    claudeQuotaHoldWaitMs({ blockedUntilMs: 1_000, nowMs: 1_000, engineIndex: 1, cycleMinimumMs: 60_000 }),
+    0,
+  );
+  assert.equal(
+    claudeQuotaHoldWaitMs({ blockedUntilMs: 1_000, nowMs: 5_000, engineIndex: 1, cycleMinimumMs: 60_000 }),
+    0,
+  );
+});
+
+test("claudeQuotaHoldWaitMs makes non-zero engines sleep out the whole hold", () => {
+  const twoHours = 2 * 60 * 60 * 1000;
+  assert.equal(
+    claudeQuotaHoldWaitMs({ blockedUntilMs: 10_000 + twoHours, nowMs: 10_000, engineIndex: 3, cycleMinimumMs: 60_000 }),
+    twoHours,
+  );
+});
+
+test("claudeQuotaHoldWaitMs wakes engine 0 every cycle minimum so maintenance keeps running", () => {
+  const twoHours = 2 * 60 * 60 * 1000;
+  assert.equal(
+    claudeQuotaHoldWaitMs({ blockedUntilMs: 10_000 + twoHours, nowMs: 10_000, engineIndex: 0, cycleMinimumMs: 60_000 }),
+    60_000,
+  );
+  // Never past the end of the hold.
+  assert.equal(
+    claudeQuotaHoldWaitMs({ blockedUntilMs: 10_000 + 15_000, nowMs: 10_000, engineIndex: 0, cycleMinimumMs: 60_000 }),
+    15_000,
+  );
 });

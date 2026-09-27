@@ -796,11 +796,11 @@ export function runCommand(
       const outputSummary = summarizeOutput(stderrText) || summarizeOutput(stdoutText);
 
       if (timedOut) {
-        reject(
-          new Error(
-            `Command \`${command} ${args.join(" ")}\` timed out after ${options.timeoutMs! / 1000}s and was killed.`,
-          ),
+        const timeoutError = new Error(
+          `Command \`${command} ${args.join(" ")}\` timed out after ${options.timeoutMs! / 1000}s and was killed.`,
         );
+        (timeoutError as CommandTimeoutError).timedOut = true;
+        reject(timeoutError);
         return;
       }
       if (code !== 0) {
@@ -1160,7 +1160,14 @@ function slugifyIssueTitle(title: string): string {
     .slice(0, 40);
 }
 
-const DEFAULT_CLAUDE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+/**
+ * Default wall-clock cap on a single `claude` run. Overridden per run via
+ * `claudeTimeoutMs` (env.yaml `claude_timeout_minutes`). An implementation of
+ * a large issue at high effort routinely runs past an hour, so the cap is a
+ * backstop against a hung CLI, not a budget; `implementIssue` checkpoints any
+ * uncommitted work when it fires so the hour is not lost.
+ */
+export const DEFAULT_CLAUDE_TIMEOUT_MS = 120 * 60 * 1000; // 120 minutes
 const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 
 let claudeQuotaBlockedUntilMs: number | undefined;
@@ -1179,6 +1186,18 @@ export function isClaudeUsageLimitMessage(message: string): boolean {
 export function isClaudeTermsAcceptanceMessage(message: string): boolean {
   return /consumer terms and privacy policy|accept them in claude\.ai|updated our consumer terms/i.test(
     message,
+  );
+}
+
+interface CommandTimeoutError extends Error {
+  timedOut?: boolean;
+}
+
+/** True when `error` is the rejection `runCommand` produces for a `timeoutMs` kill. */
+export function isCommandTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    ((error as CommandTimeoutError).timedOut === true || /\btimed out after \d+(?:\.\d+)?s and was killed\b/.test(error.message))
   );
 }
 
@@ -1308,32 +1327,63 @@ async function resolveBaseBranch(repoDir: string, preferredBaseBranch?: string):
   }
 }
 
+const MONTH_INDEX_BY_ABBREVIATION: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
 /**
  * Parse a quota-reset timestamp from Claude CLI output.
  *
- * Supported examples:
+ * The CLI renders the reset moment with `toLocaleTimeString("en-US")` in the
+ * machine's own zone, dropping the minutes when they are zero and prefixing a
+ * date when the reset is more than a day away. Supported examples:
  * - "resets 6:40pm (America/Los_Angeles)"
- * - "reset at 10:15 AM"
+ * - "resets 3am"
+ * - "resets at 10:15 AM"
+ * - "resets Sep 28, 3pm"
+ * - "resets Sep 28, 2027, 3:30pm"
  *
  * Returns an epoch-millis timestamp in local time, or undefined if parsing fails.
  */
 export function parseUsageResetTimeMs(message: string, now: Date = new Date()): number | undefined {
-  const match = message.match(/\breset(?:s)?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*([ap]m)\b/i);
+  const match = message.match(
+    /\breset(?:s)?\s+(?:at\s+)?(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:(\d{4}),?\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b/i,
+  );
   if (!match) {
     return undefined;
   }
 
-  const rawHour = Number.parseInt(match[1]!, 10);
-  const minute = Number.parseInt(match[2]!, 10);
-  const period = match[3]!.toLowerCase();
+  const monthAbbreviation = match[1]?.toLowerCase();
+  const dayOfMonth = match[2] !== undefined ? Number.parseInt(match[2], 10) : undefined;
+  const year = match[3] !== undefined ? Number.parseInt(match[3], 10) : undefined;
+  const rawHour = Number.parseInt(match[4]!, 10);
+  const minute = match[5] !== undefined ? Number.parseInt(match[5], 10) : 0;
+  const period = match[6]!.toLowerCase();
 
   if (Number.isNaN(rawHour) || Number.isNaN(minute) || rawHour < 1 || rawHour > 12 || minute < 0 || minute > 59) {
     return undefined;
   }
 
-  const hours24 = (rawHour % 12) + (period === "pm" ? 12 : 0);
+  const hours24 = (rawHour % 12) + (period === "p" ? 12 : 0);
   const reset = new Date(now);
   reset.setSeconds(0, 0);
+
+  if (monthAbbreviation !== undefined && dayOfMonth !== undefined) {
+    const monthIndex = MONTH_INDEX_BY_ABBREVIATION[monthAbbreviation];
+    if (monthIndex === undefined || dayOfMonth < 1 || dayOfMonth > 31) {
+      return undefined;
+    }
+    reset.setFullYear(year ?? now.getFullYear(), monthIndex, dayOfMonth);
+    reset.setHours(hours24, minute, 0, 0);
+    if (year === undefined && reset.getTime() <= now.getTime()) {
+      // A dated reset with no year is always in the future; a date that reads
+      // as past can only mean the year has rolled over since it was printed.
+      reset.setFullYear(now.getFullYear() + 1);
+    }
+    return reset.getTime();
+  }
+
   reset.setHours(hours24, minute, 0, 0);
 
   if (reset.getTime() <= now.getTime()) {
@@ -1470,7 +1520,33 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     );
 
     const prompt = buildImplementationPrompt(params, branch);
-    const stdout = await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
+    let stdout: string;
+    try {
+      stdout = await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
+    } catch (error) {
+      if (!isCommandTimeoutError(error)) {
+        throw error;
+      }
+      // The run was killed at the wall-clock cap with its work sitting
+      // uncommitted in the checkout. The next attempt hard-resets that
+      // checkout, so without this the whole run is discarded: commit and push
+      // whatever is there as a checkpoint, and the next attempt starts from
+      // `origin/<branch>` with the partial work in place.
+      const checkpoint = await this.checkpointInterruptedImplementation(
+        repoDir,
+        branch,
+        params,
+        !branchAlreadyExistsRemotely,
+      );
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${message} ` +
+          (checkpoint.commitsAhead > 0
+            ? `Partial work was checkpointed to "${branch}" (${checkpoint.commitsAhead} commit(s) ahead of "${params.baseBranch}"); the next attempt resumes from there.`
+            : `No partial work was left to checkpoint.`),
+        { cause: error },
+      );
+    }
     const payload = extractImplementationPayload(stdout);
 
     // Safety net: if Claude edited files but did not commit them (e.g. because
@@ -1539,6 +1615,63 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         payload?.pullRequestBody ?? `Closes #${params.issueNumber}`,
       headSha,
     };
+  }
+
+  /**
+   * Commit and push whatever an interrupted implementation run left in the
+   * checkout so a later attempt can resume from it. Best effort: a failure
+   * here is logged and reported as "nothing checkpointed" rather than masking
+   * the timeout the caller is about to surface.
+   */
+  private async checkpointInterruptedImplementation(
+    repoDir: string,
+    branch: string,
+    params: ImplementIssueParams,
+    allowForcePush: boolean,
+  ): Promise<{ commitsAhead: number }> {
+    try {
+      const uncommitted = (
+        await runCommand("git", ["status", "--porcelain"], { cwd: repoDir, captureStdout: true })
+      ).trim();
+      if (uncommitted) {
+        await runCommand("git", ["add", "--all"], { cwd: repoDir });
+        await runCommand(
+          "git",
+          [
+            "commit",
+            "-m",
+            `Checkpoint partial work on #${params.issueNumber}: ${params.issueTitle}\n\n` +
+              `The Claude run implementing this issue was stopped at its time limit before it finished. ` +
+              `These are its uncommitted edits, saved so the next attempt can continue from them.`,
+          ],
+          { cwd: repoDir },
+        );
+      }
+      const commitsAhead = Number.parseInt(
+        (
+          await runCommand("git", ["rev-list", "--count", `origin/${params.baseBranch}..HEAD`], {
+            cwd: repoDir,
+            captureStdout: true,
+          })
+        ).trim(),
+        10,
+      );
+      if (Number.isNaN(commitsAhead) || commitsAhead === 0) {
+        return { commitsAhead: 0 };
+      }
+      await this.pushWithRemoteBranchMergeRetry(repoDir, ["push", "origin", branch], branch, {
+        allowForcePush,
+      });
+      console.warn(
+        `[yoke] Claude run for issue #${params.issueNumber} timed out; checkpointed ${commitsAhead} commit(s) to ${branch} so the next attempt resumes from there.`,
+      );
+      return { commitsAhead };
+    } catch (checkpointError) {
+      console.warn(
+        `[yoke] Failed to checkpoint partial work for issue #${params.issueNumber} after the Claude run timed out: ${checkpointError}`,
+      );
+      return { commitsAhead: 0 };
+    }
   }
 
   async selfReview(params: SelfReviewParams): Promise<SelfReviewResult> {

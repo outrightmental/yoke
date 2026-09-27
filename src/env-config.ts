@@ -33,6 +33,8 @@ export interface ProjectEnvConfig {
   claude_describe_model?: string;
   /** Minimum seconds between engine cycle starts. Defaults to global cycle_minimum_seconds. */
   cycle_minimum_seconds?: number;
+  /** Wall-clock cap in minutes on a single Claude run. Defaults to global claude_timeout_minutes. */
+  claude_timeout_minutes?: number;
   /** @deprecated Use the top-level `dashboard_port` instead. Honoured only as a fallback. */
   dashboard_port?: number;
   /** Path for persisted agent-session state. Defaults to .yoke/<owner>-<repo>-sessions.json. */
@@ -54,6 +56,12 @@ export interface EnvConfig {
   max_concurrency?: number;
   /** Global minimum seconds between engine cycle starts (default: 60). */
   cycle_minimum_seconds?: number;
+  /**
+   * Wall-clock cap in minutes on a single Claude run across all projects
+   * (default: 120). A run that reaches it is killed; an implementation run
+   * checkpoints its uncommitted work to the branch first.
+   */
+  claude_timeout_minutes?: number;
   /** Port for the single shared dashboard (default: 3000). */
   dashboard_port?: number;
   /** Title shown in the dashboard header. Defaults to "Outright Mental". */
@@ -109,11 +117,13 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
         `Replace it with "claude_code_initial_model" and "claude_code_review_model".`,
     );
   }
+  assertPositiveMinutesIfPresent(config, "claude_timeout_minutes", filePath);
   for (let i = 0; i < config.projects.length; i++) {
     const p = config.projects[i] as Record<string, unknown>;
     if (!p || typeof p !== "object") {
       throw new Error(`${filePath}: "projects[${i}]" must be an object.`);
     }
+    assertPositiveMinutesIfPresent(p, "claude_timeout_minutes", filePath, `projects[${i}].`);
     if (typeof p.github_repository !== "string" || !p.github_repository.trim()) {
       throw new Error(`${filePath}: "projects[${i}].github_repository" must be a non-empty string.`);
     }
@@ -127,6 +137,21 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   return raw as EnvConfig;
 }
 
+function assertPositiveMinutesIfPresent(
+  mapping: Record<string, unknown>,
+  key: string,
+  filePath: string,
+  prefix = "",
+): void {
+  if (!(key in mapping) || mapping[key] === undefined || mapping[key] === null) return;
+  const value = mapping[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${filePath}: "${prefix}${key}" must be a positive number of minutes.`);
+  }
+}
+
+export const DEFAULT_CLAUDE_TIMEOUT_MINUTES = 120;
+
 export interface ResolvedProjectDefaults {
   max_concurrency: number;
   claude_code_initial_model: string;
@@ -135,6 +160,7 @@ export interface ResolvedProjectDefaults {
   claude_code_review_effort: string;
   claude_describe_model: string | undefined;
   cycle_minimum_seconds: number;
+  claude_timeout_minutes: number;
   reviewers: string[];
   focus_mode: boolean;
 }
@@ -174,6 +200,10 @@ export function applyProjectDefaults(
       projectConfig.claude_describe_model ?? globalConfig.claude_describe_model,
     cycle_minimum_seconds:
       projectConfig.cycle_minimum_seconds ?? globalConfig.cycle_minimum_seconds ?? 60,
+    claude_timeout_minutes:
+      projectConfig.claude_timeout_minutes ??
+      globalConfig.claude_timeout_minutes ??
+      DEFAULT_CLAUDE_TIMEOUT_MINUTES,
     reviewers: projectConfig.reviewers ?? [],
     focus_mode: projectConfig.focus_mode ?? false,
   };
