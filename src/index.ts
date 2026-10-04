@@ -989,19 +989,29 @@ async function runEngine(
             : undefined;
           if (quotaHold !== undefined) {
             cycleRateLimitedUntilMs = quotaHold.blockedUntilMs;
-          }
-          emitter.emit("action-error", {
-            actionIndex: engineIndex + 1,
-            totalActions: globalMaxConcurrency,
-            repo: ctx.repoKey,
-            error: errorMessage,
-          });
-          if (quotaHold !== undefined) {
+            // A usage limit is a hold, not an action failure. Surfacing it as a
+            // red `✗ … failed: Claude CLI usage limit reached` line and an
+            // errored cylinder would reproduce on the dashboard exactly the
+            // burst of duplicate failures this change removes from the CLI, so
+            // report it the same way the pool gate does: the engine is parked
+            // on the quota until the reset, nothing more.
+            emitter.emit("engine-idle", {
+              engineIndex,
+              reason: "claude-usage-limit",
+              rateLimitedUntilMs: quotaHold.blockedUntilMs,
+              nextCycleAtMs: quotaHold.blockedUntilMs,
+            });
             note(
               `⏸ not attempted — ${formatWaitStatusLine({ untilMs: quotaHold.blockedUntilMs, reason: quotaHold.reason })}.`,
               2,
             );
           } else {
+            emitter.emit("action-error", {
+              actionIndex: engineIndex + 1,
+              totalActions: globalMaxConcurrency,
+              repo: ctx.repoKey,
+              error: errorMessage,
+            });
             const backoffMs = actionCooldowns.recordFailure(repoActionKey(ctx.repoKey, action));
             failure(`✗ failed: ${errorMessage}`, 2);
             note(`retrying this action no sooner than ${formatDuration(backoffMs)} from now.`, 2);
