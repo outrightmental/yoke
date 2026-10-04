@@ -25,7 +25,8 @@ from pathlib import Path
 
 from PIL import Image
 
-# Square source; the lamp is rendered as a circle roughly half this wide, so
+# Square source; the lamp is rendered as a circle a fraction of this wide (it
+# matches the header's text height, ~40px — see --keep-awake-lamp-size), so
 # 160px keeps it crisp on a HiDPI display without bloating the file.
 SIZE = 160
 FPS = 20

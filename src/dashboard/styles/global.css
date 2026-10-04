@@ -218,22 +218,31 @@ keep-awake-light { display: contents; }
    Dashboard plays one for as long as it is open — in the corner, where the
    buffoonery is on show rather than hidden offscreen. */
 .keep-awake {
+  /* The lamp is exactly as tall as the two text lines beside it (#250), so it
+     can never be the thing that sets the header's height. Both line boxes are
+     pinned rather than left to the font's natural leading, so that diameter is
+     arithmetic instead of a guess. */
+  --keep-awake-label-line: 12px;
+  --keep-awake-state-line: 26px;
+  --keep-awake-text-gap: 2px;
+  --keep-awake-lamp-size: calc(
+    var(--keep-awake-label-line) + var(--keep-awake-text-gap) + var(--keep-awake-state-line)
+  );
   display: flex;
   align-items: center;
   gap: 12px;
-  /* Overhang the header's padding, so the lamp costs less height than it has. */
-  margin: -10px 0;
 }
 
 .keep-awake-text {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
+  gap: var(--keep-awake-text-gap);
 }
 
 .keep-awake-label {
   font-size: 10px;
+  line-height: var(--keep-awake-label-line);
   color: #0088ff;
   text-transform: uppercase;
   letter-spacing: 2px;
@@ -241,24 +250,30 @@ keep-awake-light { display: contents; }
 
 .keep-awake-state {
   font-size: 22px;
+  line-height: var(--keep-awake-state-line);
   font-weight: 700;
   letter-spacing: 3px;
   color: #00ff88;
   text-shadow: 0 0 12px rgba(0, 255, 136, 0.9);
 }
 
-/* Big on purpose, and not only for show: a browser only holds the system
-   screen wake lock for a video it considers properly visible — a thumbnail
-   tucked in a corner can be ignored. */
+/* As big as the header's own text rows allow, and no bigger (#250): a lamp
+   taller than the text beside it drags the whole header taller, which it used
+   to do at 104px even with a negative margin overhanging the padding. What a
+   browser wants before it holds the system screen wake lock is a video it
+   considers properly visible — playing, on screen, unclipped, not hidden or
+   scrolled away — rather than a video of any particular bulk, so the loop
+   stays fully on show at the height the header already has, and the Screen
+   Wake Lock API request in keep-awake.ts backs it up where it is allowed. */
 .keep-awake-lamp {
-  width: 104px;
-  height: 104px;
+  width: var(--keep-awake-lamp-size);
+  height: var(--keep-awake-lamp-size);
   flex-shrink: 0;
   border-radius: 50%;
   overflow: hidden;
   background: var(--bg-dark);
   border: 2px solid rgba(0, 255, 136, 0.6);
-  box-shadow: 0 0 26px rgba(0, 255, 136, 0.5), inset 0 0 16px rgba(0, 255, 136, 0.3);
+  box-shadow: 0 0 14px rgba(0, 255, 136, 0.5), inset 0 0 8px rgba(0, 255, 136, 0.3);
 }
 
 .keep-awake-video {
@@ -278,7 +293,7 @@ keep-awake-light { display: contents; }
 .keep-awake.is-blocked .keep-awake-lamp {
   cursor: pointer;
   border-color: rgba(255, 204, 0, 0.6);
-  box-shadow: 0 0 14px rgba(255, 204, 0, 0.35);
+  box-shadow: 0 0 10px rgba(255, 204, 0, 0.35);
   filter: grayscale(0.7) brightness(0.55);
 }
 
