@@ -251,3 +251,74 @@ test("the Dashboard mounts the keep-awake lamp whenever it is open", () => {
     "the lamp is unconditional — the Dashboard keeps the machine awake whenever it is open (#246)",
   );
 });
+
+// ── The lamp's footprint (#250) ───────────────────────────────────────────────
+
+const GLOBAL_CSS = readFileSync(join(ROOT, "src", "dashboard", "styles", "global.css"), "utf-8");
+
+/** The declaration block of a top-level rule, e.g. `rule(".keep-awake-lamp")`. */
+function rule(selector: string): string {
+  const pattern = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`, "m");
+  const body = pattern.exec(GLOBAL_CSS)?.[1];
+  assert.ok(body !== undefined, `global.css should declare ${selector}`);
+  return body;
+}
+
+/** The value of one declaration out of a block, e.g. `decl(lamp, "height")`. */
+function decl(block: string, property: string): string {
+  const value = new RegExp(`^\\s*${property}:([^;]+);`, "m").exec(block)?.[1];
+  assert.ok(value !== undefined, `the rule should declare ${property}`);
+  return value;
+}
+
+/** Resolve a CSS length in px, against the custom properties of `scope`. */
+function px(expression: string, scope: string): number {
+  let resolved = expression;
+  while (resolved.includes("var(")) {
+    const before = resolved;
+    resolved = resolved.replace(/var\((--[\w-]+)\)/g, (_, name: string) => `(${decl(scope, name).trim()})`);
+    assert.notEqual(resolved, before, `cannot resolve the custom properties in "${expression}"`);
+  }
+  const arithmetic = resolved.replace(/calc/g, "").replace(/px/g, "");
+  assert.match(arithmetic, /^[\d\s+\-*/().]+$/, `cannot resolve "${expression}" to a length`);
+  // Nothing but digits, whitespace and operators survived the check above.
+  return Number(new Function(`return ${arithmetic};`)());
+}
+
+test("the keep-awake lamp is no taller than the header text beside it (#250)", () => {
+  const scope = rule(".keep-awake");
+  const lamp = rule(".keep-awake-lamp");
+
+  const diameter = px(decl(lamp, "height"), scope);
+  assert.equal(px(decl(lamp, "width"), scope), diameter, "the lamp should still be a circle");
+
+  // The text column it sits beside: two pinned line boxes and the gap between.
+  const textHeight = px(
+    "calc(var(--keep-awake-label-line) + var(--keep-awake-text-gap) + var(--keep-awake-state-line))",
+    scope,
+  );
+
+  assert.ok(
+    diameter > 0 && diameter <= textHeight,
+    `the lamp is ${diameter}px but the header's text is only ${textHeight}px tall, so the lamp is what sets the header's height (#250)`,
+  );
+  assert.doesNotMatch(
+    scope,
+    /margin:\s*-/,
+    "a lamp that fits needs no negative margin overhanging the header's padding (#250)",
+  );
+});
+
+test("the keep-awake text pins its line boxes, and the loop still fills the lamp (#250)", () => {
+  // Natural leading would make the lamp's fit a guess rather than arithmetic.
+  assert.match(rule(".keep-awake-label"), /line-height:\s*var\(--keep-awake-label-line\)/);
+  assert.match(rule(".keep-awake-state"), /line-height:\s*var\(--keep-awake-state-line\)/);
+  assert.match(rule(".keep-awake-text"), /gap:\s*var\(--keep-awake-text-gap\)/);
+
+  // A browser only holds the screen wake lock for a video it can see playing,
+  // so the smaller lamp must still be filled by the loop, not clipped away.
+  const video = rule(".keep-awake-video");
+  assert.match(decl(video, "width"), /100%/, "the loop should fill the lamp's width");
+  assert.match(decl(video, "height"), /100%/, "the loop should fill the lamp's height");
+  assert.doesNotMatch(video, /display:\s*none/);
+});
