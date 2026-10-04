@@ -121,7 +121,14 @@ On every iteration, `yoke`:
 7. Asks Claude to self-review the diff and push fixes if needed. Requires two consecutive clean self-reviews before advancing.
 8. Generates a polished final PR description with Claude, updates the PR body, preserves closing references, and squash-merges. Retries with `--admin` if GitHub's branch policy requires it.
 
-When the Claude CLI reports that the subscription's usage limit is exhausted, every engine pauses until the reset time the CLI printed (the Dashboard shows the countdown) instead of claiming issues and failing on them cycle after cycle; GitHub-only maintenance such as workflow approvals and reconciliation keeps running.
+When the Claude CLI reports that the subscription's usage limit is exhausted, `yoke` reads the reset time out of the CLI's own message and treats it as a hard hold on the whole engine pool: nothing is planned, claimed, checked out or run until it passes, and work resumes by itself the moment it does. GitHub-only maintenance (workflow approvals, reconciliation, the activity feed) keeps running throughout.
+
+The hold is said once, not once per engine per cycle:
+
+- **In the terminal**, a single line updates in place for the duration — `waiting 2h 14m until Sep 21, 8:50 AM for Claude usage limit` — with no repeated checkout output and no repeated identical failures behind it.
+- **On the Dashboard**, a banner across the top of the page shows what is being waited on, how much is left, and the wall-clock time it ends. It is replayed to a browser that connects mid-hold, so a reload never makes a parked run look merely idle.
+
+GitHub rate-limit holds get the same treatment.
 
 ## The big idea
 
