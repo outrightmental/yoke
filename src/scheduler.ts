@@ -121,3 +121,37 @@ export function claudeQuotaHoldWaitMs(params: {
   const remainingMs = blockedUntilMs - nowMs;
   return engineIndex === 0 ? Math.min(remainingMs, Math.max(cycleMinimumMs, 1)) : remainingMs;
 }
+
+/**
+ * One voice for a hold that every engine can see.
+ *
+ * A usage limit or a rate limit is a single shared deadline, so on the cycle it
+ * trips, every engine in the pool discovers the same hold at the same moment.
+ * Letting each narrate it is what produced the duplicate failures this
+ * replaced. Routing the announcement through one of these makes the CLI log and
+ * the dashboard say it once — and say "resumed" once — however many engines are
+ * parked on it, while still re-announcing when the cause or the deadline
+ * actually changes.
+ */
+export class HoldAnnouncer {
+  private announced: { key: string; untilMs: number } | undefined;
+
+  /** True for the one caller that should announce this hold. */
+  enter(key: string, untilMs: number): boolean {
+    if (this.announced?.key === key && this.announced.untilMs === untilMs) return false;
+    this.announced = { key, untilMs };
+    return true;
+  }
+
+  /** True for the one caller that should announce work resuming. */
+  exit(): boolean {
+    if (this.announced === undefined) return false;
+    this.announced = undefined;
+    return true;
+  }
+
+  /** The hold currently announced, if any. */
+  current(): { key: string; untilMs: number } | undefined {
+    return this.announced;
+  }
+}
