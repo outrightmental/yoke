@@ -53,6 +53,7 @@ lifecycle-list  { display: contents; }
 broadcast-feed  { display: contents; }
 event-stream    { display: contents; }
 status-bar      { display: contents; }
+keep-awake-light { display: contents; }
 
 /* ── Header ── */
 .header {
@@ -153,6 +154,73 @@ status-bar      { display: contents; }
   font-size: 32px;
   color: #00ff88;
   text-shadow: 0 0 20px rgba(0, 255, 136, 1), 0 0 40px rgba(0, 255, 136, 0.5);
+}
+
+/* ── Keep-awake lamp (#246) ──
+   The glow is a playing video, not CSS. An actively playing video is the only
+   thing observed to stop a locked-down laptop sleeping mid-run, so the
+   Dashboard plays one for as long as it is open — in the corner, where the
+   buffoonery is on show rather than hidden offscreen. */
+.keep-awake {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Overhang the header's padding so a 56px lamp costs barely any height. */
+  margin: -6px 0;
+}
+
+.keep-awake-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.keep-awake-label {
+  font-size: 10px;
+  color: #0088ff;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.keep-awake-state {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #00ff88;
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
+}
+
+.keep-awake-lamp {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--bg-dark);
+  border: 2px solid rgba(0, 255, 136, 0.6);
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.45), inset 0 0 12px rgba(0, 255, 136, 0.25);
+}
+
+.keep-awake-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Hairline overscan: the loop's outermost pixels are its darkest. */
+  transform: scale(1.04);
+}
+
+.keep-awake.is-blocked .keep-awake-state {
+  color: #ffcc00;
+  text-shadow: 0 0 10px rgba(255, 204, 0, 0.8);
+}
+
+.keep-awake.is-blocked .keep-awake-lamp {
+  cursor: pointer;
+  border-color: rgba(255, 204, 0, 0.6);
+  box-shadow: 0 0 14px rgba(255, 204, 0, 0.35);
+  filter: grayscale(0.7) brightness(0.55);
 }
 
 /* ── Main layout ── */
