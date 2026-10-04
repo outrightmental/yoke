@@ -6,7 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  activeWaitKeys,
+  announceWait,
   buildIncompletePullRequestBody,
+  CLAUDE_QUOTA_WAIT_KEY,
+  CLAUDE_QUOTA_WAIT_REASON,
+  clearClaudeQuotaHold,
+  clearWait,
   createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
@@ -18,12 +24,16 @@ import {
   SELF_REVIEW_PAYLOAD_END_MARKER,
   SELF_REVIEW_PAYLOAD_START_MARKER,
   formatUserCommentsSection,
+  formatWaitStatusLine,
+  getClaudeQuotaBlockedUntilMs,
+  getClaudeQuotaHold,
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
   isClaudeTermsAcceptanceMessage,
   isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
+  recordClaudeQuotaHold,
   runCommand,
   sanitizePullRequestTitle,
   validateClaudeAuth,
@@ -333,6 +343,152 @@ test("parseUsageResetTimeMs parses a dated reset that names the year", () => {
 test("parseUsageResetTimeMs rejects an impossible hour", () => {
   assert.equal(parseUsageResetTimeMs("resets 13pm"), undefined);
   assert.equal(parseUsageResetTimeMs("resets 0:30am"), undefined);
+});
+
+// ── the shared Claude usage-limit hold (issue #243) ──────────────────────────
+
+/** The hold is process-global; never let one test's hold leak into the next. */
+function withoutQuotaHold(t: test.TestContext): void {
+  t.after(() => { clearClaudeQuotaHold(); });
+}
+
+test("formatWaitStatusLine reads as the polite one-line CLI form", (t) => {
+  const now = Date.UTC(2026, 8, 21, 12, 0, 0);
+  const line = formatWaitStatusLine(
+    { untilMs: now + 2 * 60 * 60 * 1000 + 14 * 60 * 1000, reason: CLAUDE_QUOTA_WAIT_REASON },
+    now,
+  );
+  assert.match(line, /^waiting 2h 14m until .+ for Claude usage limit$/, line);
+  t.diagnostic(line);
+});
+
+test("formatWaitStatusLine drops to minutes and seconds for short waits", () => {
+  const now = Date.UTC(2026, 8, 21, 12, 0, 0);
+  assert.match(
+    formatWaitStatusLine({ untilMs: now + 90_000, reason: "a limit" }, now),
+    /^waiting 1m 30s until /,
+  );
+  assert.match(
+    formatWaitStatusLine({ untilMs: now + 9_000, reason: "a limit" }, now),
+    /^waiting 9s until /,
+  );
+});
+
+test("recordClaudeQuotaHold parks Claude work until the stated reset time", (t) => {
+  withoutQuotaHold(t);
+  const blockedUntilMs = Date.now() + 60 * 60 * 1000;
+  recordClaudeQuotaHold({ blockedUntilMs, reason: CLAUDE_QUOTA_WAIT_REASON });
+  assert.deepEqual(getClaudeQuotaHold(), { blockedUntilMs, reason: CLAUDE_QUOTA_WAIT_REASON });
+  assert.equal(getClaudeQuotaBlockedUntilMs(), blockedUntilMs);
+  assert.deepEqual(activeWaitKeys(), [CLAUDE_QUOTA_WAIT_KEY], "one wait line, for the whole pool");
+});
+
+test("a hold expires on its own so work resumes without anyone clearing it", (t) => {
+  withoutQuotaHold(t);
+  recordClaudeQuotaHold({ blockedUntilMs: Date.now() - 1, reason: CLAUDE_QUOTA_WAIT_REASON });
+  assert.equal(getClaudeQuotaHold(), undefined);
+  assert.equal(getClaudeQuotaBlockedUntilMs(), undefined);
+});
+
+test("a second engine hitting the same limit does not move the hold", (t) => {
+  withoutQuotaHold(t);
+  const blockedUntilMs = Date.now() + 60 * 60 * 1000;
+  recordClaudeQuotaHold({ blockedUntilMs, reason: CLAUDE_QUOTA_WAIT_REASON });
+  // Engines fail seconds apart and each computes its own fallback deadline; a
+  // near-identical one must not replace (and so re-narrate) the live hold.
+  recordClaudeQuotaHold({ blockedUntilMs: blockedUntilMs + 20_000, reason: CLAUDE_QUOTA_WAIT_REASON });
+  assert.equal(getClaudeQuotaBlockedUntilMs(), blockedUntilMs, "hold deadline unchanged");
+  assert.deepEqual(activeWaitKeys(), [CLAUDE_QUOTA_WAIT_KEY], "still one wait line");
+});
+
+test("a materially later reset time extends the hold", (t) => {
+  withoutQuotaHold(t);
+  const blockedUntilMs = Date.now() + 60 * 60 * 1000;
+  recordClaudeQuotaHold({ blockedUntilMs, reason: CLAUDE_QUOTA_WAIT_REASON });
+
+  const laterMs = blockedUntilMs + 2 * 60 * 60 * 1000;
+  recordClaudeQuotaHold({ blockedUntilMs: laterMs, reason: CLAUDE_QUOTA_WAIT_REASON });
+  assert.equal(
+    getClaudeQuotaBlockedUntilMs(),
+    laterMs,
+    "a revised reset time must not be ignored",
+  );
+  assert.deepEqual(activeWaitKeys(), [CLAUDE_QUOTA_WAIT_KEY], "and still just the one wait line");
+});
+
+test("announceWait keeps one wait line per cause, however many engines ask", (t) => {
+  t.after(() => {
+    clearWait("test-hold-a");
+    clearWait("test-hold-b");
+  });
+  const untilMs = Date.now() + 60 * 60 * 1000;
+  for (let engine = 0; engine < 5; engine += 1) {
+    announceWait("test-hold-a", { untilMs, reason: "a shared limit" });
+  }
+  announceWait("test-hold-b", { untilMs, reason: "another shared limit" });
+  assert.deepEqual(activeWaitKeys(), ["test-hold-a", "test-hold-b"]);
+
+  clearWait("test-hold-a");
+  assert.deepEqual(activeWaitKeys(), ["test-hold-b"]);
+});
+
+test("announceWait ignores a deadline that has already passed", (t) => {
+  t.after(() => { clearWait("test-hold-past"); });
+  announceWait("test-hold-past", { untilMs: Date.now() - 1, reason: "a lapsed limit" });
+  assert.equal(activeWaitKeys().includes("test-hold-past"), false);
+});
+
+test("a held agent refuses every operation before it touches git", async (t) => {
+  withoutQuotaHold(t);
+  const checkoutRootDir = join(await mkdtemp(join(tmpdir(), "yoke-hold-")), "checkouts");
+  t.after(async () => { await rm(checkoutRootDir, { recursive: true, force: true }); });
+
+  const client = createClaudeAgentClient({
+    githubToken: "unused-because-nothing-should-run",
+    checkoutRootDir,
+    // Any git command would have to reach for this; nothing should.
+    repositoryCloneUrl: () => "file:///nonexistent-this-must-never-be-cloned",
+  });
+
+  const blockedUntilMs = Date.now() + 60 * 60 * 1000;
+  recordClaudeQuotaHold({ blockedUntilMs, reason: CLAUDE_QUOTA_WAIT_REASON });
+
+  const operations: Array<[string, () => Promise<unknown>]> = [
+    ["implementIssue", () => client.implementIssue({
+      owner: "o", repo: "r", issueNumber: 1, issueTitle: "t", issueBody: "b", baseBranch: "main",
+    })],
+    ["selfReview", () => client.selfReview({
+      owner: "o", repo: "r", pullRequestNumber: 2, pullRequestTitle: "t", pullRequestBody: "b",
+      headRefName: "head", baseRefName: "main",
+    })],
+    ["resolveMergeConflicts", () => client.resolveMergeConflicts({
+      owner: "o", repo: "r", pullRequestNumber: 2, headRefName: "head", baseRefName: "main",
+    })],
+    ["addressFailingChecks", () => client.addressFailingChecks({
+      owner: "o", repo: "r", pullRequestNumber: 2, headRefName: "head", baseRefName: "main",
+      failingChecks: [{ name: "test", logExcerpt: "boom" }],
+    })],
+    ["generateFinalDescription", () => client.generateFinalDescription({
+      owner: "o", repo: "r", pullRequestNumber: 2, pullRequestTitle: "t", pullRequestBody: "b",
+      headRefName: "head", baseRefName: "main", closingIssueNumbers: [1],
+    })],
+  ];
+
+  for (const [name, run] of operations) {
+    await assert.rejects(
+      run,
+      /Claude CLI usage limit reached/,
+      `${name} must refuse while the hold stands`,
+    );
+  }
+
+  // The proof that nothing ran: no checkout directory was ever created, so no
+  // clone, fetch, `checkout -B` or reset happened for any of the five calls.
+  await assert.rejects(
+    () => stat(checkoutRootDir),
+    /ENOENT/,
+    "a held engine must not prepare a checkout",
+  );
 });
 
 test("parseUsageResetTimeMs returns undefined when reset time is missing", () => {

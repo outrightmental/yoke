@@ -1,5 +1,6 @@
 import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard } from './types.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold } from './types.js';
+import { formatClockTime, formatDuration } from '../shared/format.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -97,6 +98,7 @@ export function initialState(): DashboardState {
     sessionCount: 0,
     shutdownRequested: false,
     appShutdown: false,
+    hold: null,
     multiProject: false,
     owner: '',
     repo: '',
@@ -127,6 +129,8 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     }
     case 'github-rate-limit-cleared':
       return addToStream(state, '✓ GitHub rate limit cleared', -1, 'success');
+    case 'work-hold':         return applyWorkHold(state, event.data);
+    case 'work-hold-cleared': return applyWorkHoldCleared(state);
     case 'broadcast-github-activity':
     case 'broadcast-commit':
     case 'broadcast-pr-update':
@@ -434,6 +438,32 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
   };
 
   return { ...state, broadcastQueue: [...state.broadcastQueue, item] };
+}
+
+/**
+ * A hold has parked the whole pool. Kept as one piece of global state rather
+ * than inferred from the cylinders: every engine reports itself idle during a
+ * hold, which is indistinguishable from an idle run with nothing to do.
+ */
+function applyWorkHold(state: DashboardState, data: Record<string, unknown>): DashboardState {
+  const untilMs = typeof data['untilMs'] === 'number' ? data['untilMs'] : 0;
+  const reason = typeof data['reason'] === 'string' ? data['reason'] : 'a shared limit';
+  const kind = typeof data['kind'] === 'string' ? data['kind'] : 'hold';
+  if (untilMs <= Date.now()) return state;
+  const hold: WorkHold = { kind, reason, untilMs };
+  // A replayed cache event re-states the hold the browser already shows; don't
+  // log it twice.
+  if (state.hold?.untilMs === untilMs && state.hold.kind === kind) return state;
+  return addToStream(
+    { ...state, hold },
+    `⏸ Waiting ${formatDuration(untilMs - Date.now())} until ${formatClockTime(untilMs)} for ${reason}`,
+    -1, 'warning',
+  );
+}
+
+function applyWorkHoldCleared(state: DashboardState): DashboardState {
+  if (state.hold === null) return state;
+  return addToStream({ ...state, hold: null }, '▶ Done waiting — resuming work', -1, 'success');
 }
 
 function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>): DashboardState {

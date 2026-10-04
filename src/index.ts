@@ -4,10 +4,14 @@ import * as path from "node:path";
 
 import { executeAction, type ExecuteActionResult } from "./actions.js";
 import {
+  announceWait,
+  CLAUDE_QUOTA_WAIT_KEY,
+  clearWait,
   createClaudeAgentClient,
   DEFAULT_COMMIT_MODEL,
+  formatWaitStatusLine,
+  getClaudeQuotaHold,
   isClaudeUsageLimitMessage,
-  getClaudeQuotaBlockedUntilMs,
   validateClaudeAuth,
   writeLogLine,
   setLogSink,
@@ -27,6 +31,7 @@ import {
   claimsForRepo,
   claimedImplementationIssueNumbers,
   claudeQuotaHoldWaitMs,
+  HoldAnnouncer,
   tryClaimFromPlan,
 } from "./scheduler.js";
 import { reconcileSessions } from "./reconcile.js";
@@ -187,6 +192,12 @@ function formatDuration(milliseconds: number): string {
 function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
+
+/**
+ * Shared across the whole pool so a hold every engine can see is announced
+ * once, not once per engine. See `HoldAnnouncer`.
+ */
+const holdAnnouncer = new HoldAnnouncer();
 
 /** Serialises planning across all engines to prevent double-booking. */
 class PlanningMutex {
@@ -702,9 +713,6 @@ async function runEngine(
   const { write, blank, section, bullet, note, failure } = createLogger(emitter);
   const isOnceMode = contexts[0]?.config.once ?? false;
   let iterationNumber = 0;
-  // The Claude hold this engine last announced, so a multi-hour pause logs
-  // once per engine rather than once per poll.
-  let announcedClaudeHoldUntilMs: number | undefined;
 
   // Sleep for `waitMs`, waking early on shutdown or cancel. Engine 0 keeps
   // every project's feed alive while it waits.
@@ -729,6 +737,45 @@ async function runEngine(
         }
       }
     }
+  };
+
+  /**
+   * Park this engine's cycle on a hold, announcing it exactly once for the pool.
+   *
+   * The CLI gets a single line that counts down in place for the whole hold
+   * (the wait notice), plus one scrollback line saying what is being waited on;
+   * the dashboard gets a `work-hold` event it renders as a banner.
+   */
+  const enterHold = (hold: {
+    key: string;
+    kind: string;
+    untilMs: number;
+    reason: string;
+    /** One extra sentence worth saying the first time, if any. */
+    detail?: string;
+  }): void => {
+    announceWait(hold.key, { untilMs: hold.untilMs, reason: hold.reason });
+    if (!holdAnnouncer.enter(hold.key, hold.untilMs)) return;
+    emitter.emit("work-hold", {
+      kind: hold.kind,
+      reason: hold.reason,
+      untilMs: hold.untilMs,
+    });
+    blank();
+    write(
+      `⏸ ${formatWaitStatusLine({ untilMs: hold.untilMs, reason: hold.reason })} — ` +
+        `no work will be planned or started until then.`,
+    );
+    if (hold.detail !== undefined) bullet(hold.detail);
+  };
+
+  /** Announce, once for the pool, that the hold lifted and work is resuming. */
+  const exitHold = (): void => {
+    const previous = holdAnnouncer.current();
+    if (!holdAnnouncer.exit() || previous === undefined) return;
+    clearWait(previous.key);
+    emitter.emit("work-hold-cleared", {});
+    write(`▶ done waiting — resuming work.`);
   };
 
   do {
@@ -759,6 +806,12 @@ async function runEngine(
       if (held?.hold) {
         const heldCtx = held.ctx;
         const hold = held.hold;
+        enterHold({
+          key: `github-rate-limit:${heldCtx.repoKey}`,
+          kind: "github-rate-limit",
+          untilMs: hold.blockedUntilMs,
+          reason: `GitHub rate limit · ${heldCtx.repoKey}`,
+        });
         emitter.emit("engine-idle", {
           engineIndex,
           reason: "github-rate-limit",
@@ -793,26 +846,29 @@ async function runEngine(
       // has hit it, every Claude action fails until the reset. Pause here rather
       // than claim an issue, prepare its checkout and fail on it every cycle.
       // Maintenance above is GitHub-only and keeps running on engine 0.
-      const claudeHoldUntilMs = getClaudeQuotaBlockedUntilMs();
+      const claudeHold = getClaudeQuotaHold();
       const claudeHoldWaitMs = claudeQuotaHoldWaitMs({
-        blockedUntilMs: claudeHoldUntilMs,
+        blockedUntilMs: claudeHold?.blockedUntilMs,
         nowMs: Date.now(),
         engineIndex,
         cycleMinimumMs: globalCycleMinimumMs,
       });
-      if (claudeHoldWaitMs > 0 && claudeHoldUntilMs !== undefined) {
+      if (claudeHoldWaitMs > 0 && claudeHold !== undefined) {
+        enterHold({
+          key: CLAUDE_QUOTA_WAIT_KEY,
+          kind: "claude-usage-limit",
+          untilMs: claudeHold.blockedUntilMs,
+          reason: claudeHold.reason,
+          detail:
+            "the reset time comes from the Claude CLI's own message; " +
+            "GitHub-only maintenance (workflow approvals, reconciliation) keeps running.",
+        });
         emitter.emit("engine-idle", {
           engineIndex,
           reason: "claude-usage-limit",
-          rateLimitedUntilMs: claudeHoldUntilMs,
-          nextCycleAtMs: claudeHoldUntilMs,
+          rateLimitedUntilMs: claudeHold.blockedUntilMs,
+          nextCycleAtMs: claudeHold.blockedUntilMs,
         });
-        if (announcedClaudeHoldUntilMs !== claudeHoldUntilMs) {
-          announcedClaudeHoldUntilMs = claudeHoldUntilMs;
-          write(
-            `Engine ${engineIndex + 1}: Claude usage limit reached — paused until approximately ${new Date(claudeHoldUntilMs).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", hour12: true, month: "short", day: "numeric" })} (${formatDuration(claudeHoldUntilMs - Date.now())} from now).`,
-          );
-        }
         if (isOnceMode) {
           write(`Engine ${engineIndex + 1}: shutdown — Claude usage limit reached in --once mode.`);
           emitter.emit("engine-shutdown", { engineIndex });
@@ -821,7 +877,10 @@ async function runEngine(
         await idleWait(claudeHoldWaitMs);
         continue;
       }
-      announcedClaudeHoldUntilMs = undefined;
+
+      // Nothing is holding this engine back, so the hold (if there was one) is
+      // over. Announced once for the pool, by whichever engine gets here first.
+      exitHold();
 
       // ── Planning phase (serialised via the shared mutex) ────────────────────
       const planned = await planningMutex.withLock(() =>
@@ -921,18 +980,42 @@ async function runEngine(
             error instanceof Error
               ? (error.stack ?? error.message)
               : `non-Error rejection: ${String(error)}`;
-          if (isClaudeUsageLimitMessage(errorMessage)) {
-            cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
+          // A usage limit says nothing about the action — only that nothing can
+          // run yet. It is the hold that is reported (once, for the pool), not
+          // the action, and the action keeps whatever backoff it already had
+          // rather than being punished for the quota.
+          const quotaHold = isClaudeUsageLimitMessage(errorMessage)
+            ? getClaudeQuotaHold()
+            : undefined;
+          if (quotaHold !== undefined) {
+            cycleRateLimitedUntilMs = quotaHold.blockedUntilMs;
+            // A usage limit is a hold, not an action failure. Surfacing it as a
+            // red `✗ … failed: Claude CLI usage limit reached` line and an
+            // errored cylinder would reproduce on the dashboard exactly the
+            // burst of duplicate failures this change removes from the CLI, so
+            // report it the same way the pool gate does: the engine is parked
+            // on the quota until the reset, nothing more.
+            emitter.emit("engine-idle", {
+              engineIndex,
+              reason: "claude-usage-limit",
+              rateLimitedUntilMs: quotaHold.blockedUntilMs,
+              nextCycleAtMs: quotaHold.blockedUntilMs,
+            });
+            note(
+              `⏸ not attempted — ${formatWaitStatusLine({ untilMs: quotaHold.blockedUntilMs, reason: quotaHold.reason })}.`,
+              2,
+            );
+          } else {
+            emitter.emit("action-error", {
+              actionIndex: engineIndex + 1,
+              totalActions: globalMaxConcurrency,
+              repo: ctx.repoKey,
+              error: errorMessage,
+            });
+            const backoffMs = actionCooldowns.recordFailure(repoActionKey(ctx.repoKey, action));
+            failure(`✗ failed: ${errorMessage}`, 2);
+            note(`retrying this action no sooner than ${formatDuration(backoffMs)} from now.`, 2);
           }
-          emitter.emit("action-error", {
-            actionIndex: engineIndex + 1,
-            totalActions: globalMaxConcurrency,
-            repo: ctx.repoKey,
-            error: errorMessage,
-          });
-          const backoffMs = actionCooldowns.recordFailure(repoActionKey(ctx.repoKey, action));
-          failure(`✗ failed: ${errorMessage}`, 2);
-          note(`retrying this action no sooner than ${formatDuration(backoffMs)} from now.`, 2);
         } finally {
           claimedActions.delete(repoActionKey(ctx.repoKey, action));
           // The project's state changed; force a fresh snapshot next plan so the

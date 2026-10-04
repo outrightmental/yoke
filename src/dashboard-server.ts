@@ -305,6 +305,12 @@ export class DashboardServer {
       this.cachedEvents.set(type, event);
     } else if (type === "github-rate-limit-cleared") {
       this.cachedEvents.delete("github-rate-limit");
+    } else if (type === "work-hold") {
+      // Replayed on reconnect so a browser opened *during* a multi-hour hold
+      // still shows the waiting banner instead of a dashboard that looks idle.
+      this.cachedEvents.set(type, event);
+    } else if (type === "work-hold-cleared") {
+      this.cachedEvents.delete("work-hold");
     } else if (type === "shutdown-requested" || type === "app-shutdown") {
       this.cachedEvents.set(type, event);
     }

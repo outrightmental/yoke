@@ -314,6 +314,41 @@ test("DashboardServer caches engine-idle with rateLimitedUntilMs", async (t) => 
   assert.equal(idleMsg?.data["rateLimitedUntilMs"], rateLimitedUntilMs, "rateLimitedUntilMs should be preserved");
 });
 
+test("DashboardServer replays a live work-hold so a browser opened mid-hold sees it", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 19,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const untilMs = Date.now() + 3 * 60 * 60 * 1000;
+  globalEventEmitter.emit("work-hold", {
+    kind: "claude-usage-limit",
+    reason: "Claude usage limit",
+    untilMs,
+  });
+
+  let res = await httpGet(`http://127.0.0.1:${TEST_PORT + 19}/api/state`);
+  let data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const hold = data.cachedEvents.find((m) => m.type === "work-hold");
+  assert.ok(hold !== undefined, "a hold lasting hours must survive a page reload");
+  assert.equal(hold?.data["untilMs"], untilMs);
+  assert.equal(hold?.data["kind"], "claude-usage-limit");
+
+  globalEventEmitter.emit("work-hold-cleared", {});
+  res = await httpGet(`http://127.0.0.1:${TEST_PORT + 19}/api/state`);
+  data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  assert.equal(
+    data.cachedEvents.some((m) => m.type === "work-hold"),
+    false,
+    "a lifted hold must not be replayed as if still active",
+  );
+});
+
 test("DashboardServer caches action-start with startedAt for accurate elapsed-time replay", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 11,

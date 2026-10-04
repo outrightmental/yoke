@@ -6,6 +6,7 @@ import {
   claimsForRepo,
   claimedImplementationIssueNumbers,
   claudeQuotaHoldWaitMs,
+  HoldAnnouncer,
   tryClaimFromPlan,
 } from "../src/scheduler.js";
 import type { OrchestratorAction } from "../src/types.js";
@@ -170,5 +171,49 @@ test("claudeQuotaHoldWaitMs wakes engine 0 every cycle minimum so maintenance ke
   assert.equal(
     claudeQuotaHoldWaitMs({ blockedUntilMs: 10_000 + 15_000, nowMs: 10_000, engineIndex: 0, cycleMinimumMs: 60_000 }),
     15_000,
+  );
+});
+
+// ── HoldAnnouncer ───────────────────────────────────────────────────────────
+
+test("HoldAnnouncer lets exactly one engine announce a hold", () => {
+  const announcer = new HoldAnnouncer();
+  const until = 1_700_000_000_000;
+  assert.equal(announcer.enter("claude-usage-limit", until), true, "first engine announces");
+  for (let engine = 1; engine < 6; engine += 1) {
+    assert.equal(
+      announcer.enter("claude-usage-limit", until),
+      false,
+      "every other engine on the same hold stays silent",
+    );
+  }
+});
+
+test("HoldAnnouncer re-announces when the deadline or the cause changes", () => {
+  const announcer = new HoldAnnouncer();
+  assert.equal(announcer.enter("claude-usage-limit", 1_000), true);
+  assert.equal(announcer.enter("claude-usage-limit", 2_000), true, "a revised reset time is news");
+  assert.equal(announcer.enter("github-rate-limit:o/r", 2_000), true, "a different cause is news");
+  assert.equal(announcer.enter("github-rate-limit:o/r", 2_000), false);
+});
+
+test("HoldAnnouncer reports resuming once, and only after a hold", () => {
+  const announcer = new HoldAnnouncer();
+  assert.equal(announcer.exit(), false, "nothing to resume from when no hold was announced");
+  announcer.enter("claude-usage-limit", 1_000);
+  assert.deepEqual(announcer.current(), { key: "claude-usage-limit", untilMs: 1_000 });
+  assert.equal(announcer.exit(), true, "first engine past the hold says so");
+  assert.equal(announcer.exit(), false, "the rest stay silent");
+  assert.equal(announcer.current(), undefined);
+});
+
+test("HoldAnnouncer announces again after a hold has been exited", () => {
+  const announcer = new HoldAnnouncer();
+  announcer.enter("claude-usage-limit", 1_000);
+  announcer.exit();
+  assert.equal(
+    announcer.enter("claude-usage-limit", 1_000),
+    true,
+    "a fresh hold on the same deadline is a new event once work resumed",
   );
 });

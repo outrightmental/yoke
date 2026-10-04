@@ -11,6 +11,12 @@ import { GitHubApiGateway } from "./github-gateway.js";
 interface StatusSlot {
   label: string;
   startTime: number;
+  /**
+   * Custom renderer for this slot's row. A notice (the global "waiting …" hold
+   * line) counts *down* to a deadline rather than up from a start time, so it
+   * renders itself instead of using the Claude-run form.
+   */
+  render?: () => string;
 }
 
 /**
@@ -83,6 +89,27 @@ class StatusBoard {
     return id;
   }
 
+  /**
+   * Reserve a board row that redraws itself from `render` every 500 ms, for a
+   * status line that is not a Claude run — i.e. the single in-place "waiting …"
+   * line shown while a hold parks every engine.
+   *
+   * Off a TTY there is nothing to update in place, so no row is reserved and
+   * the caller is told (by the `undefined` return) to log the line once
+   * instead of pretending to animate it into a pipe.
+   */
+  allocateNotice(render: () => string): number | undefined {
+    if (!this.tty) return undefined;
+    const id = this.nextId++;
+    this.slots.set(id, { label: "", startTime: Date.now(), render });
+    // Reserve a blank terminal line for this slot.
+    process.stderr.write("\n");
+    if (!this.timer) {
+      this.timer = setInterval(() => { this.redraw(); }, 500);
+    }
+    return id;
+  }
+
   free(id: number, doneMessage: string): void {
     if (!this.slots.has(id)) return;
     if (this.tty) {
@@ -121,6 +148,7 @@ class StatusBoard {
   }
 
   private renderSlot(slot: StatusSlot): string {
+    if (slot.render !== undefined) return slot.render();
     const elapsed = this.fmtElapsed(slot.startTime);
     return `[${elapsed}] Claude [${slot.label}]`;
   }
@@ -173,6 +201,104 @@ export function writeLogLine(line: string): void {
 /** Number of child processes (Claude runs and git commands) currently alive. */
 export function countLiveClaudeRuns(): number {
   return liveChildren.size;
+}
+
+// ─── Global wait notices ─────────────────────────────────────────────────────
+//
+// When a shared resource is exhausted — the Claude subscription quota, a GitHub
+// rate limit — every engine is parked on the same deadline at the same time.
+// Each used to narrate that for itself, so the log filled with duplicate
+// failures and checkout noise through a window in which nothing could succeed.
+// A notice is the opposite: one line, keyed by cause, counting down in place
+// until the deadline passes, and nothing else.
+
+/** A hold that parks work until `untilMs`, with a short human-readable cause. */
+export interface WaitNotice {
+  /** Epoch millis the wait ends. */
+  untilMs: number;
+  /** Why work is parked, e.g. "Claude usage limit". */
+  reason: string;
+}
+
+interface LiveWaitNotice extends WaitNotice {
+  /** Board row showing the countdown, or undefined off a TTY. */
+  slotId: number | undefined;
+  /** Timer that takes the line down when the deadline passes. */
+  expiry: ReturnType<typeof setTimeout> | undefined;
+}
+
+const waitNotices = new Map<string, LiveWaitNotice>();
+
+/** Node fires a timeout immediately once the delay exceeds a signed 32-bit int. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+/** Coarse remaining-time form for a wait line: "2h 14m", "14m 3s", "9s". */
+function formatWaitRemaining(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(remainingMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) {
+    const seconds = totalSeconds % 60;
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
+/** The polite one-line form the CLI shows while work is parked. */
+export function formatWaitStatusLine(notice: WaitNotice, nowMs: number = Date.now()): string {
+  return `waiting ${formatWaitRemaining(notice.untilMs - nowMs)} until ${formatLocalTime(
+    notice.untilMs,
+  )} for ${notice.reason}`;
+}
+
+/**
+ * Show — or refresh — the single in-place "waiting …" line for a hold.
+ *
+ * Idempotent per `key`: every engine parked on the same hold may call this, and
+ * the terminal still gets exactly one countdown. The line takes itself down
+ * when the deadline passes, so no caller has to remember to clean up.
+ */
+export function announceWait(key: string, notice: WaitNotice): void {
+  const existing = waitNotices.get(key);
+  if (
+    existing !== undefined &&
+    existing.untilMs === notice.untilMs &&
+    existing.reason === notice.reason
+  ) {
+    return;
+  }
+  clearWait(key);
+  const remainingMs = notice.untilMs - Date.now();
+  if (remainingMs <= 0) return;
+
+  const live: LiveWaitNotice = { ...notice, slotId: undefined, expiry: undefined };
+  live.slotId = statusBoard.allocateNotice(() => formatWaitStatusLine(live));
+  if (live.slotId === undefined) {
+    // No terminal to animate: say it once so a piped log and the log file still
+    // record the hold, then stay quiet for its whole duration.
+    writeLogLine(formatWaitStatusLine(live));
+  }
+  live.expiry = setTimeout(() => { clearWait(key); }, Math.min(remainingMs, MAX_TIMEOUT_MS));
+  live.expiry.unref?.();
+  waitNotices.set(key, live);
+}
+
+/** Take a wait line down, whether its deadline passed or the hold lifted early. */
+export function clearWait(key: string): void {
+  const live = waitNotices.get(key);
+  if (live === undefined) return;
+  waitNotices.delete(key);
+  if (live.expiry !== undefined) clearTimeout(live.expiry);
+  if (live.slotId !== undefined) {
+    statusBoard.free(live.slotId, `done waiting for ${live.reason}`);
+  }
+}
+
+/** Keys of the wait lines currently on the board, in insertion order. */
+export function activeWaitKeys(): string[] {
+  return [...waitNotices.keys()];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1364,11 +1490,98 @@ function slugifyIssueTitle(title: string): string {
 const DEFAULT_CLAUDE_TIMEOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
 const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 
-let claudeQuotaBlockedUntilMs: number | undefined;
 let claudeTermsAcceptanceRequired = false;
 
+/** Wait-notice key for the shared Claude quota hold — one line for all engines. */
+export const CLAUDE_QUOTA_WAIT_KEY = "claude-usage-limit";
+/** Cause shown in the hold's `waiting … for <reason>` line. */
+export const CLAUDE_QUOTA_WAIT_REASON = "Claude usage limit";
+
+/**
+ * A later usage-limit report only extends a live hold if it pushes the deadline
+ * out by more than this. Without the margin, engines failing seconds apart on
+ * the *same* limit each compute a slightly different fallback deadline and
+ * replace (and so re-announce) the hold over and over.
+ */
+const CLAUDE_QUOTA_HOLD_EXTEND_MARGIN_MS = 60 * 1000;
+
+/** A hold on every Claude action until the CLI's stated quota reset. */
+export interface ClaudeQuotaHold {
+  /** Epoch millis the CLI said the subscription quota resets. */
+  blockedUntilMs: number;
+  /** Cause for the wait line, e.g. "Claude usage limit". */
+  reason: string;
+}
+
+let claudeQuotaHold: ClaudeQuotaHold | undefined;
+
+/**
+ * The hold currently parking Claude work, or undefined when there is none.
+ * Reading it expires a lapsed hold, so work resumes on its own once the reset
+ * time passes — no engine has to notice and clear it.
+ */
+export function getClaudeQuotaHold(): ClaudeQuotaHold | undefined {
+  if (claudeQuotaHold !== undefined && Date.now() >= claudeQuotaHold.blockedUntilMs) {
+    claudeQuotaHold = undefined;
+  }
+  return claudeQuotaHold;
+}
+
 export function getClaudeQuotaBlockedUntilMs(): number | undefined {
-  return claudeQuotaBlockedUntilMs;
+  return getClaudeQuotaHold()?.blockedUntilMs;
+}
+
+/**
+ * Park every Claude action until `blockedUntilMs` and put the single in-place
+ * "waiting …" line on the terminal.
+ *
+ * The CLI's subscription quota is one shared resource, so the hold is global:
+ * whichever engine hits the limit speaks for all of them. A report that moves
+ * the deadline meaningfully later replaces the hold, so a revised reset time is
+ * never ignored.
+ */
+export function recordClaudeQuotaHold(hold: ClaudeQuotaHold): void {
+  const current = getClaudeQuotaHold();
+  if (
+    current !== undefined &&
+    hold.blockedUntilMs <= current.blockedUntilMs + CLAUDE_QUOTA_HOLD_EXTEND_MARGIN_MS
+  ) {
+    return;
+  }
+  claudeQuotaHold = hold;
+  announceWait(CLAUDE_QUOTA_WAIT_KEY, {
+    untilMs: hold.blockedUntilMs,
+    reason: hold.reason,
+  });
+}
+
+/** Drop the hold and its wait line (the limit lifted, or a test is resetting). */
+export function clearClaudeQuotaHold(): void {
+  claudeQuotaHold = undefined;
+  clearWait(CLAUDE_QUOTA_WAIT_KEY);
+}
+
+/** The error every Claude-backed operation fails with while the hold stands. */
+function claudeQuotaHoldMessage(hold: ClaudeQuotaHold): string {
+  return `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(
+    hold.blockedUntilMs,
+  )} local time.`;
+}
+
+/**
+ * Refuse Claude-backed work while the shared quota hold is in effect.
+ *
+ * The engine pool gates on the hold before it plans, but an engine that claimed
+ * its action moments before the limit was hit would otherwise run the whole
+ * checkout dance — clone, fetch, `checkout -B`, reset — for a run that cannot
+ * start. Refusing before the first git command is what keeps the log free of
+ * checkout noise and duplicate failures for the duration of the hold.
+ */
+function assertClaudeQuotaAvailable(): void {
+  const hold = getClaudeQuotaHold();
+  if (hold !== undefined) {
+    throw new Error(claudeQuotaHoldMessage(hold));
+  }
 }
 
 export function isClaudeUsageLimitMessage(message: string): boolean {
@@ -1677,6 +1890,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {
+    assertClaudeQuotaAvailable();
     const branch = `yoke/issue-${params.issueNumber}-${slugifyIssueTitle(params.issueTitle)}`;
     const repoDir = await this.checkoutBaseBranch({
       owner: params.owner,
@@ -1867,6 +2081,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   async selfReview(params: SelfReviewParams): Promise<SelfReviewResult> {
+    assertClaudeQuotaAvailable();
     const repoDir = await this.checkoutPullRequest({
       owner: params.owner,
       repo: params.repo,
@@ -1900,6 +2115,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   async resolveMergeConflicts(
     params: ResolveMergeConflictsParams,
   ): Promise<AgentBranchUpdate> {
+    assertClaudeQuotaAvailable();
     const repoDir = await this.checkoutPullRequest({
       owner: params.owner,
       repo: params.repo,
@@ -1958,6 +2174,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   async addressFailingChecks(
     params: AddressFailingChecksParams,
   ): Promise<AgentBranchUpdate> {
+    assertClaudeQuotaAvailable();
     const repoDir = await this.checkoutPullRequest({
       owner: params.owner,
       repo: params.repo,
@@ -1973,6 +2190,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   async generateFinalDescription(
     params: GenerateFinalDescriptionParams,
   ): Promise<string> {
+    assertClaudeQuotaAvailable();
     const repoDir = await this.checkoutPullRequest({
       owner: params.owner,
       repo: params.repo,
@@ -2643,11 +2861,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       return { text, blockedUntilMs };
     };
 
-    if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
-      throw new Error(
-        `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(claudeQuotaBlockedUntilMs)} local time.`,
-      );
-    }
+    assertClaudeQuotaAvailable();
 
     if (claudeTermsAcceptanceRequired) {
       throw new Error(
@@ -2710,7 +2924,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           : `Claude [${modelDisplay}] FAILED [${formatElapsed()}]${shortReason ? `: ${shortReason}` : ""}`,
       );
       if (quotaMessage) {
-        claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
+        recordClaudeQuotaHold({
+          blockedUntilMs: quotaMessage.blockedUntilMs,
+          reason: CLAUDE_QUOTA_WAIT_REASON,
+        });
         throw new Error(quotaMessage.text, { cause: error });
       }
       if (isClaudeTermsAcceptanceMessage(message)) {

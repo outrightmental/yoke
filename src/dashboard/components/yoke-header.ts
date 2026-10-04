@@ -11,6 +11,7 @@ export class YokeHeader extends LitElement {
     projectCount: { type: Number },
     iteration: { type: Number },
     nextCycleAtMs: { type: Number },
+    holdUntilMs: { type: Number },
     tick: { type: Number },
   };
 
@@ -21,15 +22,26 @@ export class YokeHeader extends LitElement {
   projectCount = 0;
   iteration = 0;
   nextCycleAtMs: number | null = null;
+  /** Deadline of a hold parking the whole pool, or null when work is free. */
+  holdUntilMs: number | null = null;
   tick = 0;
 
   protected override createRenderRoot() { return this; }
 
-  private _countdown() {
-    if (this.nextCycleAtMs === null) return null;
-    const ms = this.nextCycleAtMs - Date.now();
+  /**
+   * What the header counts down to. A hold wins over the next-cycle timer:
+   * showing "NEXT 1m" while every engine is parked for three hours is the
+   * single most misleading thing the header can say.
+   */
+  private _countdown(): { label: string; value: string } | null {
+    const target = this.holdUntilMs ?? this.nextCycleAtMs;
+    if (target === null) return null;
+    const ms = target - Date.now();
     if (ms <= 0) return null;
-    return formatDuration(ms);
+    return {
+      label: this.holdUntilMs !== null ? 'WAITING' : 'NEXT',
+      value: formatDuration(ms),
+    };
   }
 
   override render() {
@@ -58,8 +70,8 @@ export class YokeHeader extends LitElement {
         ` : ''}
         ${countdown !== null ? html`
           <div class="countdown state-waiting">
-            <div class="countdown-label">NEXT</div>
-            <div class="countdown-timer">${countdown}</div>
+            <div class="countdown-label">${countdown.label}</div>
+            <div class="countdown-timer">${countdown.value}</div>
           </div>
         ` : ''}
         <keep-awake-light></keep-awake-light>

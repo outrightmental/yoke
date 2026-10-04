@@ -20,6 +20,10 @@ export type DashboardEventType =
   | "engine-idle"
   | "github-rate-limit"
   | "github-rate-limit-cleared"
+  // A hold parking the whole pool (Claude usage limit, GitHub rate limit) and
+  // its lifting. Emitted once per hold, not once per engine.
+  | "work-hold"
+  | "work-hold-cleared"
   | "shutdown-requested"
   | "engine-shutdown"
   | "app-shutdown"

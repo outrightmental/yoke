@@ -197,7 +197,9 @@ export class CylinderRow extends LitElement {
 
     const now = Date.now();
     if (cyl.rateLimitedUntilMs && cyl.rateLimitedUntilMs > now) {
-      return this._esc(`rate limited · ${formatDuration(cyl.rateLimitedUntilMs - now)}`);
+      // The engine-idle reason names which limit parked it, so say which.
+      const label = cyl.idleStatusText === 'claude-usage-limit' ? 'usage limit' : 'rate limited';
+      return this._esc(`⏸ ${label} · ${formatDuration(cyl.rateLimitedUntilMs - now)}`);
     }
     if (cyl.nextCycleAtMs && cyl.nextCycleAtMs > now) {
       return this._esc(formatDuration(cyl.nextCycleAtMs - now));
