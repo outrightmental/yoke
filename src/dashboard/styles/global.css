@@ -164,9 +164,9 @@ keep-awake-light { display: contents; }
 .keep-awake {
   display: flex;
   align-items: center;
-  gap: 10px;
-  /* Overhang the header's padding so a 56px lamp costs barely any height. */
-  margin: -6px 0;
+  gap: 12px;
+  /* Overhang the header's padding, so the lamp costs less height than it has. */
+  margin: -10px 0;
 }
 
 .keep-awake-text {
@@ -184,22 +184,25 @@ keep-awake-light { display: contents; }
 }
 
 .keep-awake-state {
-  font-size: 16px;
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 3px;
   color: #00ff88;
-  text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
+  text-shadow: 0 0 12px rgba(0, 255, 136, 0.9);
 }
 
+/* Big on purpose, and not only for show: a browser only holds the system
+   screen wake lock for a video it considers properly visible — a thumbnail
+   tucked in a corner can be ignored. */
 .keep-awake-lamp {
-  width: 56px;
-  height: 56px;
+  width: 104px;
+  height: 104px;
   flex-shrink: 0;
   border-radius: 50%;
   overflow: hidden;
   background: var(--bg-dark);
   border: 2px solid rgba(0, 255, 136, 0.6);
-  box-shadow: 0 0 20px rgba(0, 255, 136, 0.45), inset 0 0 12px rgba(0, 255, 136, 0.25);
+  box-shadow: 0 0 26px rgba(0, 255, 136, 0.5), inset 0 0 16px rgba(0, 255, 136, 0.3);
 }
 
 .keep-awake-video {
