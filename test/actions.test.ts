@@ -87,6 +87,8 @@ function createHarness(input: {
     pullRequestTitle: string;
     pullRequestBody: string;
     headSha: string;
+    incomplete?: boolean;
+    failureReason?: string;
   };
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
   newPullRequest?: { number: number; headSha: string; created?: boolean };
@@ -578,6 +580,65 @@ test("executeAction marks a draft PR ready-for-review before squash-merging", as
     `update-body:17:${expectedBody}`,
     "mark-ready:17",
     `squash-merge:17:Add gizmo:${expectedBody}`,
+  ]);
+});
+
+test("executeAction gives an incomplete implementation a \"Closes #N\" body too", async () => {
+  // An interrupted run used to bypass buildMergedPullRequestBody so its body
+  // kept the agent's "Refs #N" wording, which GitHub ignores entirely. The
+  // draft state and the warning banner are the safeguard against merging
+  // unfinished work; the reference still has to be one GitHub acts on.
+  const harness = createHarness({
+    issues: [createIssue({ number: 7, title: "Add widget", body: "Make it." })],
+    implementation: {
+      branch: "yoke/issue-7-add-widget",
+      pullRequestTitle: "[incomplete] Add widget",
+      pullRequestBody: "> **Incomplete — this implementation did not finish.**",
+      headSha: "sha-impl-7",
+      incomplete: true,
+      failureReason: "Timed out after 3h",
+    },
+    newPullRequest: { number: 100, headSha: "sha-impl-7", created: true },
+  });
+
+  await run(harness, { type: "start-implementation", issueNumber: 7 });
+
+  const expectedBody =
+    "> **Incomplete — this implementation did not finish.**\n\nCloses #7";
+  assert.deepEqual(harness.calls, [
+    "get-default-branch",
+    "implement:7:main",
+    `create-pr:yoke/issue-7-add-widget->main:draft=true:[incomplete] Add widget:${expectedBody.replace(/\n/g, "\\n")}`,
+  ]);
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 7,
+      pullRequestNumber: 100,
+      phase: "implementation",
+      status: "completed",
+      result: { pullRequestHeadSha: "sha-impl-7", pullRequestBody: expectedBody },
+    },
+  ]);
+});
+
+test("executeAction rewrites an agent-authored \"Refs #N\" into \"Closes #N\"", async () => {
+  const harness = createHarness({
+    issues: [createIssue({ number: 7, title: "Add widget", body: "Make it." })],
+    implementation: {
+      branch: "yoke/issue-7-add-widget",
+      pullRequestTitle: "Add widget",
+      pullRequestBody: "Added widget.\n\nRefs #7",
+      headSha: "sha-impl-7",
+    },
+    newPullRequest: { number: 100, headSha: "sha-impl-7", created: true },
+  });
+
+  await run(harness, { type: "start-implementation", issueNumber: 7 });
+
+  assert.deepEqual(harness.calls, [
+    "get-default-branch",
+    "implement:7:main",
+    "create-pr:yoke/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
   ]);
 });
 

@@ -196,6 +196,8 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
 - **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
 
+- **Keep-awake lamp**: the big **ON** light in the top-right corner is not a CSS animation — it is a tiny looping, muted video, playing for as long as the Dashboard is open. An actively playing video is the one thing observed to stop a locked-down laptop sleeping or locking mid-run, so the Dashboard plays one itself instead of you parking a full-screen YouTube video next to it. There is nothing to switch on: it runs whenever the Dashboard is open, not only while cylinders are working, and the Screen Wake Lock API is requested alongside it wherever the browser allows. If the browser refuses to autoplay the loop, the lamp turns amber and reads **CLICK** — one click or keypress anywhere on the page starts it.
+
 To prevent the Dashboard from opening automatically, pass `--no-browser`:
 
 ```bash
@@ -340,6 +342,8 @@ GitHub sub-issues are understood natively. A parent issue is automatically block
 npm test
 npm run build
 ```
+
+The Dashboard's keep-awake loop (`src/dashboard/assets/keep-awake.{webm,mp4}`) is committed, so a normal build needs nothing extra. To change how the lamp looks, edit and re-run `tools/generate-keep-awake-video.py` — it needs Pillow and GStreamer, neither of which Yoke itself depends on — then commit the regenerated files.
 
 ## Status
 

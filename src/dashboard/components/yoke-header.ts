@@ -1,5 +1,6 @@
 import { LitElement, html } from 'lit';
 import { formatDuration } from '../shared/format.js';
+import './keep-awake-light.js';
 
 export class YokeHeader extends LitElement {
   static override properties = {
@@ -73,6 +74,7 @@ export class YokeHeader extends LitElement {
             <div class="countdown-timer">${countdown.value}</div>
           </div>
         ` : ''}
+        <keep-awake-light></keep-awake-light>
       </div>
     `;
   }

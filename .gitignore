@@ -6,6 +6,9 @@ env.yaml
 # Local runtime files
 .yoke/
 
+# Python bytecode from tools/
+__pycache__/
+
 # MacOS specific files
 .DS_Store
 

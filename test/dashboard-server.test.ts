@@ -605,3 +605,91 @@ test("DashboardServer broadcasts css-reload when bundle.css changes on disk", as
   assert.ok(reloadMsg !== undefined, "should broadcast css-reload when bundle.css changes");
 });
 
+
+// ── GET /assets/keep-awake.* ──────────────────────────────────────────────────
+
+function httpGetBinary(
+  url: string,
+  headers: http.OutgoingHttpHeaders = {},
+): Promise<{ status: number; body: Buffer; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    http.get(url, { headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks), headers: res.headers }));
+    }).on("error", reject);
+  });
+}
+
+test("GET /assets/keep-awake.webm serves the committed keep-awake loop", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 19,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const onDisk = await fs.promises.readFile(
+    path.join(process.cwd(), "src", "dashboard", "assets", "keep-awake.webm"),
+  );
+  const res = await httpGetBinary(`http://127.0.0.1:${TEST_PORT + 19}/assets/keep-awake.webm`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers["content-type"], "video/webm");
+  assert.equal(res.headers["accept-ranges"], "bytes", "media must advertise range support");
+  assert.deepEqual(res.body, onDisk, "should serve the committed loop byte for byte");
+});
+
+test("GET /assets/keep-awake.mp4 serves the MP4 fallback for browsers without VP8", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 20,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const res = await httpGetBinary(`http://127.0.0.1:${TEST_PORT + 20}/assets/keep-awake.mp4`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers["content-type"], "video/mp4");
+  assert.ok(res.body.length > 0, "should serve a non-empty loop");
+});
+
+test("a Range request for the keep-awake loop gets a 206 with just that slice", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 21,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  // Safari refuses to play media from a server that answers Range with a 200.
+  const url = `http://127.0.0.1:${TEST_PORT + 21}/assets/keep-awake.webm`;
+  const full = await httpGetBinary(url);
+  const partial = await httpGetBinary(url, { Range: "bytes=0-99" });
+
+  assert.equal(partial.status, 206);
+  assert.equal(partial.body.length, 100, "should return exactly the requested bytes");
+  assert.deepEqual(partial.body, full.body.subarray(0, 100));
+  assert.equal(partial.headers["content-range"], `bytes 0-99/${full.body.length}`);
+
+  const openEnded = await httpGetBinary(url, { Range: "bytes=10-" });
+  assert.equal(openEnded.status, 206);
+  assert.deepEqual(openEnded.body, full.body.subarray(10), "an open-ended range runs to the last byte");
+
+  const suffix = await httpGetBinary(url, { Range: "bytes=-16" });
+  assert.equal(suffix.status, 206);
+  assert.deepEqual(suffix.body, full.body.subarray(full.body.length - 16), "a suffix range returns the last bytes");
+
+  const unsatisfiable = await httpGetBinary(url, { Range: `bytes=${full.body.length}-` });
+  assert.equal(unsatisfiable.status, 416, "a range past the end should be rejected");
+});

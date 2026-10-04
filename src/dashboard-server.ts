@@ -44,6 +44,17 @@ try {
 const STATIC_INDEX = path.join(ROOT_DIR, "src", "dashboard", "index.html");
 const STATIC_BUNDLE_JS = path.join(ROOT_DIR, "dist", "dashboard", "bundle.js");
 const STATIC_BUNDLE_CSS = path.join(ROOT_DIR, "dist", "dashboard", "bundle.css");
+const STATIC_ASSET_DIR = path.join(ROOT_DIR, "src", "dashboard", "assets");
+
+/**
+ * Committed media served straight from the source tree (the esbuild bundle only
+ * produces the JS and CSS). The keep-awake loop is the video the Dashboard
+ * plays to stop the machine sleeping mid-run (#246).
+ */
+const STATIC_MEDIA: Record<string, string> = {
+  "/assets/keep-awake.webm": "video/webm",
+  "/assets/keep-awake.mp4": "video/mp4",
+};
 
 async function serveStatic(res: http.ServerResponse, filePath: string, mimeType: string): Promise<void> {
   try {
@@ -54,6 +65,60 @@ async function serveStatic(res: http.ServerResponse, filePath: string, mimeType:
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   }
+}
+
+/**
+ * Serve a media file with byte-range support. Safari will not play media from a
+ * server that answers a `Range` request with a plain 200, so the keep-awake
+ * loop needs this even though it is only a few kilobytes.
+ */
+async function serveMedia(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  filePath: string,
+  mimeType: string,
+): Promise<void> {
+  let data: Buffer;
+  try {
+    data = await fs.promises.readFile(filePath);
+  } catch {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not_found" }));
+    return;
+  }
+
+  const headers: http.OutgoingHttpHeaders = {
+    "Content-Type": mimeType,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "public, max-age=3600",
+  };
+
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers["range"] ?? "");
+  if (range === null) {
+    res.writeHead(200, { ...headers, "Content-Length": data.length });
+    res.end(req.method === "HEAD" ? undefined : data);
+    return;
+  }
+
+  // Only a single range is honoured: "bytes=N-M", "bytes=N-" (to the end) and
+  // "bytes=-N" (the trailing N bytes). An end past the last byte is clamped.
+  const [, rawStart, rawEnd] = range;
+  const suffix = rawStart === "";
+  const start = suffix ? Math.max(0, data.length - Number(rawEnd)) : Number(rawStart);
+  const end = suffix || rawEnd === "" ? data.length - 1 : Math.min(Number(rawEnd), data.length - 1);
+  if ((suffix && rawEnd === "") || start > end) {
+    res.writeHead(416, { ...headers, "Content-Range": `bytes */${data.length}` });
+    res.end();
+    return;
+  }
+
+  const slice = data.subarray(start, end + 1);
+  res.writeHead(206, {
+    ...headers,
+    "Content-Range": `bytes ${start}-${end}/${data.length}`,
+    "Content-Length": slice.length,
+  });
+  res.end(req.method === "HEAD" ? undefined : slice);
 }
 
 function jsonResponse(res: http.ServerResponse, status: number, body: unknown): void {
@@ -165,6 +230,12 @@ export class DashboardServer {
 
     if (pathname === "/assets/bundle.css") {
       await serveStatic(res, STATIC_BUNDLE_CSS, "text/css");
+      return;
+    }
+
+    const mediaMime = STATIC_MEDIA[pathname];
+    if (mediaMime !== undefined) {
+      await serveMedia(req, res, path.join(STATIC_ASSET_DIR, path.basename(pathname)), mediaMime);
       return;
     }
 

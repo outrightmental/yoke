@@ -1231,11 +1231,16 @@ export function formatUserCommentsSection(userComments: ReadonlyArray<UserCommen
 
 /**
  * PR body for a salvaged, unfinished implementation. It has to be obvious at a
- * glance that this is partial work: it opens as a draft, says what stopped it,
- * and deliberately omits any `Closes #N` line so merging it cannot silently
- * close an issue that is not actually done.
+ * glance that this is partial work: it opens as a draft and leads with a
+ * warning banner saying what stopped it.
+ *
+ * The issue reference is still written as `Closes #N`, the only wording GitHub
+ * understands. `Refs #N` reads like a reference but GitHub ignores it, leaving
+ * the issue with no link to the work at all. The draft state and the banner —
+ * not a crippled reference — are what keep a half-finished PR from being
+ * merged by accident.
  */
-function buildIncompletePullRequestBody(
+export function buildIncompletePullRequestBody(
   params: ImplementIssueParams,
   commitCount: string,
   failureReason: string,
@@ -1249,7 +1254,7 @@ function buildIncompletePullRequestBody(
     `> What is here has been pushed so it is not lost, but it is unreviewed and probably partial.`,
     `> Pick it up, finish it, and mark the PR ready for review.`,
     "",
-    `Refs #${params.issueNumber}`,
+    `Closes #${params.issueNumber}`,
     "",
     "<details><summary>Why the run stopped</summary>",
     "",
