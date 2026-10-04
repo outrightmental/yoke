@@ -48,11 +48,67 @@ yoke-app::before {
 }
 
 yoke-header { display: contents; }
+hold-banner { display: contents; }
 cylinder-engine { display: contents; }
 lifecycle-list  { display: contents; }
 broadcast-feed  { display: contents; }
 event-stream    { display: contents; }
 status-bar      { display: contents; }
+
+/* ── Hold banner (whole pool parked on a shared limit) ── */
+.hold-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: rgba(255, 102, 0, 0.12);
+  border-bottom: 2px solid var(--color-orange);
+  box-shadow: 0 0 24px rgba(255, 102, 0, 0.35);
+  color: var(--color-orange);
+  z-index: 11;
+  flex-shrink: 0;
+  animation: holdPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes holdPulse {
+  0%, 100% { box-shadow: 0 0 24px rgba(255, 102, 0, 0.35); }
+  50%      { box-shadow: 0 0 40px rgba(255, 102, 0, 0.6); }
+}
+
+.hold-banner-icon {
+  font-size: 26px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hold-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hold-banner-headline {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  text-shadow: 0 0 12px rgba(255, 102, 0, 0.8);
+}
+
+.hold-banner-duration,
+.hold-banner-deadline {
+  font-size: 20px;
+  color: var(--color-yellow);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 14px rgba(255, 204, 0, 0.9);
+}
+
+.hold-banner-reason {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.65);
+}
 
 /* ── Header ── */
 .header {

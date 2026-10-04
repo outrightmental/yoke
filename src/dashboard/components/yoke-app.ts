@@ -2,6 +2,7 @@ import { LitElement, html } from 'lit';
 import type { DashboardState } from '../store/dashboard-store.js';
 import type { DashboardStore } from '../store/dashboard-store.js';
 import './yoke-header.js';
+import './hold-banner.js';
 import './cylinder-engine.js';
 import './lifecycle-list.js';
 import './broadcast-feed.js';
@@ -53,7 +54,12 @@ export class YokeApp extends LitElement {
       return min;
     }, null);
 
+    // A hold outranks the per-cylinder countdown: while one is active no
+    // cylinder is going to start anything, whatever its own timer says.
+    const hold = s.hold !== null && s.hold.untilMs > Date.now() ? s.hold : null;
+
     return html`
+      ${hold !== null ? html`<hold-banner .hold=${hold} .tick=${this._tick}></hold-banner>` : ''}
       <yoke-header
         .owner=${s.owner}
         .repo=${s.repo}
@@ -62,6 +68,7 @@ export class YokeApp extends LitElement {
         .projectCount=${s.sessionCountByRepo.size || s.lifecycleByRepo.size}
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
+        .holdUntilMs=${hold?.untilMs ?? null}
         .tick=${this._tick}
       ></yoke-header>
       <div class="main-content">

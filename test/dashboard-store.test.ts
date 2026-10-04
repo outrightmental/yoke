@@ -537,3 +537,77 @@ test("reducer: log-message carries its project repo onto the event line", () => 
   const line = s.eventStream[s.eventStream.length - 1];
   assert.equal(line?.repo, "o/a");
 });
+
+// ── work-hold (issue #243) ────────────────────────────────────────────────────
+
+test("reducer: work-hold records the global hold and logs it once", () => {
+  const untilMs = Date.now() + 2 * 60 * 60 * 1000;
+  let s = initialState();
+  assert.equal(s.hold, null, "no hold to start with");
+
+  s = dashboardReducer(s, makeEvent("work-hold", {
+    kind: "claude-usage-limit",
+    reason: "Claude usage limit",
+    untilMs,
+  }));
+  assert.deepEqual(s.hold, { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs });
+  const logged = s.eventStream.filter((l) => l.text.includes("Waiting"));
+  assert.equal(logged.length, 1, "one log line for the hold");
+  assert.match(logged[0]!.text, /for Claude usage limit$/);
+  assert.equal(logged[0]!.level, "warning");
+
+  // A reconnecting browser replays the cached event; it must not re-log it.
+  s = dashboardReducer(s, makeEvent("work-hold", {
+    kind: "claude-usage-limit",
+    reason: "Claude usage limit",
+    untilMs,
+  }));
+  assert.equal(s.eventStream.filter((l) => l.text.includes("Waiting")).length, 1);
+});
+
+test("reducer: work-hold ignores a deadline that has already passed", () => {
+  const s = dashboardReducer(initialState(), makeEvent("work-hold", {
+    kind: "claude-usage-limit",
+    reason: "Claude usage limit",
+    untilMs: Date.now() - 1,
+  }));
+  assert.equal(s.hold, null, "a lapsed hold must never show a waiting banner");
+});
+
+test("reducer: work-hold-cleared drops the hold and says work resumed", () => {
+  let s = dashboardReducer(initialState(), makeEvent("work-hold", {
+    kind: "github-rate-limit",
+    reason: "GitHub rate limit \u00b7 o/r",
+    untilMs: Date.now() + 60_000,
+  }));
+  s = dashboardReducer(s, makeEvent("work-hold-cleared", {}));
+  assert.equal(s.hold, null);
+  assert.equal(s.eventStream.at(-1)?.text, "\u25b6 Done waiting \u2014 resuming work");
+
+  // Nothing to clear is not an event.
+  const before = s.eventStream.length;
+  s = dashboardReducer(s, makeEvent("work-hold-cleared", {}));
+  assert.equal(s.eventStream.length, before);
+});
+
+test("reducer: a hold survives the engine-idle events every parked engine emits", () => {
+  const untilMs = Date.now() + 90 * 60 * 1000;
+  let s = dashboardReducer(initialState(), makeEvent("work-hold", {
+    kind: "claude-usage-limit",
+    reason: "Claude usage limit",
+    untilMs,
+  }));
+  for (let engineIndex = 0; engineIndex < 3; engineIndex += 1) {
+    s = dashboardReducer(s, makeEvent("engine-idle", {
+      engineIndex,
+      reason: "claude-usage-limit",
+      rateLimitedUntilMs: untilMs,
+      nextCycleAtMs: untilMs,
+    }));
+  }
+  assert.deepEqual(s.hold, { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs });
+  for (const cyl of s.cylinders) {
+    assert.equal(cyl.rateLimitedUntilMs, untilMs, "each cylinder also shows what it waits on");
+    assert.equal(cyl.idleStatusText, "claude-usage-limit");
+  }
+});

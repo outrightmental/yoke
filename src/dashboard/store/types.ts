@@ -19,6 +19,20 @@ export interface CylinderState {
   rateLimitedUntilMs: number | null;
 }
 
+/**
+ * A hold parking the whole engine pool until `untilMs` — the Claude
+ * subscription quota or a GitHub rate limit. Global, not per cylinder: while
+ * one is active nothing anywhere is being worked on.
+ */
+export interface WorkHold {
+  /** Which shared resource ran out: "claude-usage-limit", "github-rate-limit". */
+  kind: string;
+  /** Short human-readable cause, e.g. "Claude usage limit". */
+  reason: string;
+  /** Epoch millis the hold ends and work resumes. */
+  untilMs: number;
+}
+
 export interface IssueCard {
   number: number;
   title: string;
@@ -101,6 +115,8 @@ export interface DashboardState {
   sessionCount: number;
   shutdownRequested: boolean;
   appShutdown: boolean;
+  /** The hold parking every engine, or null when work is free to run. */
+  hold: WorkHold | null;
   /** True when more than one project shares this dashboard. */
   multiProject: boolean;
   owner: string;
