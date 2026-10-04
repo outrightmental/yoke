@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildIncompletePullRequestBody,
   createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
@@ -189,6 +190,41 @@ test("sanitizePullRequestTitle removes breaking-change prefix (type!:)", () => {
 
 test("sanitizePullRequestTitle removes breaking-change prefix with scope (type(scope)!:)", () => {
   assert.equal(sanitizePullRequestTitle("feat(auth)!: require MFA"), "Require MFA");
+});
+
+const INCOMPLETE_BODY_PARAMS = {
+  owner: "acme",
+  repo: "widgets",
+  issueNumber: 285,
+  issueTitle: "Add widget",
+  issueBody: "Make it.",
+  baseBranch: "main",
+};
+
+test("buildIncompletePullRequestBody references the issue as \"Closes #N\"", () => {
+  const body = buildIncompletePullRequestBody(INCOMPLETE_BODY_PARAMS, "3", "Timed out after 3h");
+
+  // "Refs #285" is meaningless to GitHub, so an incomplete PR using it left the
+  // issue with no link to the salvaged work at all. The draft state and the
+  // warning banner are what hold the PR back, not a broken reference.
+  assert.match(body, /^Closes #285$/m);
+  assert.doesNotMatch(body, /Refs #/i);
+  assert.match(body, /Incomplete — this implementation did not finish/);
+  assert.match(body, /interrupted after 3 commit\(s\)/);
+  assert.match(body, /Timed out after 3h/);
+});
+
+test("buildIncompletePullRequestBody keeps the closing reference above the agent's notes", () => {
+  const body = buildIncompletePullRequestBody(
+    INCOMPLETE_BODY_PARAMS,
+    "1",
+    "Interrupted",
+    "Partial work on the parser.",
+  );
+
+  assert.match(body, /^Closes #285$/m);
+  assert.doesNotMatch(body, /Refs #/i);
+  assert.ok(body.indexOf("Closes #285") < body.indexOf("Partial work on the parser."));
 });
 
 test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {

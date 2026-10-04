@@ -286,12 +286,15 @@ export async function executeAction(
           issueBody: issue.body,
           baseBranch,
         });
-        // An incomplete implementation deliberately keeps its "Refs #N" wording:
-        // adding "Closes #N" would let merging a half-finished draft close an
-        // issue that nobody has actually finished.
-        pullRequestBody = implementation.incomplete
-          ? implementation.pullRequestBody
-          : buildMergedPullRequestBody(implementation.pullRequestBody, [issue.number]);
+        // Every PR body yoke opens carries "Closes #N", incomplete ones
+        // included: that is the only wording GitHub acts on, and an incomplete
+        // PR with no usable reference is worse than one that could be merged
+        // early — the issue loses its link to the work entirely. An unfinished
+        // implementation is held back by staying a draft with the warning
+        // banner from buildIncompletePullRequestBody, not by its wording.
+        pullRequestBody = buildMergedPullRequestBody(implementation.pullRequestBody, [
+          issue.number,
+        ]);
         created = await gitHubClient.createPullRequest({
           title: implementation.pullRequestTitle,
           body: pullRequestBody,
