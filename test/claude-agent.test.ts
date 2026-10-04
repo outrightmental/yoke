@@ -6,7 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  activeWaitKeys,
+  announceWait,
   buildIncompletePullRequestBody,
+  CLAUDE_QUOTA_WAIT_KEY,
+  CLAUDE_QUOTA_WAIT_REASON,
+  clearClaudeQuotaHold,
+  clearWait,
   createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
