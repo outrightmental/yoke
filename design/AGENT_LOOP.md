@@ -139,6 +139,10 @@ The loop collects issue references from:
 - GitHub's linked closing issues API,
 - PR titles and bodies with phrases such as `fixes #123`, `closes #123`, `resolves #123`, `implements #123`, and `for #123`.
 
+Every issue reference yoke writes is a closing one: `Closes #123`. GitHub has no `refs` keyword, so a `Refs #123` line links nothing and closes nothing — if a body yoke is about to publish carries `Refs #123` for an issue that PR closes, the reference is rewritten to `Closes #123`.
+
+This holds for an incomplete implementation too: a run that is cut short still opens with `Closes #N`. What holds that PR back is its draft state and the "Incomplete" warning banner at the top of its body, not a reference GitHub would ignore.
+
 Before merge, missing closing references are appended to the final PR body so GitHub can close the intended issues after the squash merge. If branch protection blocks the GitHub API squash merge, the loop surfaces that error; the API path does not perform the previous CLI administrator-bypass retry.
 
 ## Action model

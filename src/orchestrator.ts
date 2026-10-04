@@ -423,11 +423,25 @@ function countImplementationSessionsWithoutPullRequests(
   return issueNumbers.size;
 }
 
+/**
+ * Rewrite `Refs #N` into `Closes #N` for the issues this PR closes. GitHub has
+ * no "refs" keyword, so such a line links nothing and closes nothing while
+ * still reading to a human as if it did. Only the numbers the PR genuinely
+ * closes are touched, so a passing mention of some other issue is left alone.
+ */
+function rewriteRefsAsClosing(body: string, closingIssueNumbers: readonly number[]): string {
+  const closingIssues = new Set(closingIssueNumbers);
+  if (closingIssues.size === 0) return body;
+  return body.replace(/\brefs\s*:?\s*#(\d+)\b/gi, (match, digits: string) =>
+    closingIssues.has(Number(digits)) ? `Closes #${digits}` : match,
+  );
+}
+
 export function buildMergedPullRequestBody(
   pullRequestBody: string,
   closingIssueNumbers: readonly number[],
 ): string {
-  const baseBody = pullRequestBody.trim();
+  const baseBody = rewriteRefsAsClosing(pullRequestBody.trim(), closingIssueNumbers);
   const existingClosingIssues = new Set(parseClosingIssueNumbers(baseBody));
   const missingClosingReferences = uniqueSorted(closingIssueNumbers)
     .filter((issueNumber) => !existingClosingIssues.has(issueNumber))
