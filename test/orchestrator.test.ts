@@ -617,6 +617,27 @@ test("buildMergedPullRequestBody appends a closing reference once", () => {
   );
 });
 
+test("buildMergedPullRequestBody rewrites a non-closing \"Refs #N\" into \"Closes #N\"", () => {
+  // GitHub has no "refs" keyword, so a body that only says "Refs #42" neither
+  // links nor closes the issue. Rewriting in place beats appending a second
+  // reference and leaving the misleading wording next to it.
+  assert.equal(
+    buildMergedPullRequestBody("Summary\n\nRefs #42", [42]),
+    "Summary\n\nCloses #42",
+  );
+  assert.equal(
+    buildMergedPullRequestBody("Summary\n\nrefs: #42", [42]),
+    "Summary\n\nCloses #42",
+  );
+  // A "Refs #N" for an issue this PR does not close is someone's deliberate
+  // cross-reference, not a broken closing keyword: leave it alone.
+  assert.equal(
+    buildMergedPullRequestBody("Summary\n\nRefs #9", [42]),
+    "Summary\n\nRefs #9\n\nCloses #42",
+  );
+  assert.equal(buildMergedPullRequestBody("Summary\n\nRefs #9", []), "Summary\n\nRefs #9");
+});
+
 test("buildPlan does not reduce capacity for implementation sessions on closed issues", () => {
   const snapshot: RepositorySnapshot = {
     issues: [
