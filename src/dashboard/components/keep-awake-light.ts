@@ -2,7 +2,7 @@ import { LitElement, html } from 'lit';
 import { KeepAwake, type KeepAwakeStatus } from '../shared/keep-awake.js';
 
 /**
- * The big "ON" light in the upper-right corner (#246).
+ * The "ON" light in the upper-right corner (#246), sized to the header's text (#250).
  *
  * The lamp's glow is not CSS — it is a looping, muted video, playing for the
  * whole time the Dashboard is open. That playing video is what stops the
