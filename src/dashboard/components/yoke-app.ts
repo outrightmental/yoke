@@ -69,6 +69,7 @@ export class YokeApp extends LitElement {
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
         .holdUntilMs=${hold?.untilMs ?? null}
+        .usage=${s.usage}
         .tick=${this._tick}
       ></yoke-header>
       <div class="main-content">

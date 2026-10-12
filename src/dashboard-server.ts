@@ -266,6 +266,10 @@ export class DashboardServer {
       console.error("[Dashboard] WebSocket error:", error);
     });
 
+    for (const event of this.cachedEvents.values()) {
+      ws.send(JSON.stringify(event));
+    }
+
     ws.on("message", (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString()) as { type: string; engineIndex?: number };
@@ -311,6 +315,10 @@ export class DashboardServer {
       this.cachedEvents.set(type, event);
     } else if (type === "work-hold-cleared") {
       this.cachedEvents.delete("work-hold");
+    } else if (type === "usage-update") {
+      // Only the latest reading matters; replaying it means a browser opened
+      // between polls shows the gauge at once instead of waiting up to a minute.
+      this.cachedEvents.set(type, event);
     } else if (type === "shutdown-requested" || type === "app-shutdown") {
       this.cachedEvents.set(type, event);
     }

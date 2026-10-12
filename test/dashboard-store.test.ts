@@ -611,3 +611,81 @@ test("reducer: a hold survives the engine-idle events every parked engine emits"
     assert.equal(cyl.idleStatusText, "claude-usage-limit");
   }
 });
+
+// ── usage-update (issue #254) ─────────────────────────────────────────────────
+
+test("reducer: usage starts unknown until the first reading arrives", () => {
+  assert.equal(initialState().usage, null);
+});
+
+test("reducer: usage-update stores the latest reading without logging it", () => {
+  const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
+  let s = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "ok",
+    fiveHourPercent: 37,
+    resetsAtMs,
+    fetchedAtMs: 1_000,
+    reason: "",
+  }));
+  assert.deepEqual(s.usage, { status: "ok", fiveHourPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "" });
+
+  // A new reading every minute only moves the gauge — never the event log.
+  s = dashboardReducer(s, makeEvent("usage-update", {
+    status: "ok",
+    fiveHourPercent: 41,
+    resetsAtMs,
+    fetchedAtMs: 61_000,
+    reason: "",
+  }));
+  assert.equal(s.usage?.fiveHourPercent, 41);
+  assert.equal(s.eventStream.length, 0);
+  assert.equal(s.eventCount, 0);
+});
+
+test("reducer: usage-update keeps the gauge's unconfigured and unavailable states", () => {
+  let s = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "unconfigured",
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: 1_000,
+    reason: "set anthropic_usage_token in env.yaml to show live Claude usage",
+  }));
+  assert.equal(s.usage?.status, "unconfigured");
+  assert.match(s.usage?.reason ?? "", /anthropic_usage_token/);
+
+  s = dashboardReducer(s, makeEvent("usage-update", {
+    status: "unavailable",
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: 2_000,
+    reason: "Anthropic is rate-limiting usage reads (HTTP 429)",
+  }));
+  assert.deepEqual(s.usage, {
+    status: "unavailable",
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: 2_000,
+    reason: "Anthropic is rate-limiting usage reads (HTTP 429)",
+  });
+});
+
+test("reducer: a malformed usage-update degrades to unavailable rather than a bogus number", () => {
+  const unknownStatus = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "bogus",
+    fiveHourPercent: 50,
+    fetchedAtMs: 1_000,
+  }));
+  assert.equal(unknownStatus.usage?.status, "unavailable");
+  assert.equal(unknownStatus.usage?.fiveHourPercent, null);
+
+  const okWithoutNumber = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "ok",
+    fiveHourPercent: "37",
+    resetsAtMs: "soon",
+    fetchedAtMs: 1_000,
+  }));
+  assert.equal(okWithoutNumber.usage?.status, "unavailable");
+  assert.equal(okWithoutNumber.usage?.fiveHourPercent, null);
+  assert.equal(okWithoutNumber.usage?.resetsAtMs, null);
+  assert.equal(okWithoutNumber.usage?.reason, "");
+});

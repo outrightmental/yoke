@@ -217,6 +217,36 @@ test("loadEnvConfig throws when per-project claude_code_model is present", async
   });
 });
 
+test("loadEnvConfig loads an optional anthropic_usage_token", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      anthropic_usage_token: "test-usage-token",
+    });
+    assert.equal(loadEnvConfig(filePath).anthropic_usage_token, "test-usage-token");
+  });
+});
+
+test("loadEnvConfig accepts a null anthropic_usage_token", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      anthropic_usage_token: null,
+    });
+    assert.equal(loadEnvConfig(filePath).anthropic_usage_token, null);
+  });
+});
+
+test("loadEnvConfig throws when anthropic_usage_token is not a string", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      anthropic_usage_token: 12345,
+    });
+    assert.throws(() => loadEnvConfig(filePath), /"anthropic_usage_token" must be a string/);
+  });
+});
+
 test("resolveGitHubToken returns the default token (marked with default: true)", () => {
   const config: EnvConfig = {
     github_tokens: [

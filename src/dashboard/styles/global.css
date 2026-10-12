@@ -297,6 +297,91 @@ keep-awake-light { display: contents; }
   filter: grayscale(0.7) brightness(0.55);
 }
 
+/* ── Claude usage gauge (#254) ──
+   One more instrument on the panel: how much of the account's rolling 5-hour
+   window is used, and how long until it resets. Same pinned line boxes as the
+   keep-awake lamp beside it, so it can never make the header taller. */
+.usage-gauge {
+  --usage-label-line: 12px;
+  --usage-value-line: 26px;
+  --usage-text-gap: 2px;
+  --usage-tone: var(--color-green);
+  --usage-glow: rgba(0, 255, 136, 0.9);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  cursor: default;
+}
+
+.usage-gauge.tone-warn {
+  --usage-tone: var(--color-yellow);
+  --usage-glow: rgba(255, 204, 0, 0.8);
+}
+
+.usage-gauge.tone-critical {
+  --usage-tone: var(--color-red);
+  --usage-glow: rgba(255, 0, 85, 0.9);
+}
+
+/* No trustworthy reading — not configured, unreachable or stale. Dark, like an
+   instrument with no power, rather than a number that might be wrong. */
+.usage-gauge.tone-unknown {
+  --usage-tone: rgba(255, 255, 255, 0.35);
+  --usage-glow: transparent;
+}
+
+.usage-gauge-reading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--usage-text-gap);
+}
+
+.usage-gauge-label {
+  font-size: 10px;
+  line-height: var(--usage-label-line);
+  color: var(--color-blue);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.usage-gauge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-gauge-value {
+  min-width: 4ch;
+  font-size: 22px;
+  line-height: var(--usage-value-line);
+  font-weight: 700;
+  color: var(--usage-tone);
+  text-shadow: 0 0 12px var(--usage-glow);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-gauge-reading:last-child .usage-gauge-value {
+  min-width: 7ch;
+}
+
+.usage-gauge-meter {
+  width: 64px;
+  height: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  background: var(--bg-dark);
+  overflow: hidden;
+}
+
+.usage-gauge-fill {
+  width: var(--usage-fill, 0%);
+  height: 100%;
+  background: var(--usage-tone);
+  box-shadow: 0 0 8px var(--usage-glow);
+  transition: width 0.6s ease;
+}
+
 /* ── Main layout ── */
 .main-content {
   flex: 1;

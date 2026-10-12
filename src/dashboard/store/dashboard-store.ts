@@ -1,5 +1,5 @@
 import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold } from './types.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage } from './types.js';
 import { formatClockTime, formatDuration } from '../shared/format.js';
 import { WsClient } from './ws-client.js';
 
@@ -99,6 +99,7 @@ export function initialState(): DashboardState {
     shutdownRequested: false,
     appShutdown: false,
     hold: null,
+    usage: null,
     multiProject: false,
     owner: '',
     repo: '',
@@ -131,6 +132,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
       return addToStream(state, '✓ GitHub rate limit cleared', -1, 'success');
     case 'work-hold':         return applyWorkHold(state, event.data);
     case 'work-hold-cleared': return applyWorkHoldCleared(state);
+    case 'usage-update':      return applyUsageUpdate(state, event.data);
     case 'broadcast-github-activity':
     case 'broadcast-commit':
     case 'broadcast-pr-update':
@@ -464,6 +466,28 @@ function applyWorkHold(state: DashboardState, data: Record<string, unknown>): Da
 function applyWorkHoldCleared(state: DashboardState): DashboardState {
   if (state.hold === null) return state;
   return addToStream({ ...state, hold: null }, '▶ Done waiting — resuming work', -1, 'success');
+}
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** A fresh usage reading replaces the last one. Arrives every minute, so it
+ *  only moves the header gauge — it would just be noise in the event log. */
+function applyUsageUpdate(state: DashboardState, data: Record<string, unknown>): DashboardState {
+  const fiveHourPercent = finiteOrNull(data['fiveHourPercent']);
+  let status: AccountUsage['status'] =
+    data['status'] === 'ok' || data['status'] === 'unconfigured' ? data['status'] : 'unavailable';
+  // "ok" without a number to show is not a reading the gauge can trust.
+  if (status === 'ok' && fiveHourPercent === null) status = 'unavailable';
+  const usage: AccountUsage = {
+    status,
+    fiveHourPercent: status === 'ok' ? fiveHourPercent : null,
+    resetsAtMs: status === 'ok' ? finiteOrNull(data['resetsAtMs']) : null,
+    fetchedAtMs: finiteOrNull(data['fetchedAtMs']) ?? Date.now(),
+    reason: typeof data['reason'] === 'string' ? data['reason'] : '',
+  };
+  return { ...state, usage };
 }
 
 function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>): DashboardState {
