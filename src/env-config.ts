@@ -76,7 +76,7 @@ export interface EnvConfig {
    * (`GET https://api.anthropic.com/api/oauth/usage`) for the Dashboard's
    * usage gauge. Optional: without it the gauge shows as OFF.
    */
-  anthropic_usage_token?: string;
+  anthropic_usage_token?: string | null;
   /** Named GitHub tokens. At least one required. */
   github_tokens: GitHubTokenConfig[];
   /** Projects to run. At least one required. */

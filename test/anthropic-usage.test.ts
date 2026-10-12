@@ -75,10 +75,12 @@ test("parseUsageResponse reports no reset time when no window is open", () => {
     fiveHourPercent: 0,
     resetsAtMs: null,
   });
-  assert.equal(
-    parseUsageResponse({ five_hour: { utilization: 5, resets_at: "not a date" } })?.resetsAtMs,
-    null,
-  );
+});
+
+test("parseUsageResponse rejects missing or malformed reset times", () => {
+  assert.equal(parseUsageResponse({ five_hour: { utilization: 37 } }), null);
+  assert.equal(parseUsageResponse({ five_hour: { utilization: 37, resets_at: 123 } }), null);
+  assert.equal(parseUsageResponse({ five_hour: { utilization: 37, resets_at: "not a date" } }), null);
 });
 
 test("parseUsageResponse returns null without a usable 5-hour window", () => {
@@ -170,6 +172,16 @@ test("fetchAnthropicUsage reports unreadable or unexpected bodies as unavailable
   const missing = await fetchAnthropicUsage(TOKEN, { fetchImpl: noWindow.fetchImpl, clock: () => NOW });
   assert.equal(missing.status, "unavailable");
   assert.match(missing.reason, /no 5-hour usage window/);
+
+  for (const body of [
+    { five_hour: { utilization: 37 } },
+    { five_hour: { utilization: 37, resets_at: 123 } },
+    { five_hour: { utilization: 37, resets_at: "not a date" } },
+  ]) {
+    const malformed = fakeFetch(() => jsonResponse(body));
+    const reading = await fetchAnthropicUsage(TOKEN, { fetchImpl: malformed.fetchImpl, clock: () => NOW });
+    assert.equal(reading.status, "unavailable");
+  }
 });
 
 // ── AnthropicUsageMonitor ────────────────────────────────────────────────────

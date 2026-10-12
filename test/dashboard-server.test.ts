@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import WebSocket from "ws";
 import { DashboardServer } from "../src/dashboard-server.js";
-import { globalEventEmitter } from "../src/event-emitter.js";
+import { EventEmitter, globalEventEmitter } from "../src/event-emitter.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
 
 const TEST_PORT = 19_876;
@@ -149,6 +149,38 @@ test("WS /api/ws delivers emitted events as JSON", async (t) => {
   const types = messages.map((m) => m.type);
   assert.ok(types.includes("lifecycle-update"), "should receive lifecycle-update live");
   assert.ok(types.includes("snapshot-update"), "should receive snapshot-update live");
+});
+
+test("WS /api/ws replays the latest cached usage reading on connection", async (t) => {
+  const eventEmitter = new EventEmitter();
+  const server = new DashboardServer({
+    port: TEST_PORT + 23,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+    eventEmitter,
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
+  eventEmitter.emit("usage-update", {
+    status: "ok", fiveHourPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+  });
+  eventEmitter.emit("usage-update", {
+    status: "ok", fiveHourPercent: 41, resetsAtMs, fetchedAtMs: 61_000, reason: "",
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 23}/api/ws`);
+  const messagesPromise = collectWsMessages(ws, 100);
+  const messages = await messagesPromise;
+  ws.close();
+
+  const readings = messages.filter((event) => event.type === "usage-update");
+  assert.equal(readings.length, 1, "only the latest cached usage reading is replayed");
+  assert.equal(readings[0]?.data["fiveHourPercent"], 41);
+  assert.equal(readings[0]?.data["resetsAtMs"], resetsAtMs);
 });
 
 test("WS upgrade to non-/api/ws path is rejected", async (t) => {

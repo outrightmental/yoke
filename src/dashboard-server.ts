@@ -266,6 +266,10 @@ export class DashboardServer {
       console.error("[Dashboard] WebSocket error:", error);
     });
 
+    for (const event of this.cachedEvents.values()) {
+      ws.send(JSON.stringify(event));
+    }
+
     ws.on("message", (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString()) as { type: string; engineIndex?: number };

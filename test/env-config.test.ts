@@ -227,6 +227,16 @@ test("loadEnvConfig loads an optional anthropic_usage_token", async () => {
   });
 });
 
+test("loadEnvConfig accepts a null anthropic_usage_token", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      anthropic_usage_token: null,
+    });
+    assert.equal(loadEnvConfig(filePath).anthropic_usage_token, null);
+  });
+});
+
 test("loadEnvConfig throws when anthropic_usage_token is not a string", async () => {
   await withTempDir(async (dir) => {
     const filePath = await writeEnvYaml(dir, {

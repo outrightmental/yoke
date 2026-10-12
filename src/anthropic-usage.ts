@@ -54,10 +54,12 @@ export function parseUsageResponse(
   const utilization = (window as Record<string, unknown>)["utilization"];
   if (typeof utilization !== "number" || !Number.isFinite(utilization)) return null;
   const resetsAt = (window as Record<string, unknown>)["resets_at"];
-  const resetsAtMs = typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
+  const resetsAtMs =
+    resetsAt === null ? null : typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
+  if (resetsAtMs !== null && !Number.isFinite(resetsAtMs)) return null;
   return {
     fiveHourPercent: Math.min(100, Math.max(0, utilization)),
-    resetsAtMs: Number.isFinite(resetsAtMs) ? resetsAtMs : null,
+    resetsAtMs,
   };
 }
 
