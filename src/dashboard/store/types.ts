@@ -33,6 +33,24 @@ export interface WorkHold {
   untilMs: number;
 }
 
+/**
+ * The latest reading of the Claude account's rolling 5-hour usage window, for
+ * the header's usage gauge (mirrors `UsageReading` in src/anthropic-usage.ts).
+ */
+export interface AccountUsage {
+  /** "ok": live numbers; "unconfigured": no token set, so the gauge is OFF;
+   *  "unavailable": a token is set but the reading could not be taken. */
+  status: 'ok' | 'unconfigured' | 'unavailable';
+  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok". */
+  fiveHourPercent: number | null;
+  /** Epoch millis the 5-hour window resets; null when unknown or none is open. */
+  resetsAtMs: number | null;
+  /** Epoch millis the reading was taken. */
+  fetchedAtMs: number;
+  /** Why there are no numbers; empty when status is "ok". */
+  reason: string;
+}
+
 export interface IssueCard {
   number: number;
   title: string;
@@ -117,6 +135,8 @@ export interface DashboardState {
   appShutdown: boolean;
   /** The hold parking every engine, or null when work is free to run. */
   hold: WorkHold | null;
+  /** Latest Claude account usage reading, or null until the first arrives. */
+  usage: AccountUsage | null;
   /** True when more than one project shares this dashboard. */
   multiProject: boolean;
   owner: string;

@@ -349,6 +349,34 @@ test("DashboardServer replays a live work-hold so a browser opened mid-hold sees
   );
 });
 
+test("DashboardServer replays only the latest usage reading for the header gauge", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 22,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
+  globalEventEmitter.emit("usage-update", {
+    status: "ok", fiveHourPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+  });
+  globalEventEmitter.emit("usage-update", {
+    status: "ok", fiveHourPercent: 41, resetsAtMs, fetchedAtMs: 61_000, reason: "",
+  });
+
+  // A browser opened between polls sees the gauge at once, not a minute later.
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 22}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const readings = data.cachedEvents.filter((m) => m.type === "usage-update");
+  assert.equal(readings.length, 1, "only the latest reading is replayed");
+  assert.equal(readings[0]?.data["fiveHourPercent"], 41);
+  assert.equal(readings[0]?.data["resetsAtMs"], resetsAtMs);
+});
+
 test("DashboardServer caches action-start with startedAt for accurate elapsed-time replay", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 11,

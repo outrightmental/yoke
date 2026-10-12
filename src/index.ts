@@ -37,6 +37,7 @@ import {
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore, migrateLegacySessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
+import { AnthropicUsageMonitor } from "./anthropic-usage.js";
 import { resolveDashboardTitle } from "./dashboard-title.js";
 import { globalEventEmitter, EventEmitter } from "./event-emitter.js";
 import {
@@ -1205,6 +1206,15 @@ async function main(): Promise<void> {
       `[Dashboard] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  // Feeds the header's Claude usage gauge. Only worth polling while there is a
+  // dashboard to show it; without a token it just reports the gauge as OFF.
+  const usageMonitor = new AnthropicUsageMonitor({
+    token: envConfig.anthropic_usage_token,
+    emitter,
+  });
+  if (dashboardReady) {
+    usageMonitor.start();
+  }
 
   // ── Banner ────────────────────────────────────────────────────────────────
   write(HEAVY_RULE);
@@ -1333,6 +1343,7 @@ async function main(): Promise<void> {
     process.stdin.pause();
     process.stdin.setRawMode(false);
   }
+  usageMonitor.stop();
   if (dashboardReady) {
     dashboard.close();
   }

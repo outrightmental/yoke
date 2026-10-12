@@ -71,6 +71,12 @@ export interface EnvConfig {
   github_api_base_url?: string;
   /** GitHub API version header (default: 2022-11-28). */
   github_api_version?: string;
+  /**
+   * OAuth access token for the Claude account, used only to read its usage
+   * (`GET https://api.anthropic.com/api/oauth/usage`) for the Dashboard's
+   * usage gauge. Optional: without it the gauge shows as OFF.
+   */
+  anthropic_usage_token?: string;
   /** Named GitHub tokens. At least one required. */
   github_tokens: GitHubTokenConfig[];
   /** Projects to run. At least one required. */
@@ -111,6 +117,13 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   }
   if (!Array.isArray(config.projects) || config.projects.length === 0) {
     throw new Error(`${filePath}: "projects" must be a non-empty array.`);
+  }
+  if (
+    config.anthropic_usage_token !== undefined &&
+    config.anthropic_usage_token !== null &&
+    typeof config.anthropic_usage_token !== "string"
+  ) {
+    throw new Error(`${filePath}: "anthropic_usage_token" must be a string.`);
   }
   if ("claude_code_model" in config) {
     throw new Error(
