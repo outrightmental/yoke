@@ -201,4 +201,9 @@ export type OrchestratorAction =
 export interface OrchestratorPlan {
   actions: OrchestratorAction[];
   blockedIssueNumbers: Record<number, number[]>;
+  /**
+   * Groups of open issues that block each other, so none of them can start.
+   * Each group is sorted ascending; the list is sorted by first member.
+   */
+  dependencyCycles: number[][];
 }

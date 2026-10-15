@@ -203,6 +203,54 @@ function shortId(id: string): string {
 const holdAnnouncer = new HoldAnnouncer();
 
 /**
+ * Dependency cycles already warned about, keyed by repo and sorted members.
+ * Every planning pass sees the same cycle, so it is reported only the first
+ * time; its issues simply stay blocked until someone edits a reference.
+ */
+const reportedDependencyCycles = new Set<string>();
+
+function reportDependencyCycles(
+  repoKey: string,
+  cycles: readonly number[][],
+  emitter: EventEmitter,
+): void {
+  for (const cycle of cycles) {
+    const key = `${repoKey}#${cycle.join(",")}`;
+    if (reportedDependencyCycles.has(key)) continue;
+    reportedDependencyCycles.add(key);
+    const message =
+      `Dependency cycle in ${repoKey}: issues ${cycle.join(", ")} block each other. ` +
+      `None of them can start until a "blocked by"/"blocks" reference is removed.`;
+    writeLogLine(message);
+    emitLogMessage("warning", message, emitter, repoKey);
+  }
+}
+
+/** Serialises planning across all engines to prevent double-booking. */
+class PlanningMutex {
+  private locked = false;
+  private waiting: Array<() => void> = [];
+
+  async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.locked) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    } else {
+      this.locked = true;
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiting.shift();
+      if (next) {
+        next();
+      } else {
+        this.locked = false;
+      }
+    }
+  }
+}
+
+/**
  * Per-action failure memory, shared by the whole engine pool.
  *
  * A failed action used to be retried as fast as the pool could pick it up: the
@@ -317,7 +365,13 @@ async function broadcastBetweenCycleActivity(
     if (snapshotChanged) {
       broadcastRepositorySnapshot(snapshot, config.owner, config.repo, undefined, emitter);
     }
-    const { blockedIssueNumbers } = buildPlan(snapshot, ctx.cap, config.projectMode, config.focusMode);
+    const { blockedIssueNumbers, dependencyCycles } = buildPlan(
+      snapshot,
+      ctx.cap,
+      config.projectMode,
+      config.focusMode,
+    );
+    reportDependencyCycles(repoKey, dependencyCycles, emitter);
     broadcastLifecycleUpdate(
       snapshot,
       claimedImplementationIssueNumbers(claimedActions, repoKey),
@@ -604,6 +658,7 @@ async function runProjectMaintenance(
   }
 
   const plan = buildPlan(snapshot, ctx.cap, config.projectMode, config.focusMode);
+  reportDependencyCycles(repoKey, plan.dependencyCycles, emitter);
   broadcastLifecycleUpdate(
     snapshot,
     claimedImplementationIssueNumbers(claimedActions, repoKey),
@@ -636,17 +691,30 @@ async function planNextAction(
   actionCooldowns: ActionCooldowns,
   shutdownSignal: ShutdownSignal,
 ): Promise<PlannedWork | null> {
-  const claimed = await claimNextAction({
-    projects: contexts,
-    loadPlan: async (ctx) => {
-      let snapshot: RepositorySnapshot;
-      try {
-        snapshot = await getProjectSnapshot(ctx);
-      } catch {
-        return undefined;
-      }
-      return { snapshot, ...buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode) };
-    },
+  for (const ctx of contexts) {
+    // Respect the per-project cap: never let more than `cap` of the shared
+    // cylinders work the same project at once.
+    if (claimsForRepo(claimedActions, ctx.repoKey) >= ctx.cap) {
+      continue;
+    }
+
+    let snapshot: RepositorySnapshot;
+    try {
+      snapshot = await getProjectSnapshot(ctx);
+    } catch {
+      continue;
+    }
+    const plan = buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode);
+    reportDependencyCycles(ctx.repoKey, plan.dependencyCycles, emitter);
+
+    const claimed = tryClaimFromPlan(
+      ctx.repoKey,
+      ctx.cap,
+      plan.actions,
+      claimedActions,
+      actionCooldowns.until,
+    );
+
     // Refresh this project's lifecycle pane on every planning pass so pills
     // reflect the freshest snapshot (and any claim we just made).
     onPlanned: (ctx, plan) =>
