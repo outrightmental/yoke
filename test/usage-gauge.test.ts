@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   USAGE_STALE_AFTER_MS,
   usageGaugeView,
+  usageLimitUntilMs,
 } from "../src/dashboard/shared/usage-gauge.js";
 import type { AccountUsage } from "../src/dashboard/store/types.js";
 import { YokeHeader } from "../src/dashboard/components/yoke-header.js";
@@ -138,6 +139,48 @@ test("usageGaugeView: once the reset time passes, the old percentage is no longe
   assert.match(view.title, /window has reset/);
 });
 
+test("usageGaugeView: a Claude usage-limit hold reads LIMIT and counts down to the CLI's reset, whatever the reading", () => {
+  const limitUntilMs = NOW + 1 * HOUR + 41 * MINUTE;
+  const unavailable: AccountUsage = {
+    status: "unavailable",
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: NOW,
+    reason: "could not reach the Anthropic usage endpoint",
+  };
+  for (const usage of [
+    null,
+    unavailable,
+    { ...unavailable, status: "unconfigured" as const, reason: "no Claude login" },
+    okReading(37, { fetchedAtMs: NOW - USAGE_STALE_AFTER_MS - 1 }),
+    // A weekly limit can run out with the 5-hour window far from full.
+    okReading(41),
+  ]) {
+    const view = usageGaugeView(usage, NOW, limitUntilMs);
+    assert.equal(view.tone, "critical", JSON.stringify(usage));
+    assert.equal(view.percentText, "LIMIT");
+    assert.equal(view.fillPercent, 100);
+    assert.equal(view.resetText, "1h 41m");
+    assert.match(view.title, /^Claude usage limit reached — work resumes /);
+  }
+
+  assert.match(usageGaugeView(okReading(41), NOW, limitUntilMs).title, /Anthropic last reported 41% of the 5-hour window used/);
+  assert.match(usageGaugeView(unavailable, NOW, limitUntilMs).title, /usage reading: could not reach the Anthropic usage endpoint/);
+});
+
+test("usageGaugeView: once the usage-limit hold has lifted, the gauge goes back to the reading", () => {
+  const view = usageGaugeView(okReading(12), NOW, NOW - 1);
+  assert.equal(view.tone, "ok");
+  assert.equal(view.percentText, "12%");
+  assert.equal(usageGaugeView(okReading(12), NOW, null).percentText, "12%");
+});
+
+test("usageLimitUntilMs: only the Claude usage-limit hold reaches the usage gauge", () => {
+  assert.equal(usageLimitUntilMs(null), null);
+  assert.equal(usageLimitUntilMs({ kind: "claude-usage-limit", reason: "Claude usage limit", untilMs: NOW + HOUR }), NOW + HOUR);
+  assert.equal(usageLimitUntilMs({ kind: "github-rate-limit", reason: "GitHub rate limit", untilMs: NOW + HOUR }), null);
+});
+
 // ── <yoke-header> rendering ──────────────────────────────────────────────────
 
 test("yoke-header always renders the usage gauge, dark until the first reading", () => {
@@ -180,6 +223,28 @@ test("yoke-header shows a live reading's percent, meter and reset countdown", ()
   assert.match(markup, /<div class="usage-gauge-value">92%<\/div>/);
   assert.match(markup, /--usage-fill:92%/);
   assert.match(markup, /<div class="usage-gauge-value">2h 14m<\/div>/);
+});
+
+test("yoke-header shows LIMIT and the reset countdown while a Claude usage-limit hold parks the pool", () => {
+  const now = Date.now();
+  const untilMs = now + 1 * HOUR + 41 * MINUTE + 30_000;
+  const markup = renderHeader({
+    holdUntilMs: untilMs,
+    usageLimitUntilMs: untilMs,
+    usage: {
+      status: "unavailable",
+      fiveHourPercent: null,
+      resetsAtMs: null,
+      fetchedAtMs: now,
+      reason: "could not reach the Anthropic usage endpoint",
+    },
+  });
+  assert.match(markup, /<div class="countdown-label">WAITING<\/div>/);
+  assert.match(markup, /class="usage-gauge tone-critical"/);
+  assert.match(markup, /<div class="usage-gauge-value">LIMIT<\/div>/);
+  assert.match(markup, /--usage-fill:100%/);
+  assert.match(markup, /<div class="usage-gauge-value">1h 41m<\/div>/);
+  assert.match(markup, /title="Claude usage limit reached — work resumes /);
 });
 
 test("yoke-header puts the gauge in the upper-right cluster, before the keep-awake lamp", () => {

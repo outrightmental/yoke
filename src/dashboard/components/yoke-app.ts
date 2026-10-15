@@ -1,6 +1,7 @@
 import { LitElement, html } from 'lit';
 import type { DashboardState } from '../store/dashboard-store.js';
 import type { DashboardStore } from '../store/dashboard-store.js';
+import { usageLimitUntilMs } from '../shared/usage-gauge.js';
 import './yoke-header.js';
 import './hold-banner.js';
 import './cylinder-engine.js';
@@ -69,6 +70,7 @@ export class YokeApp extends LitElement {
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
         .holdUntilMs=${hold?.untilMs ?? null}
+        .usageLimitUntilMs=${usageLimitUntilMs(hold)}
         .usage=${s.usage}
         .tick=${this._tick}
       ></yoke-header>

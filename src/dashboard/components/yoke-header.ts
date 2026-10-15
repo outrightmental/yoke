@@ -14,6 +14,7 @@ export class YokeHeader extends LitElement {
     iteration: { type: Number },
     nextCycleAtMs: { type: Number },
     holdUntilMs: { type: Number },
+    usageLimitUntilMs: { type: Number },
     usage: { attribute: false },
     tick: { type: Number },
   };
@@ -27,6 +28,8 @@ export class YokeHeader extends LitElement {
   nextCycleAtMs: number | null = null;
   /** Deadline of a hold parking the whole pool, or null when work is free. */
   holdUntilMs: number | null = null;
+  /** Deadline of a Claude usage-limit hold, or null when none is parking the pool. */
+  usageLimitUntilMs: number | null = null;
   /** Latest Claude account usage reading, or null until the first arrives. */
   usage: AccountUsage | null = null;
   tick = 0;
@@ -56,7 +59,7 @@ export class YokeHeader extends LitElement {
       ? `https://github.com/${this.owner || ''}`
       : `https://github.com/${this.owner}/${this.repo}`;
     const countdown = this._countdown();
-    const gauge = usageGaugeView(this.usage, Date.now());
+    const gauge = usageGaugeView(this.usage, Date.now(), this.usageLimitUntilMs);
     const subtitle = this.multiProject && this.projectCount > 1
       ? `${this.projectCount} PROJECTS · AI SDLC BROADCAST`
       : 'AI SDLC BROADCAST';
