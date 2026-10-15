@@ -1584,8 +1584,16 @@ function assertClaudeQuotaAvailable(): void {
   }
 }
 
+/**
+ * True when Claude CLI output says the subscription quota ran out. The CLI
+ * names the window that ran out, and has worded it several ways: "You've hit
+ * your limit", "You've hit your session limit · resets 12pm", "5-hour limit
+ * reached", "Opus weekly limit reached". Missing a wording is not harmless —
+ * the run is then treated as an ordinary failure and retried every few minutes
+ * instead of waiting out the reset on one hold.
+ */
 export function isClaudeUsageLimitMessage(message: string): boolean {
-  return /out of extra usage|out of usage|hit your limit|rate limit|quota|usage limit/i.test(
+  return /out of extra usage|out of usage|hit your (?:[\w-]+ ){0,2}limit|(?:session|5-hour|weekly) limit reached|rate limit|quota|usage limit/i.test(
     message,
   );
 }

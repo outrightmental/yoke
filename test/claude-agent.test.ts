@@ -242,8 +242,34 @@ test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {
   assert.equal(isClaudeUsageLimitMessage(message), true);
 });
 
+test("isClaudeUsageLimitMessage detects the CLI's session, 5-hour and weekly limit wordings", () => {
+  for (const message of [
+    // Verbatim from a run that was retried every 5m instead of held (#254).
+    "You've hit your session limit · resets 12pm (America/Los_Angeles)",
+    "You've hit your limit · resets 3am (America/New_York)",
+    "You've hit your weekly limit · resets Oct 21, 2am (America/Los_Angeles)",
+    "You've hit your Opus weekly limit · resets Oct 21, 2am",
+    "5-hour limit reached ∙ resets 3pm",
+    "Opus weekly limit reached ∙ resets Oct 6, 2pm",
+    "Session limit reached · resets 12pm",
+  ]) {
+    assert.equal(isClaudeUsageLimitMessage(message), true, message);
+  }
+});
+
 test("isClaudeUsageLimitMessage returns false for unrelated errors", () => {
   assert.equal(isClaudeUsageLimitMessage("network timeout"), false);
+  assert.equal(isClaudeUsageLimitMessage("Prompt is too long"), false);
+  assert.equal(isClaudeUsageLimitMessage("Reached max turns (40)"), false);
+});
+
+test("parseUsageResetTimeMs reads the reset time out of the session-limit message", () => {
+  const now = new Date(2026, 9, 12, 10, 19, 0, 0);
+  const parsed = parseUsageResetTimeMs(
+    "You've hit your session limit · resets 12pm (America/Los_Angeles)",
+    now,
+  );
+  assert.equal(parsed, new Date(2026, 9, 12, 12, 0, 0, 0).getTime());
 });
 
 test("isClaudeTermsAcceptanceMessage detects the consumer-terms API error", () => {
