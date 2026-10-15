@@ -226,30 +226,6 @@ function reportDependencyCycles(
   }
 }
 
-/** Serialises planning across all engines to prevent double-booking. */
-class PlanningMutex {
-  private locked = false;
-  private waiting: Array<() => void> = [];
-
-  async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.locked) {
-      await new Promise<void>((resolve) => this.waiting.push(resolve));
-    } else {
-      this.locked = true;
-    }
-    try {
-      return await fn();
-    } finally {
-      const next = this.waiting.shift();
-      if (next) {
-        next();
-      } else {
-        this.locked = false;
-      }
-    }
-  }
-}
-
 /**
  * Per-action failure memory, shared by the whole engine pool.
  *
@@ -691,33 +667,21 @@ async function planNextAction(
   actionCooldowns: ActionCooldowns,
   shutdownSignal: ShutdownSignal,
 ): Promise<PlannedWork | null> {
-  for (const ctx of contexts) {
-    // Respect the per-project cap: never let more than `cap` of the shared
-    // cylinders work the same project at once.
-    if (claimsForRepo(claimedActions, ctx.repoKey) >= ctx.cap) {
-      continue;
-    }
-
-    let snapshot: RepositorySnapshot;
-    try {
-      snapshot = await getProjectSnapshot(ctx);
-    } catch {
-      continue;
-    }
-    const plan = buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode);
-    reportDependencyCycles(ctx.repoKey, plan.dependencyCycles, emitter);
-
-    const claimed = tryClaimFromPlan(
-      ctx.repoKey,
-      ctx.cap,
-      plan.actions,
-      claimedActions,
-      actionCooldowns.until,
-    );
-
+  const claimed = await claimNextAction({
+    projects: contexts,
+    loadPlan: async (ctx) => {
+      let snapshot: RepositorySnapshot;
+      try {
+        snapshot = await getProjectSnapshot(ctx);
+      } catch {
+        return undefined;
+      }
+      return { snapshot, ...buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode) };
+    },
     // Refresh this project's lifecycle pane on every planning pass so pills
     // reflect the freshest snapshot (and any claim we just made).
-    onPlanned: (ctx, plan) =>
+    onPlanned: (ctx, plan) => {
+      reportDependencyCycles(ctx.repoKey, plan.dependencyCycles, emitter);
       broadcastLifecycleUpdate(
         plan.snapshot,
         claimedImplementationIssueNumbers(claimedActions, ctx.repoKey),
@@ -727,7 +691,8 @@ async function planNextAction(
         ctx.config.focusMode,
         emitter,
         ctx.repoKey,
-      ),
+      );
+    },
     claimedActions,
     cooldownUntilMs: actionCooldowns.until,
     shutdownSignal,
