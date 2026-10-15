@@ -233,7 +233,7 @@ const waitNotices = new Map<string, LiveWaitNotice>();
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /** Coarse remaining-time form for a wait line: "2h 14m", "14m 3s", "9s". */
-function formatWaitRemaining(remainingMs: number): string {
+export function formatWaitRemaining(remainingMs: number): string {
   const totalSeconds = Math.max(0, Math.round(remainingMs / 1000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
   const minutes = Math.floor(totalSeconds / 60);
@@ -1626,7 +1626,7 @@ export interface ClaudeAuthResult {
  * Returns the raw JSON string, or a `ClaudeAuthResult` describing why it could
  * not be read.
  */
-async function readClaudeCredentials(): Promise<{ raw: string } | ClaudeAuthResult> {
+export async function readClaudeCredentials(): Promise<{ raw: string } | ClaudeAuthResult> {
   if (process.platform === "darwin") {
     const result = spawnSync(
       "security",
@@ -1796,7 +1796,7 @@ export function parseUsageResetTimeMs(message: string, now: Date = new Date()): 
   return reset.getTime();
 }
 
-function formatLocalTime(epochMs: number): string {
+export function formatLocalTime(epochMs: number): string {
   return new Date(epochMs).toLocaleString(undefined, {
     hour: "numeric",
     minute: "2-digit",

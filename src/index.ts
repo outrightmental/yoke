@@ -37,7 +37,7 @@ import {
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore, migrateLegacySessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
-import { AnthropicUsageMonitor } from "./anthropic-usage.js";
+import { AnthropicUsageMonitor, USAGE_POLL_INTERVAL_MS } from "./anthropic-usage.js";
 import { resolveDashboardTitle } from "./dashboard-title.js";
 import { globalEventEmitter, EventEmitter } from "./event-emitter.js";
 import {
@@ -1206,15 +1206,14 @@ async function main(): Promise<void> {
       `[Dashboard] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  // Feeds the header's Claude usage gauge. Only worth polling while there is a
-  // dashboard to show it; without a token it just reports the gauge as OFF.
+  // Feeds the header's Claude usage gauge, and says in the log whenever the
+  // reading changes — including when there is none to be had, and why.
   const usageMonitor = new AnthropicUsageMonitor({
     token: envConfig.anthropic_usage_token,
     emitter,
+    log: write,
   });
-  if (dashboardReady) {
-    usageMonitor.start();
-  }
+  usageMonitor.start();
 
   // ── Banner ────────────────────────────────────────────────────────────────
   write(HEAVY_RULE);
@@ -1232,6 +1231,9 @@ async function main(): Promise<void> {
   } else {
     write(`dashboard: failed to start (check if port ${dashboardPort} is available)`);
   }
+  write(
+    `claude usage: 5-hour window read every ${formatDuration(USAGE_POLL_INTERVAL_MS)} with ${usageMonitor.tokenLabel}`,
+  );
   const modeNotes: string[] = [];
   if (once) modeNotes.push("--once");
   if (dryRun) modeNotes.push("--dry-run");

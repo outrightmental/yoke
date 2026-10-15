@@ -38,7 +38,7 @@ export function usageGaugeView(usage: AccountUsage | null, nowMs: number): Usage
     return noReading(NO_VALUE, 'Claude usage: waiting for the first reading');
   }
   if (usage.status === 'unconfigured') {
-    return noReading('OFF', `Claude usage is off: ${usage.reason || 'set anthropic_usage_token in env.yaml'}`);
+    return noReading('OFF', `Claude usage is off: ${usage.reason || 'log in with `claude`, or set anthropic_usage_token in env.yaml'}`);
   }
   if (usage.status !== 'ok' || usage.fiveHourPercent === null) {
     return noReading(NO_VALUE, `Claude usage unavailable: ${usage.reason || 'no reading'}`);

@@ -5,9 +5,15 @@ import {
   ANTHROPIC_USAGE_URL,
   AnthropicUsageMonitor,
   USAGE_POLL_INTERVAL_MS,
+  describeUsageChange,
   fetchAnthropicUsage,
+  formatUsageLine,
   parseUsageResponse,
+  readClaudeLoginToken,
+  type ClaudeCredentialsReader,
+  type UsageReading,
 } from "../src/anthropic-usage.js";
+import { formatLocalTime } from "../src/claude-agent.js";
 import { EventEmitter, type DashboardEvent } from "../src/event-emitter.js";
 
 const TOKEN = "test-usage-token-do-not-leak";
@@ -47,6 +53,30 @@ function collectUsageEvents(emitter: EventEmitter): DashboardEvent[] {
   });
   return events;
 }
+
+/** The Claude CLI's credentials blob, as `claude` stores it after a login. */
+function claudeCredentials(accessToken: string, expiresAt = NOW + 60 * 60_000): string {
+  return JSON.stringify({
+    claudeAiOauth: {
+      accessToken,
+      refreshToken: "refresh-token-do-not-leak",
+      expiresAt,
+      scopes: ["user:inference", "user:profile"],
+      subscriptionType: "max",
+    },
+  });
+}
+
+/** A credentials reader that hands back each blob in turn, repeating the last. */
+function fakeCredentials(...blobs: string[]): { readCredentials: ClaudeCredentialsReader; reads: () => number } {
+  let n = 0;
+  return {
+    readCredentials: async () => ({ raw: blobs[Math.min(n++, blobs.length - 1)]! }),
+    reads: () => n,
+  };
+}
+
+const NOT_LOGGED_IN: ClaudeCredentialsReader = async () => ({ valid: false, reason: "credentials not found" });
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -190,24 +220,112 @@ test("AnthropicUsageMonitor polls once a minute by default", () => {
   assert.equal(USAGE_POLL_INTERVAL_MS, 60_000);
 });
 
-test("AnthropicUsageMonitor without a token reports the gauge OFF once and never fetches", async () => {
+test("AnthropicUsageMonitor with no token and no Claude login reports the gauge OFF and never fetches", async () => {
   for (const token of [undefined, null, "", "   "]) {
     const emitter = new EventEmitter();
     const events = collectUsageEvents(emitter);
     const { fetchImpl, calls } = fakeFetch(() => jsonResponse(OK_BODY));
-    const monitor = new AnthropicUsageMonitor({ token, emitter, fetchImpl, intervalMs: 5, clock: () => NOW });
+    const monitor = new AnthropicUsageMonitor({
+      token, emitter, fetchImpl, intervalMs: 5, clock: () => NOW, readCredentials: NOT_LOGGED_IN,
+    });
 
     assert.equal(monitor.configured, false);
     monitor.start();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitFor(() => events.length >= 2);
     monitor.stop();
 
     assert.equal(calls.length, 0, `token ${JSON.stringify(token)} triggered a fetch`);
-    assert.equal(events.length, 1);
-    assert.equal(events[0]!.data["status"], "unconfigured");
-    assert.equal(events[0]!.data["fiveHourPercent"], null);
-    assert.match(events[0]!.data["reason"] as string, /anthropic_usage_token/);
+    for (const event of events) {
+      assert.equal(event.data["status"], "unconfigured");
+      assert.equal(event.data["fiveHourPercent"], null);
+      assert.match(event.data["reason"] as string, /log in with `claude`, or set anthropic_usage_token/);
+    }
   }
+});
+
+test("AnthropicUsageMonitor without a token reads usage with the Claude CLI's own login", async () => {
+  const emitter = new EventEmitter();
+  const events = collectUsageEvents(emitter);
+  const { fetchImpl, calls } = fakeFetch(() => jsonResponse(OK_BODY));
+  const { readCredentials } = fakeCredentials(claudeCredentials(TOKEN));
+  const monitor = new AnthropicUsageMonitor({ token: null, emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  assert.equal(monitor.tokenLabel, "the Claude CLI login");
+  const reading = await monitor.poll();
+  assert.equal(calls.length, 1);
+  assert.equal(new Headers(calls[0]!.init?.headers).get("authorization"), "Bearer " + TOKEN);
+  assert.equal(reading.status, "ok");
+  assert.equal(reading.fiveHourPercent, 37);
+  assert.ok(!JSON.stringify(events).includes(TOKEN), "a usage-update event leaked the login token");
+  assert.ok(!JSON.stringify(events).includes("refresh-token-do-not-leak"), "a usage-update event leaked the refresh token");
+});
+
+test("AnthropicUsageMonitor re-reads the Claude login on every poll, so the CLI's renewals are picked up", async () => {
+  const emitter = new EventEmitter();
+  const { fetchImpl, calls } = fakeFetch(() => jsonResponse(OK_BODY));
+  const { readCredentials, reads } = fakeCredentials(claudeCredentials("first-token"), claudeCredentials("renewed-token"));
+  const monitor = new AnthropicUsageMonitor({ token: "", emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  await monitor.poll();
+  await monitor.poll();
+  assert.equal(reads(), 2);
+  assert.deepEqual(
+    calls.map((call) => new Headers(call.init?.headers).get("authorization")),
+    ["Bearer first-token", "Bearer renewed-token"],
+  );
+});
+
+test("AnthropicUsageMonitor prefers anthropic_usage_token and then never reads the Claude login", async () => {
+  const emitter = new EventEmitter();
+  const { fetchImpl, calls } = fakeFetch(() => jsonResponse(OK_BODY));
+  const { readCredentials, reads } = fakeCredentials(claudeCredentials("claude-cli-token"));
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  assert.equal(monitor.tokenLabel, "anthropic_usage_token");
+  await monitor.poll();
+  assert.equal(reads(), 0);
+  assert.equal(new Headers(calls[0]!.init?.headers).get("authorization"), "Bearer " + TOKEN);
+});
+
+test("AnthropicUsageMonitor reports an expired Claude login without asking Anthropic", async () => {
+  const emitter = new EventEmitter();
+  const { fetchImpl, calls } = fakeFetch(() => jsonResponse(OK_BODY));
+  const expiresAt = NOW - 1;
+  const { readCredentials } = fakeCredentials(claudeCredentials(TOKEN, expiresAt));
+  const monitor = new AnthropicUsageMonitor({ token: undefined, emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  const reading = await monitor.poll();
+  assert.equal(calls.length, 0);
+  assert.equal(reading.status, "unavailable");
+  assert.equal(
+    reading.reason,
+    `the Claude CLI login expired at ${formatLocalTime(expiresAt)} — claude renews it the next time it runs`,
+  );
+});
+
+test("AnthropicUsageMonitor names the Claude login, not anthropic_usage_token, when Anthropic rejects it", async () => {
+  const emitter = new EventEmitter();
+  const { fetchImpl } = fakeFetch(() => jsonResponse({ error: { message: `bad ${TOKEN}` } }, 401));
+  const { readCredentials } = fakeCredentials(claudeCredentials(TOKEN));
+  const monitor = new AnthropicUsageMonitor({ token: undefined, emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  const reading = await monitor.poll();
+  assert.equal(reading.status, "unavailable");
+  assert.equal(reading.reason, "Anthropic rejected the Claude CLI login (HTTP 401) — it may have expired");
+});
+
+test("AnthropicUsageMonitor survives a credentials reader that throws", async () => {
+  const emitter = new EventEmitter();
+  const { fetchImpl, calls } = fakeFetch(() => jsonResponse(OK_BODY));
+  const readCredentials: ClaudeCredentialsReader = async () => {
+    throw new Error(`keychain exploded holding ${TOKEN}`);
+  };
+  const monitor = new AnthropicUsageMonitor({ token: undefined, emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  const reading = await monitor.poll();
+  assert.equal(calls.length, 0);
+  assert.equal(reading.status, "unavailable");
+  assert.equal(reading.reason, "could not read the Claude CLI login");
 });
 
 test("AnthropicUsageMonitor reads at once, then on every interval, until stopped", async () => {
@@ -295,4 +413,145 @@ test("AnthropicUsageMonitor.poll takes and publishes a single reading on demand"
   assert.equal(reading.status, "ok");
   assert.equal(events.length, 1);
   assert.deepEqual(events[0]!.data, reading);
+});
+
+// ── readClaudeLoginToken ─────────────────────────────────────────────────────
+
+test("readClaudeLoginToken returns the access token the Claude CLI is logged in with", async () => {
+  const { readCredentials } = fakeCredentials(claudeCredentials(`  ${TOKEN}\n`));
+  assert.deepEqual(await readClaudeLoginToken(NOW, readCredentials), { token: TOKEN });
+});
+
+test("readClaudeLoginToken treats a missing login as unconfigured", async () => {
+  assert.deepEqual(await readClaudeLoginToken(NOW, NOT_LOGGED_IN), {
+    status: "unconfigured",
+    reason: "no Claude login to read it with — log in with `claude`, or set anthropic_usage_token in env.yaml",
+  });
+
+  // A CLI that runs on a Console API key keeps no claudeAiOauth login at all.
+  for (const raw of ["{}", "null", JSON.stringify({ claudeAiOauth: null }), JSON.stringify({ claudeAiOauth: { accessToken: "  " } })]) {
+    const { readCredentials } = fakeCredentials(raw);
+    const result = await readClaudeLoginToken(NOW, readCredentials);
+    assert.equal("status" in result ? result.status : "token", "unconfigured", raw);
+  }
+});
+
+test("readClaudeLoginToken reports unreadable credentials as unavailable without quoting them", async () => {
+  const unreadable = await readClaudeLoginToken(NOW, async () => ({
+    valid: false,
+    reason: "credentials unreadable: EACCES: permission denied",
+  }));
+  assert.deepEqual(unreadable, {
+    status: "unavailable",
+    reason: "could not read the Claude CLI login: credentials unreadable: EACCES: permission denied",
+  });
+
+  const { readCredentials } = fakeCredentials(`{"claudeAiOauth":{"accessToken":"${TOKEN}"`);
+  const malformed = await readClaudeLoginToken(NOW, readCredentials);
+  assert.deepEqual(malformed, { status: "unavailable", reason: "the Claude CLI's credentials are not valid JSON" });
+  assert.ok(!JSON.stringify(malformed).includes(TOKEN));
+});
+
+test("readClaudeLoginToken passes over an expiry it cannot read, and refuses one that has passed", async () => {
+  const { readCredentials: noExpiry } = fakeCredentials(JSON.stringify({ claudeAiOauth: { accessToken: TOKEN } }));
+  assert.deepEqual(await readClaudeLoginToken(NOW, noExpiry), { token: TOKEN });
+
+  const { readCredentials: live } = fakeCredentials(claudeCredentials(TOKEN, NOW + 1));
+  assert.deepEqual(await readClaudeLoginToken(NOW, live), { token: TOKEN });
+
+  const { readCredentials: expired } = fakeCredentials(claudeCredentials(TOKEN, NOW));
+  const result = await readClaudeLoginToken(NOW, expired);
+  assert.equal("status" in result ? result.status : "token", "unavailable");
+});
+
+// ── Narrating readings to the log ────────────────────────────────────────────
+
+function ok(fiveHourPercent: number, overrides: Partial<UsageReading> = {}): UsageReading {
+  return {
+    status: "ok",
+    fiveHourPercent,
+    resetsAtMs: Date.parse(RESETS_AT),
+    fetchedAtMs: NOW,
+    reason: "",
+    ...overrides,
+  };
+}
+
+function without(status: "unconfigured" | "unavailable", reason: string): UsageReading {
+  return { status, fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: NOW, reason };
+}
+
+test("formatUsageLine says what the gauge shows, in one line", () => {
+  assert.equal(
+    formatUsageLine(ok(41.4)),
+    `Claude usage: 41% of the 5-hour window used · resets in 2h 30m (${formatLocalTime(Date.parse(RESETS_AT))})`,
+  );
+  assert.equal(formatUsageLine(ok(0, { resetsAtMs: null })), "Claude usage: 0% of the 5-hour window used · no window open yet");
+  assert.equal(
+    formatUsageLine(without("unavailable", "could not reach the Anthropic usage endpoint")),
+    "Claude usage: unavailable — could not reach the Anthropic usage endpoint",
+  );
+  assert.equal(formatUsageLine(without("unconfigured", "no Claude login")), "Claude usage: off — no Claude login");
+});
+
+test("describeUsageChange speaks up for the first reading, each further 10%, a new window and any change of status", () => {
+  const first = ok(41);
+  assert.match(describeUsageChange(null, first) ?? "", /^Claude usage: 41% /);
+
+  // Same decile, same window, a few ms of jitter on the reset: nothing new.
+  assert.equal(describeUsageChange(first, ok(48.9, { resetsAtMs: first.resetsAtMs! + 7 })), null);
+
+  assert.match(describeUsageChange(first, ok(50)) ?? "", /^Claude usage: 50% /);
+  const nextWindow = ok(3, { resetsAtMs: first.resetsAtMs! + 5 * 60 * 60_000 });
+  assert.match(describeUsageChange(ok(5), nextWindow) ?? "", /^Claude usage: 3% /);
+  assert.match(describeUsageChange(ok(41, { resetsAtMs: null }), first) ?? "", /^Claude usage: 41% .* resets in/);
+
+  const unreachable = without("unavailable", "could not reach the Anthropic usage endpoint");
+  assert.equal(describeUsageChange(first, unreachable), "Claude usage: unavailable — could not reach the Anthropic usage endpoint");
+  assert.equal(describeUsageChange(unreachable, { ...unreachable, fetchedAtMs: NOW + 60_000 }), null);
+  assert.match(
+    describeUsageChange(unreachable, without("unavailable", "Anthropic is rate-limiting usage reads (HTTP 429)")) ?? "",
+    /HTTP 429/,
+  );
+  assert.match(describeUsageChange(unreachable, first) ?? "", /^Claude usage: 41% /);
+});
+
+test("AnthropicUsageMonitor logs the first reading and changes, not every poll, and never the token", async () => {
+  const emitter = new EventEmitter();
+  const events = collectUsageEvents(emitter);
+  const percents = [41, 43, 44, 71];
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() =>
+    n < percents.length
+      ? jsonResponse({ five_hour: { utilization: percents[n++], resets_at: RESETS_AT } })
+      : jsonResponse({ error: { message: `no ${TOKEN}` } }, 401));
+  const logged: string[] = [];
+  const { readCredentials } = fakeCredentials(claudeCredentials(TOKEN));
+  const monitor = new AnthropicUsageMonitor({
+    token: undefined, emitter, fetchImpl, clock: () => NOW, readCredentials, log: (line) => logged.push(line),
+  });
+
+  for (let i = 0; i < 6; i++) await monitor.poll();
+
+  assert.equal(events.length, 6, "every reading still reaches the Dashboard");
+  assert.deepEqual(logged.map((line) => line.replace(/ · resets in .*$/, "")), [
+    "Claude usage: 41% of the 5-hour window used",
+    "Claude usage: 71% of the 5-hour window used",
+    "Claude usage: unavailable — Anthropic rejected the Claude CLI login (HTTP 401) — it may have expired",
+  ]);
+  assert.ok(!logged.join("\n").includes(TOKEN), "the log leaked the token");
+});
+
+test("AnthropicUsageMonitor keeps polling when its log throws", async () => {
+  const emitter = new EventEmitter();
+  const events = collectUsageEvents(emitter);
+  const { fetchImpl } = fakeFetch(() => jsonResponse(OK_BODY));
+  const monitor = new AnthropicUsageMonitor({
+    token: TOKEN, emitter, fetchImpl, intervalMs: 5, clock: () => NOW,
+    log: () => { throw new Error("terminal gone"); },
+  });
+
+  monitor.start();
+  await waitFor(() => events.length >= 2);
+  monitor.stop();
 });
