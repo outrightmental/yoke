@@ -300,6 +300,10 @@ blocks #34
 
 `yoke` will not start an issue while any referenced blocker remains open. Older eligible issues start first (bugs first, then milestone order, then creation time), up to `max_concurrency`.
 
+- Relationship phrases are read only from the issue author's own text. Anything inside a `>` blockquote, a `<details>` section, fenced or inline code, or an HTML comment is ignored, so a pasted email or quoted issue that says "blocked by #N" about some *other* issue never blocks this one.
+- An issue can't block itself. A self-reference (in the body, a native dependency, or a sub-issue link) is dropped.
+- Issues that block each other, directly or through a chain, form a dependency cycle. Yoke reports each cycle once in the event log, and its issues stay blocked until someone removes one of the "blocked by"/"blocks" references. Yoke never breaks a cycle on its own.
+
 ### The `manual` label
 
 Apply the `manual` label to any issue or PR to remove it from automated work:

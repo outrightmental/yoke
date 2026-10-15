@@ -99,15 +99,35 @@ function appendMatches(target: Set<number>, source: string, pattern: RegExp): vo
   }
 }
 
+/**
+ * Remove text that is not a statement by the issue author about this
+ * issue: HTML comments, fenced code, collapsed <details> sections, inline
+ * code, and Markdown blockquotes (pasted emails, quoted replies/issues).
+ * Relationship phrases inside any of these describe some other issue;
+ * reading them as this issue's own once made an issue block itself.
+ */
+export function stripNonAuthoredText(body: string): string {
+  return body
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^ {0,3}(`{3,}|~{3,})[\s\S]*?^ {0,3}\1/gm, "")
+    .replace(/<details\b[\s\S]*?<\/details>/gi, "")
+    .replace(/`[^`\n]*`/g, "")
+    .split("\n")
+    .filter((line) => !/^\s*>/.test(line))
+    .join("\n");
+}
+
 export function parseBlockingRelationships(issue: Issue): number[] {
   const dependencies = new Set<number>();
-  appendMatches(dependencies, issue.body, BLOCKED_BY_PATTERN);
+  appendMatches(dependencies, stripNonAuthoredText(issue.body), BLOCKED_BY_PATTERN);
+  dependencies.delete(issue.number);
   return uniqueSorted(dependencies);
 }
 
 export function parseBlockedIssueRelationships(issue: Issue): number[] {
   const blockedIssues = new Set<number>();
-  appendMatches(blockedIssues, issue.body, BLOCKS_PATTERN);
+  appendMatches(blockedIssues, stripNonAuthoredText(issue.body), BLOCKS_PATTERN);
+  blockedIssues.delete(issue.number);
   return uniqueSorted(blockedIssues);
 }
 
@@ -133,40 +153,38 @@ function milestoneOrder(issue: Issue): number {
   return issue.milestone?.number ?? Number.POSITIVE_INFINITY;
 }
 
+/** Record that `issueNumber` is blocked by `blocker`. An issue never blocks itself. */
+function addBlocker(index: Map<number, Set<number>>, issueNumber: number, blocker: number): void {
+  if (issueNumber === blocker) return;
+  const blockers = index.get(issueNumber) ?? new Set<number>();
+  blockers.add(blocker);
+  index.set(issueNumber, blockers);
+}
+
 export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]> {
   const blockedIssueIndex = new Map<number, Set<number>>();
 
   for (const issue of issues) {
     for (const blocker of parseBlockingRelationships(issue)) {
-      const blockers = blockedIssueIndex.get(issue.number) ?? new Set<number>();
-      blockers.add(blocker);
-      blockedIssueIndex.set(issue.number, blockers);
+      addBlocker(blockedIssueIndex, issue.number, blocker);
     }
 
     for (const blockedIssue of parseBlockedIssueRelationships(issue)) {
-      const blockers = blockedIssueIndex.get(blockedIssue) ?? new Set<number>();
-      blockers.add(issue.number);
-      blockedIssueIndex.set(blockedIssue, blockers);
+      addBlocker(blockedIssueIndex, blockedIssue, issue.number);
     }
 
     // Parent/child relationship: a parent issue is blocked by each of its
     // open children. If this issue is a sub-issue, its parent cannot start
     // until this issue is resolved.
     if (issue.parentNumber !== undefined) {
-      const parentBlockers = blockedIssueIndex.get(issue.parentNumber) ?? new Set<number>();
-      parentBlockers.add(issue.number);
-      blockedIssueIndex.set(issue.parentNumber, parentBlockers);
+      addBlocker(blockedIssueIndex, issue.parentNumber, issue.number);
     }
 
     // GitHub's native Issue Dependencies feature ("blocked by" configured
     // via the UI/API). This is distinct from body-text mentions and
     // sub-issue parent/child links.
-    if (issue.blockedByIssueNumbers && issue.blockedByIssueNumbers.length > 0) {
-      const blockers = blockedIssueIndex.get(issue.number) ?? new Set<number>();
-      for (const blocker of issue.blockedByIssueNumbers) {
-        blockers.add(blocker);
-      }
-      blockedIssueIndex.set(issue.number, blockers);
+    for (const blocker of issue.blockedByIssueNumbers ?? []) {
+      addBlocker(blockedIssueIndex, issue.number, blocker);
     }
   }
 
@@ -175,6 +193,64 @@ export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]
       .sort(([left], [right]) => left - right)
       .map(([issueNumber, blockers]) => [issueNumber, uniqueSorted(blockers)]),
   );
+}
+
+/**
+ * Find groups of open issues that block each other, directly or through a
+ * chain, so none of them can ever start: the strongly connected components
+ * (Tarjan) of size 2 or more in the blocker graph, restricted to open issues.
+ * Each group is sorted ascending and the list is sorted by first member.
+ *
+ * Cycles are only reported, never broken: their members stay blocked until a
+ * human removes one of the references.
+ */
+export function findDependencyCycles(
+  index: Record<number, number[]>,
+  openIssueNumbers: ReadonlySet<number>,
+): number[][] {
+  const discoveryOrder = new Map<number, number>();
+  const lowLink = new Map<number, number>();
+  const stack: number[] = [];
+  const onStack = new Set<number>();
+  const cycles: number[][] = [];
+
+  const visit = (issueNumber: number): void => {
+    const order = discoveryOrder.size;
+    discoveryOrder.set(issueNumber, order);
+    lowLink.set(issueNumber, order);
+    stack.push(issueNumber);
+    onStack.add(issueNumber);
+
+    for (const blocker of index[issueNumber] ?? []) {
+      if (!openIssueNumbers.has(blocker)) continue;
+      if (!discoveryOrder.has(blocker)) {
+        visit(blocker);
+        lowLink.set(issueNumber, Math.min(lowLink.get(issueNumber)!, lowLink.get(blocker)!));
+      } else if (onStack.has(blocker)) {
+        lowLink.set(issueNumber, Math.min(lowLink.get(issueNumber)!, discoveryOrder.get(blocker)!));
+      }
+    }
+
+    if (lowLink.get(issueNumber) !== order) return;
+    const component: number[] = [];
+    let member: number;
+    do {
+      member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== issueNumber);
+    if (component.length >= 2) {
+      cycles.push(uniqueSorted(component));
+    }
+  };
+
+  for (const issueNumber of uniqueSorted(Object.keys(index).map(Number))) {
+    if (openIssueNumbers.has(issueNumber) && !discoveryOrder.has(issueNumber)) {
+      visit(issueNumber);
+    }
+  }
+
+  return cycles.sort((left, right) => left[0]! - right[0]!);
 }
 
 function isActiveSession(session: AgentSession): boolean {
@@ -490,6 +566,9 @@ export function buildPlan(
       blockedIssueNumbers[Number(issueNum)] = openBlockers;
     }
   }
+  // Members of a cycle stay blocked (each has an open blocker); the cycle is
+  // reported so the caller can say why none of them ever starts.
+  const dependencyCycles = findDependencyCycles(blockedIssueIndex, openIssueNumbers);
 
   const pullRequestIndex = buildPullRequestIndex(pullRequests);
 
@@ -554,7 +633,7 @@ export function buildPlan(
   );
 
   if (remainingCapacity === 0) {
-    return { actions, blockedIssueNumbers };
+    return { actions, blockedIssueNumbers, dependencyCycles };
   }
 
   const unavailableIssueNumbers = new Set<number>();
@@ -630,5 +709,5 @@ export function buildPlan(
     actions.push({ type: "start-implementation", issueNumber: issue.number });
   }
 
-  return { actions, blockedIssueNumbers };
+  return { actions, blockedIssueNumbers, dependencyCycles };
 }
