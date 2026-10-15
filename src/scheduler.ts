@@ -101,6 +101,94 @@ export function tryClaimFromPlan(
 }
 
 /**
+ * The pool-wide stop order, set by Escape or the first Ctrl-C. Once it is set
+ * no engine may begin new Claude work — no planning pass, no claim, no fresh
+ * action — while work already under way is left to finish.
+ */
+export interface ShutdownSignal {
+  readonly requested: boolean;
+}
+
+/** Serialises planning across all engines to prevent double-booking. */
+export class PlanningMutex {
+  private locked = false;
+  private waiting: Array<() => void> = [];
+
+  async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.locked) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    } else {
+      this.locked = true;
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiting.shift();
+      if (next) {
+        next();
+      } else {
+        this.locked = false;
+      }
+    }
+  }
+}
+
+/**
+ * Scan every project (in configured order) for the first claimable action,
+ * honouring each project's concurrency cap. Run under the planning mutex so the
+ * claim it makes is visible to the next engine before it plans.
+ *
+ * The stop order is re-read before each project and again after each plan
+ * loads, immediately before the (synchronous) claim. Checking it only at the
+ * top of the engine cycle let a pass that was already under way — queued
+ * behind other engines for the mutex, or awaiting GitHub for a snapshot — go on
+ * to claim an issue and launch a fresh Claude run after the order was given.
+ */
+export async function claimNextAction<
+  P extends { repoKey: string; cap: number },
+  Plan extends { actions: readonly OrchestratorAction[] },
+>(params: {
+  projects: readonly P[];
+  /** Load a project's current plan, or undefined to skip it this pass. */
+  loadPlan: (project: P) => Promise<Plan | undefined>;
+  /** Called for each project planned this pass, after any claim on it. */
+  onPlanned?: (project: P, plan: Plan) => void;
+  claimedActions: Set<string>;
+  cooldownUntilMs?: ReadonlyMap<string, number>;
+  shutdownSignal: ShutdownSignal;
+}): Promise<{ project: P; plan: Plan; action: OrchestratorAction } | null> {
+  const { projects, loadPlan, onPlanned, claimedActions, cooldownUntilMs, shutdownSignal } = params;
+  for (const project of projects) {
+    if (shutdownSignal.requested) return null;
+    if (claimsForRepo(claimedActions, project.repoKey) >= project.cap) continue;
+    const plan = await loadPlan(project);
+    if (shutdownSignal.requested) return null;
+    if (plan === undefined) continue;
+    const action = tryClaimFromPlan(project.repoKey, project.cap, plan.actions, claimedActions, cooldownUntilMs);
+    onPlanned?.(project, plan);
+    if (action) return { project, plan, action };
+  }
+  return null;
+}
+
+/**
+ * The last gate before an engine fires an action it has claimed. If the stop
+ * order has landed since the claim, the claim is released — so the resource is
+ * not left held by an engine that will never run it — and the engine must not
+ * fire. Returns true when the engine may go ahead.
+ */
+export function clearToFire(
+  repoKey: string,
+  action: OrchestratorAction,
+  claimedActions: Set<string>,
+  shutdownSignal: ShutdownSignal,
+): boolean {
+  if (!shutdownSignal.requested) return true;
+  claimedActions.delete(repoActionKey(repoKey, action));
+  return false;
+}
+
+/**
  * How long an engine should sleep before re-checking the shared Claude usage
  * limit, or 0 when no hold is active.
  *

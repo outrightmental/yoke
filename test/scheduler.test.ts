@@ -5,8 +5,11 @@ import {
   repoActionKey,
   claimsForRepo,
   claimedImplementationIssueNumbers,
+  claimNextAction,
   claudeQuotaHoldWaitMs,
+  clearToFire,
   HoldAnnouncer,
+  PlanningMutex,
   tryClaimFromPlan,
 } from "../src/scheduler.js";
 import type { OrchestratorAction } from "../src/types.js";
@@ -131,6 +134,209 @@ test("releasing a claim frees a cap slot for the next cylinder", () => {
   assert.equal(tryClaimFromPlan("o/a", 2, [impl(3)], claimed), null, "at cap");
   claimed.delete("o/a pr:2"); // a cylinder finished its PR work
   assert.deepEqual(tryClaimFromPlan("o/a", 2, [impl(3)], claimed), impl(3), "slot freed");
+});
+
+// ── PlanningMutex ─────────────────────────────────────────────────────────────
+
+test("PlanningMutex runs one critical section at a time, in arrival order", async () => {
+  const mutex = new PlanningMutex();
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const first = mutex.withLock(async () => {
+    order.push("first:start");
+    await new Promise<void>((resolve) => (releaseFirst = resolve));
+    order.push("first:end");
+  });
+  const second = mutex.withLock(async () => {
+    order.push("second");
+  });
+  await Promise.resolve();
+  assert.deepEqual(order, ["first:start"], "the second section waits for the lock");
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["first:start", "first:end", "second"]);
+});
+
+// ── shutdown gating ──────────────────────────────────────────────────────────
+
+interface TestProject {
+  repoKey: string;
+  cap: number;
+  actions: OrchestratorAction[];
+}
+
+const project = (repoKey: string, cap: number, actions: OrchestratorAction[]): TestProject => ({
+  repoKey,
+  cap,
+  actions,
+});
+
+test("claimNextAction claims the first claimable action, in project order", async () => {
+  // o/a is already at its cap, so the claim falls through to o/b.
+  const claimed = new Set<string>(["o/a issue:9"]);
+  const result = await claimNextAction({
+    projects: [project("o/a", 1, [impl(1)]), project("o/b", 1, [impl(2)])],
+    loadPlan: async (p) => ({ actions: p.actions }),
+    claimedActions: claimed,
+    shutdownSignal: { requested: false },
+  });
+  assert.equal(result?.project.repoKey, "o/b");
+  assert.deepEqual(result?.action, impl(2));
+  assert.ok(claimed.has("o/b issue:2"));
+});
+
+test("claimNextAction skips a project whose plan could not be loaded", async () => {
+  const claimed = new Set<string>();
+  const result = await claimNextAction({
+    projects: [project("o/a", 1, [impl(1)]), project("o/b", 1, [impl(2)])],
+    loadPlan: async (p) => (p.repoKey === "o/a" ? undefined : { actions: p.actions }),
+    claimedActions: claimed,
+    shutdownSignal: { requested: false },
+  });
+  assert.equal(result?.project.repoKey, "o/b");
+  assert.deepEqual([...claimed], ["o/b issue:2"]);
+});
+
+test("claimNextAction neither plans nor claims once shutdown is requested", async () => {
+  const claimed = new Set<string>();
+  let loads = 0;
+  const result = await claimNextAction({
+    projects: [project("o/a", 1, [impl(1)])],
+    loadPlan: async (p) => {
+      loads += 1;
+      return { actions: p.actions };
+    },
+    claimedActions: claimed,
+    shutdownSignal: { requested: true },
+  });
+  assert.equal(result, null);
+  assert.equal(loads, 0, "no planning pass after the stop order");
+  assert.equal(claimed.size, 0, "no claim after the stop order");
+});
+
+test("claimNextAction claims nothing when shutdown lands while a snapshot loads", async () => {
+  const signal = { requested: false };
+  const claimed = new Set<string>();
+  const loaded: string[] = [];
+  const result = await claimNextAction({
+    projects: [project("o/a", 1, [impl(1)]), project("o/b", 1, [impl(2)])],
+    loadPlan: async (p) => {
+      loaded.push(p.repoKey);
+      await Promise.resolve();
+      signal.requested = true; // Escape arrives while GitHub is answering.
+      return { actions: p.actions };
+    },
+    claimedActions: claimed,
+    shutdownSignal: signal,
+  });
+  assert.equal(result, null);
+  assert.equal(claimed.size, 0, "the plan that loaded across the order is not claimed from");
+  assert.deepEqual(loaded, ["o/a"], "no further project is planned");
+});
+
+test("clearToFire lets an engine fire its claim while no shutdown is requested", () => {
+  const claimed = new Set<string>(["o/a issue:1"]);
+  assert.equal(clearToFire("o/a", impl(1), claimed, { requested: false }), true);
+  assert.ok(claimed.has("o/a issue:1"), "the claim stays with the engine that will run it");
+});
+
+test("clearToFire releases the claim and holds fire once shutdown is requested", () => {
+  const claimed = new Set<string>(["o/a issue:1", "o/a pr:2"]);
+  assert.equal(clearToFire("o/a", impl(1), claimed, { requested: true }), false);
+  assert.deepEqual([...claimed], ["o/a pr:2"], "only this engine's claim is released");
+});
+
+/**
+ * One engine's plan-and-fire step, in the order `runEngine` performs it: plan
+ * and claim under the shared lock, then pass the fire gate before executing.
+ */
+async function planAndFire(params: {
+  mutex: PlanningMutex;
+  projects: TestProject[];
+  claimedActions: Set<string>;
+  shutdownSignal: { requested: boolean };
+  executed: OrchestratorAction[];
+  onPlanned?: (p: TestProject) => void;
+}): Promise<"fired" | "declined" | "nothing claimed"> {
+  const { mutex, claimedActions, shutdownSignal } = params;
+  const planned = await mutex.withLock(() =>
+    claimNextAction({
+      projects: params.projects,
+      loadPlan: async (p) => ({ actions: p.actions }),
+      ...(params.onPlanned ? { onPlanned: params.onPlanned } : {}),
+      claimedActions,
+      shutdownSignal,
+    }),
+  );
+  if (!planned) return "nothing claimed";
+  if (!clearToFire(planned.project.repoKey, planned.action, claimedActions, shutdownSignal)) {
+    return "declined";
+  }
+  params.executed.push(planned.action);
+  return "fired";
+}
+
+test("an engine queued behind another's planning pass does not fire once shutdown lands", async () => {
+  const mutex = new PlanningMutex();
+  const signal = { requested: false };
+  const claimed = new Set<string>();
+  const executed: OrchestratorAction[] = [];
+
+  // Another engine is mid-planning and holds the lock…
+  let releaseLock!: () => void;
+  const holder = mutex.withLock(() => new Promise<void>((resolve) => (releaseLock = resolve)));
+  // …so this one queues for it, having already passed the top of its cycle.
+  const queued = planAndFire({
+    mutex,
+    projects: [project("o/a", 2, [impl(1)])],
+    claimedActions: claimed,
+    shutdownSignal: signal,
+    executed,
+  });
+
+  signal.requested = true;
+  releaseLock();
+  await holder;
+
+  assert.equal(await queued, "nothing claimed");
+  assert.equal(claimed.size, 0, "no action claimed after the stop order");
+  assert.deepEqual(executed, [], "no action executed after the stop order");
+});
+
+test("a claim the stop order lands on is released and declined, not fired", async () => {
+  const signal = { requested: false };
+  const claimed = new Set<string>();
+  const executed: OrchestratorAction[] = [];
+  const outcome = await planAndFire({
+    mutex: new PlanningMutex(),
+    projects: [project("o/a", 2, [impl(1)])],
+    claimedActions: claimed,
+    shutdownSignal: signal,
+    executed,
+    // Runs right after the claim — the narrowest window the order can hit.
+    onPlanned: () => {
+      signal.requested = true;
+    },
+  });
+  assert.equal(outcome, "declined");
+  assert.equal(claimed.size, 0, "the claim is not left held by an engine that will never run it");
+  assert.deepEqual(executed, []);
+});
+
+test("engines plan and fire normally until shutdown, then none fires", async () => {
+  const mutex = new PlanningMutex();
+  const signal = { requested: false };
+  const claimed = new Set<string>();
+  const executed: OrchestratorAction[] = [];
+  const projects = [project("o/a", 3, [impl(1), impl(2), impl(3)])];
+  const cycle = () =>
+    planAndFire({ mutex, projects, claimedActions: claimed, shutdownSignal: signal, executed });
+
+  assert.equal(await cycle(), "fired");
+  signal.requested = true;
+  assert.deepEqual(await Promise.all([cycle(), cycle()]), ["nothing claimed", "nothing claimed"]);
+  assert.deepEqual(executed, [impl(1)], "only the work started before the order ran");
+  assert.deepEqual([...claimed], ["o/a issue:1"], "in-flight work keeps its claim until it finishes");
 });
 
 // ── claudeQuotaHoldWaitMs ───────────────────────────────────────────────────
