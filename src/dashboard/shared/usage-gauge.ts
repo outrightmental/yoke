@@ -1,4 +1,4 @@
-import type { AccountUsage } from '../store/types.js';
+import type { AccountUsage, WorkHold } from '../store/types.js';
 import { formatClockTime, formatDuration } from './format.js';
 
 /** Needle color of the usage gauge: green, amber, red — or dark when it has no reading. */
@@ -6,7 +6,8 @@ export type UsageTone = 'ok' | 'warn' | 'critical' | 'unknown';
 
 export interface UsageGaugeView {
   tone: UsageTone;
-  /** Share of the 5-hour window used, e.g. "37%"; "OFF" or "—" without a reading. */
+  /** Share of the 5-hour window used, e.g. "37%"; "LIMIT" while a usage-limit
+   *  hold parks the pool; "OFF" or "—" without a reading. */
   percentText: string;
   /** How full the meter bar is drawn, 0–100. */
   fillPercent: number;
@@ -28,17 +29,50 @@ function noReading(percentText: string, title: string): UsageGaugeView {
   return { tone: 'unknown', percentText, fillPercent: 0, resetText: NO_VALUE, title };
 }
 
+/** When `hold` lifts, if it is the Claude usage limit (and not, say, GitHub's). */
+export function usageLimitUntilMs(hold: WorkHold | null): number | null {
+  return hold !== null && hold.kind === 'claude-usage-limit' ? hold.untilMs : null;
+}
+
+/** A reading's own words, for the tooltip of a gauge that is showing something else. */
+function readingNote(usage: AccountUsage | null, nowMs: number): string {
+  if (usage === null) return '';
+  if (usage.status === 'ok' && usage.fiveHourPercent !== null && nowMs - usage.fetchedAtMs <= USAGE_STALE_AFTER_MS) {
+    return ` · Anthropic last reported ${Math.round(usage.fiveHourPercent)}% of the 5-hour window used`;
+  }
+  return usage.reason ? ` · usage reading: ${usage.reason}` : '';
+}
+
 /**
  * What the header's Claude usage gauge shows for `usage` at `nowMs`. Never
- * blank: without a trustworthy reading it reads "—" (or "OFF" when no token is
- * configured) in the dark `unknown` tone, and the tooltip says why.
+ * blank: without a trustworthy reading it reads "—" (or "OFF" when there is no
+ * token to read with) in the dark `unknown` tone, and the tooltip says why.
+ *
+ * `limitUntilMs` is when a Claude usage-limit hold lifts, if one is parking the
+ * pool. The CLI has then said in so many words that nothing more can run until
+ * that time, so the gauge reads LIMIT and counts down to it whatever the last
+ * reading said — the reading may be unavailable, stale, or of the 5-hour window
+ * while it was a weekly limit that ran out.
  */
-export function usageGaugeView(usage: AccountUsage | null, nowMs: number): UsageGaugeView {
+export function usageGaugeView(
+  usage: AccountUsage | null,
+  nowMs: number,
+  limitUntilMs: number | null = null,
+): UsageGaugeView {
+  if (limitUntilMs !== null && limitUntilMs > nowMs) {
+    return {
+      tone: 'critical',
+      percentText: 'LIMIT',
+      fillPercent: 100,
+      resetText: formatDuration(limitUntilMs - nowMs),
+      title: `Claude usage limit reached — work resumes ${formatClockTime(limitUntilMs)}${readingNote(usage, nowMs)}`,
+    };
+  }
   if (usage === null) {
     return noReading(NO_VALUE, 'Claude usage: waiting for the first reading');
   }
   if (usage.status === 'unconfigured') {
-    return noReading('OFF', `Claude usage is off: ${usage.reason || 'set anthropic_usage_token in env.yaml'}`);
+    return noReading('OFF', `Claude usage is off: ${usage.reason || 'log in with `claude`, or set anthropic_usage_token in env.yaml'}`);
   }
   if (usage.status !== 'ok' || usage.fiveHourPercent === null) {
     return noReading(NO_VALUE, `Claude usage unavailable: ${usage.reason || 'no reading'}`);

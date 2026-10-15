@@ -38,8 +38,8 @@ export interface WorkHold {
  * the header's usage gauge (mirrors `UsageReading` in src/anthropic-usage.ts).
  */
 export interface AccountUsage {
-  /** "ok": live numbers; "unconfigured": no token set, so the gauge is OFF;
-   *  "unavailable": a token is set but the reading could not be taken. */
+  /** "ok": live numbers; "unconfigured": no token to read with, so the gauge
+   *  is OFF; "unavailable": there is a token but the reading could not be taken. */
   status: 'ok' | 'unconfigured' | 'unavailable';
   /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok". */
   fiveHourPercent: number | null;

@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -233,7 +233,7 @@ const waitNotices = new Map<string, LiveWaitNotice>();
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /** Coarse remaining-time form for a wait line: "2h 14m", "14m 3s", "9s". */
-function formatWaitRemaining(remainingMs: number): string {
+export function formatWaitRemaining(remainingMs: number): string {
   const totalSeconds = Math.max(0, Math.round(remainingMs / 1000));
   if (totalSeconds < 60) return `${totalSeconds}s`;
   const minutes = Math.floor(totalSeconds / 60);
@@ -1584,8 +1584,16 @@ function assertClaudeQuotaAvailable(): void {
   }
 }
 
+/**
+ * True when Claude CLI output says the subscription quota ran out. The CLI
+ * names the window that ran out, and has worded it several ways: "You've hit
+ * your limit", "You've hit your session limit · resets 12pm", "5-hour limit
+ * reached", "Opus weekly limit reached". Missing a wording is not harmless —
+ * the run is then treated as an ordinary failure and retried every few minutes
+ * instead of waiting out the reset on one hold.
+ */
 export function isClaudeUsageLimitMessage(message: string): boolean {
-  return /out of extra usage|out of usage|hit your limit|rate limit|quota|usage limit/i.test(
+  return /out of extra usage|out of usage|hit your (?:[\w-]+ ){0,2}limit|(?:session|5-hour|weekly) limit reached|rate limit|quota|usage limit/i.test(
     message,
   );
 }
@@ -1607,6 +1615,9 @@ export interface ClaudeAuthResult {
   reason?: string;
 }
 
+/** A Keychain read still running after this is treated as not found. */
+const KEYCHAIN_READ_TIMEOUT_MS = 10_000;
+
 /**
  * Read the raw Claude credentials blob.
  *
@@ -1618,15 +1629,20 @@ export interface ClaudeAuthResult {
  * Returns the raw JSON string, or a `ClaudeAuthResult` describing why it could
  * not be read.
  */
-async function readClaudeCredentials(): Promise<{ raw: string } | ClaudeAuthResult> {
+export async function readClaudeCredentials(): Promise<{ raw: string } | ClaudeAuthResult> {
   if (process.platform === "darwin") {
-    const result = spawnSync(
-      "security",
-      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-      { encoding: "utf8" },
-    );
-    if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
-      return { raw: result.stdout.trim() };
+    // Asynchronous, and bounded: the usage gauge reads this every minute, and a
+    // `security` call stuck on a locked Keychain must not freeze the process.
+    const stdout = await new Promise<string>((resolveRead) => {
+      execFile(
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        { encoding: "utf8", timeout: KEYCHAIN_READ_TIMEOUT_MS },
+        (error, out) => resolveRead(error ? "" : out),
+      );
+    });
+    if (stdout.trim()) {
+      return { raw: stdout.trim() };
     }
     // Keychain item missing (status 44) or any other failure. Fall through to the
     // file in case the user keeps a file-based credential, then report not-found.
@@ -1788,7 +1804,7 @@ export function parseUsageResetTimeMs(message: string, now: Date = new Date()): 
   return reset.getTime();
 }
 
-function formatLocalTime(epochMs: number): string {
+export function formatLocalTime(epochMs: number): string {
   return new Date(epochMs).toLocaleString(undefined, {
     hour: "numeric",
     minute: "2-digit",

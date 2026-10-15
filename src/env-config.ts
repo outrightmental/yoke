@@ -74,7 +74,8 @@ export interface EnvConfig {
   /**
    * OAuth access token for the Claude account, used only to read its usage
    * (`GET https://api.anthropic.com/api/oauth/usage`) for the Dashboard's
-   * usage gauge. Optional: without it the gauge shows as OFF.
+   * usage gauge. Optional: without it usage is read with the token the Claude
+   * CLI is logged in with, and the gauge shows as OFF only when there is none.
    */
   anthropic_usage_token?: string | null;
   /** Named GitHub tokens. At least one required. */
