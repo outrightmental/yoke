@@ -208,7 +208,7 @@ npm start -- --no-browser
 
 The Dashboard server still starts; the URL is printed to stdout so you can open it manually.
 
-**Graceful shutdown**: Press **Escape** while the loop is running to let Yoke finish any in-flight actions before exiting. Press **Ctrl+C** to exit immediately.
+**Graceful shutdown**: Press **Escape** (or **Ctrl+C** once) while the loop is running to let Yoke finish any in-flight actions before exiting. From that moment no engine plans, claims, or starts a new action — GitHub-only maintenance still finishes. Press **Ctrl+C** a second time to exit immediately, discarding in-flight runs.
 
 ## Requirements
 
