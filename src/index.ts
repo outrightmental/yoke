@@ -28,11 +28,13 @@ import { GitHubApiGateway } from "./github-gateway.js";
 import { buildPlan, FOCUS_LABEL, REVIEW_LABEL, type ProjectModeConfig } from "./orchestrator.js";
 import {
   repoActionKey,
-  claimsForRepo,
   claimedImplementationIssueNumbers,
+  claimNextAction,
   claudeQuotaHoldWaitMs,
+  clearToFire,
   HoldAnnouncer,
-  tryClaimFromPlan,
+  PlanningMutex,
+  type ShutdownSignal,
 } from "./scheduler.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore, migrateLegacySessionStore } from "./session-store.js";
@@ -221,30 +223,6 @@ function reportDependencyCycles(
       `None of them can start until a "blocked by"/"blocks" reference is removed.`;
     writeLogLine(message);
     emitLogMessage("warning", message, emitter, repoKey);
-  }
-}
-
-/** Serialises planning across all engines to prevent double-booking. */
-class PlanningMutex {
-  private locked = false;
-  private waiting: Array<() => void> = [];
-
-  async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.locked) {
-      await new Promise<void>((resolve) => this.waiting.push(resolve));
-    } else {
-      this.locked = true;
-    }
-    try {
-      return await fn();
-    } finally {
-      const next = this.waiting.shift();
-      if (next) {
-        next();
-      } else {
-        this.locked = false;
-      }
-    }
   }
 }
 
@@ -679,56 +657,49 @@ interface PlannedWork {
 /**
  * Scan every project (in configured order) for the first claimable action,
  * honouring each project's concurrency cap. Runs under the planning mutex so
- * the claim it makes is visible to the next engine before it plans.
+ * the claim it makes is visible to the next engine before it plans, and claims
+ * nothing once shutdown is requested — see `claimNextAction`.
  */
 async function planNextAction(
   contexts: ProjectContext[],
   claimedActions: Set<string>,
   emitter: EventEmitter,
   actionCooldowns: ActionCooldowns,
+  shutdownSignal: ShutdownSignal,
 ): Promise<PlannedWork | null> {
-  for (const ctx of contexts) {
-    // Respect the per-project cap: never let more than `cap` of the shared
-    // cylinders work the same project at once.
-    if (claimsForRepo(claimedActions, ctx.repoKey) >= ctx.cap) {
-      continue;
-    }
-
-    let snapshot: RepositorySnapshot;
-    try {
-      snapshot = await getProjectSnapshot(ctx);
-    } catch {
-      continue;
-    }
-    const plan = buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode);
-    reportDependencyCycles(ctx.repoKey, plan.dependencyCycles, emitter);
-
-    const claimed = tryClaimFromPlan(
-      ctx.repoKey,
-      ctx.cap,
-      plan.actions,
-      claimedActions,
-      actionCooldowns.until,
-    );
-
+  const claimed = await claimNextAction({
+    projects: contexts,
+    loadPlan: async (ctx) => {
+      let snapshot: RepositorySnapshot;
+      try {
+        snapshot = await getProjectSnapshot(ctx);
+      } catch {
+        return undefined;
+      }
+      return { snapshot, ...buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode) };
+    },
     // Refresh this project's lifecycle pane on every planning pass so pills
     // reflect the freshest snapshot (and any claim we just made).
-    broadcastLifecycleUpdate(
-      snapshot,
-      claimedImplementationIssueNumbers(claimedActions, ctx.repoKey),
-      new Set(),
-      plan.blockedIssueNumbers,
-      ctx.config.projectMode !== undefined,
-      ctx.config.focusMode,
-      emitter,
-      ctx.repoKey,
-    );
-
-    if (claimed) {
-      return { ctx, action: claimed, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
-    }
-  }
-  return null;
+    onPlanned: (ctx, plan) => {
+      reportDependencyCycles(ctx.repoKey, plan.dependencyCycles, emitter);
+      broadcastLifecycleUpdate(
+        plan.snapshot,
+        claimedImplementationIssueNumbers(claimedActions, ctx.repoKey),
+        new Set(),
+        plan.blockedIssueNumbers,
+        ctx.config.projectMode !== undefined,
+        ctx.config.focusMode,
+        emitter,
+        ctx.repoKey,
+      );
+    },
+    claimedActions,
+    cooldownUntilMs: actionCooldowns.until,
+    shutdownSignal,
+  });
+  if (!claimed) return null;
+  const { project: ctx, plan, action } = claimed;
+  return { ctx, action, snapshot: plan.snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
 }
 
 async function runEngine(
@@ -739,7 +710,7 @@ async function runEngine(
   planningMutex: PlanningMutex,
   claimedActions: Set<string>,
   actionCooldowns: ActionCooldowns,
-  shutdownSignal: { requested: boolean },
+  shutdownSignal: ShutdownSignal,
   cancelSignal: { requested: boolean },
   emitter: EventEmitter,
 ): Promise<void> {
@@ -811,6 +782,12 @@ async function runEngine(
     write(`▶ done waiting — resuming work.`);
   };
 
+  /** Retire this engine for the shutdown: nothing new starts after this. */
+  const stopEngine = (): void => {
+    emitter.emit("engine-shutdown", { engineIndex });
+    write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
+  };
+
   do {
     // One cycle, fully isolated. Only executeAction used to be guarded, so a
     // throw from planning, from a rate-limit read, or from any emit — including
@@ -819,8 +796,7 @@ async function runEngine(
     // in-flight Claude run along with the process.
     try {
       if (shutdownSignal.requested) {
-        emitter.emit("engine-shutdown", { engineIndex });
-        write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
+        stopEngine();
         return;
       }
 
@@ -851,7 +827,12 @@ async function runEngine(
           rateLimitedUntilMs: hold.blockedUntilMs,
           nextCycleAtMs: hold.blockedUntilMs,
         });
-        await heldCtx.githubGateway.waitUntilReady();
+        // Sit the hold out, but not past a stop order: the top of the cycle
+        // retires the engine as soon as one lands, rather than after a reset
+        // that can be most of an hour away.
+        while (!shutdownSignal.requested && Date.now() < hold.blockedUntilMs) {
+          await delay(Math.min(1000, hold.blockedUntilMs - Date.now()));
+        }
         continue;
       }
 
@@ -872,6 +853,16 @@ async function runEngine(
             bullet(`${ctx.repoKey}: maintenance failed: ${(error as Error).message}`);
           }
         }
+      }
+
+      // ── Shutdown gate ───────────────────────────────────────────────────────
+      // Everything below can lead to a Claude run. Maintenance above is
+      // GitHub-only and is left to finish, but a stop order that landed while
+      // it ran — engine 0's sweep alone takes many seconds — must not be
+      // followed by a planning pass.
+      if (shutdownSignal.requested) {
+        stopEngine();
+        return;
       }
 
       // ── Claude usage-limit hold ─────────────────────────────────────────────
@@ -916,9 +907,26 @@ async function runEngine(
       exitHold();
 
       // ── Planning phase (serialised via the shared mutex) ────────────────────
+      // An engine can queue here behind every other engine's planning pass, so
+      // the stop order is re-read inside the lock, not just above it.
       const planned = await planningMutex.withLock(() =>
-        planNextAction(contexts, claimedActions, emitter, actionCooldowns),
+        planNextAction(contexts, claimedActions, emitter, actionCooldowns, shutdownSignal),
       );
+
+      // ── Fire gate ───────────────────────────────────────────────────────────
+      // The last point before a new action — and its Claude run — begins. A
+      // claim the engine will not run is released and said so, so a race with
+      // the stop order is visible in the log rather than a silent drop.
+      if (planned && !clearToFire(planned.ctx.repoKey, planned.action, claimedActions, shutdownSignal)) {
+        write(
+          `Engine ${engineIndex + 1}: declined to fire — shutdown requested after it claimed: ` +
+            `${describeAction(planned.action, planned.snapshot, planned.ctx.gitHubClient)}. Claim released.`,
+        );
+      }
+      if (shutdownSignal.requested) {
+        stopEngine();
+        return;
+      }
 
       // ── Execution phase ─────────────────────────────────────────────────────
       let cycleRateLimitedUntilMs: number | undefined;
@@ -1065,17 +1073,16 @@ async function runEngine(
       }
 
       if (isOnceMode) {
-        if (shutdownSignal.requested) {
-          emitter.emit("engine-shutdown", { engineIndex });
-          write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
-        }
+        if (shutdownSignal.requested) stopEngine();
         return;
       }
 
       // ── Wait phase ──────────────────────────────────────────────────────────
       const elapsed = Date.now() - cycleStart;
       const remainingMs = Math.max(0, globalCycleMinimumMs - elapsed);
-      if (remainingMs > 0) {
+      // No "next cycle" to announce once shutdown is requested: the top of the
+      // loop retires the engine straight away.
+      if (remainingMs > 0 && !shutdownSignal.requested) {
         emitter.emit("engine-idle", {
           engineIndex,
           nextCycleAtMs: Date.now() + remainingMs,
