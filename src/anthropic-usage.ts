@@ -1,3 +1,9 @@
+import {
+  formatLocalTime,
+  formatWaitRemaining,
+  readClaudeCredentials,
+  type ClaudeAuthResult,
+} from "./claude-agent.js";
 import type { EventEmitter } from "./event-emitter.js";
 
 // ─── Live Claude account usage (#254) ────────────────────────────────────────
@@ -19,10 +25,16 @@ export const USAGE_POLL_INTERVAL_MS = 60_000;
 /** A request still hanging after this is given up on until the next poll. */
 const USAGE_REQUEST_TIMEOUT_MS = 15_000;
 
+/** How messages name env.yaml's token. */
+export const CONFIGURED_TOKEN_LABEL = "anthropic_usage_token";
+/** How messages name the token the Claude CLI itself is logged in with. */
+export const CLAUDE_LOGIN_LABEL = "the Claude CLI login";
+
 /**
  * - `ok`: live numbers.
- * - `unconfigured`: no `anthropic_usage_token` in env.yaml, so nothing is read.
- * - `unavailable`: a token is set but this reading could not be taken.
+ * - `unconfigured`: nothing to read with — no `anthropic_usage_token` in
+ *   env.yaml, and the Claude CLI is not logged in to a Claude account.
+ * - `unavailable`: there is a token, but this reading could not be taken.
  */
 export type UsageStatus = "ok" | "unconfigured" | "unavailable";
 
@@ -68,12 +80,12 @@ export function parseUsageResponse(
  * passed through from the response, so nothing the server echoes back — the
  * credential included — can reach the browser.
  */
-function describeHttpFailure(status: number): string {
+function describeHttpFailure(status: number, tokenLabel: string): string {
   if (status === 401) {
-    return "Anthropic rejected anthropic_usage_token (HTTP 401) — it may have expired";
+    return `Anthropic rejected ${tokenLabel} (HTTP 401) — it may have expired`;
   }
   if (status === 403) {
-    return "anthropic_usage_token may not read usage (HTTP 403) — it needs the user:profile scope of a Claude login token";
+    return `${tokenLabel} may not read usage (HTTP 403) — it needs the user:profile scope of a Claude login token`;
   }
   if (status === 429) return "Anthropic is rate-limiting usage reads (HTTP 429)";
   return `Anthropic usage endpoint answered HTTP ${status}`;
@@ -83,16 +95,16 @@ export interface FetchUsageOptions {
   fetchImpl?: typeof fetch;
   clock?: () => number;
   timeoutMs?: number;
+  /** How failure reasons name the token (default: anthropic_usage_token). */
+  tokenLabel?: string;
 }
 
-function unconfiguredReading(nowMs: number): UsageReading {
-  return {
-    status: "unconfigured",
-    fiveHourPercent: null,
-    resetsAtMs: null,
-    fetchedAtMs: nowMs,
-    reason: "set anthropic_usage_token in env.yaml to show live Claude usage",
-  };
+function readingWithoutNumbers(
+  status: Exclude<UsageStatus, "ok">,
+  reason: string,
+  nowMs: number,
+): UsageReading {
+  return { status, fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: nowMs, reason };
 }
 
 /** Read the account's 5-hour window once. Never throws: a failure is a reading too. */
@@ -103,13 +115,9 @@ export async function fetchAnthropicUsage(
   const fetchImpl = options.fetchImpl ?? fetch;
   const clock = options.clock ?? Date.now;
   const timeoutMs = options.timeoutMs ?? USAGE_REQUEST_TIMEOUT_MS;
-  const unavailable = (reason: string): UsageReading => ({
-    status: "unavailable",
-    fiveHourPercent: null,
-    resetsAtMs: null,
-    fetchedAtMs: clock(),
-    reason,
-  });
+  const tokenLabel = options.tokenLabel ?? CONFIGURED_TOKEN_LABEL;
+  const unavailable = (reason: string): UsageReading =>
+    readingWithoutNumbers("unavailable", reason, clock());
 
   let body: unknown;
   try {
@@ -125,7 +133,7 @@ export async function fetchAnthropicUsage(
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
-      return unavailable(describeHttpFailure(response.status));
+      return unavailable(describeHttpFailure(response.status, tokenLabel));
     }
     try {
       body = await response.json();
@@ -145,13 +153,113 @@ export async function fetchAnthropicUsage(
   return { status: "ok", ...parsed, fetchedAtMs: clock(), reason: "" };
 }
 
+/** Reads the Claude CLI's stored credentials blob; see `readClaudeCredentials`. */
+export type ClaudeCredentialsReader = () => Promise<{ raw: string } | ClaudeAuthResult>;
+
+const NO_CLAUDE_LOGIN_REASON =
+  "no Claude login to read it with — log in with `claude`, or set anthropic_usage_token in env.yaml";
+
+/**
+ * The access token the Claude CLI is logged in with: the `claudeAiOauth`
+ * credential it keeps for its own runs, which carries the `user:profile` scope
+ * the usage endpoint needs. Read afresh for every poll, because the CLI renews
+ * it and a copy taken at startup would expire within hours. Yoke never renews
+ * it itself — that would hand the CLI a used-up refresh token.
+ *
+ * Without one — the CLI is not logged in, or runs on a Console API key, which
+ * has no usage windows — returns why instead, as the status the gauge shows.
+ */
+export async function readClaudeLoginToken(
+  nowMs: number,
+  readCredentials: ClaudeCredentialsReader = readClaudeCredentials,
+): Promise<{ token: string } | { status: Exclude<UsageStatus, "ok">; reason: string }> {
+  const read = await readCredentials();
+  if ("valid" in read) {
+    return read.reason === "credentials not found"
+      ? { status: "unconfigured", reason: NO_CLAUDE_LOGIN_REASON }
+      : { status: "unavailable", reason: `could not read the Claude CLI login: ${read.reason ?? "unknown error"}` };
+  }
+  let credentials: unknown;
+  try {
+    credentials = JSON.parse(read.raw);
+  } catch {
+    // Never quote the blob: it is the credential.
+    return { status: "unavailable", reason: "the Claude CLI's credentials are not valid JSON" };
+  }
+  const oauth = typeof credentials === "object" && credentials !== null
+    ? (credentials as Record<string, unknown>)["claudeAiOauth"]
+    : undefined;
+  const fields = typeof oauth === "object" && oauth !== null ? (oauth as Record<string, unknown>) : {};
+  const token = typeof fields["accessToken"] === "string" ? fields["accessToken"].trim() : "";
+  if (token === "") return { status: "unconfigured", reason: NO_CLAUDE_LOGIN_REASON };
+  const expiresAt = fields["expiresAt"];
+  if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= nowMs) {
+    // Asking anyway would only earn a 401.
+    return {
+      status: "unavailable",
+      reason: `the Claude CLI login expired at ${formatLocalTime(expiresAt)} — claude renews it the next time it runs`,
+    };
+  }
+  return { token };
+}
+
+/**
+ * One reading as a log line, e.g. "Claude usage: 41% of the 5-hour window
+ * used · resets in 37m (Oct 14, 10:10 PM)".
+ */
+export function formatUsageLine(reading: UsageReading): string {
+  if (reading.status === "unconfigured") return `Claude usage: off — ${reading.reason}`;
+  if (reading.status !== "ok" || reading.fiveHourPercent === null) {
+    return `Claude usage: unavailable — ${reading.reason}`;
+  }
+  const used = `${Math.round(reading.fiveHourPercent)}% of the 5-hour window used`;
+  if (reading.resetsAtMs === null) return `Claude usage: ${used} · no window open yet`;
+  return (
+    `Claude usage: ${used} · resets in ${formatWaitRemaining(reading.resetsAtMs - reading.fetchedAtMs)}` +
+    ` (${formatLocalTime(reading.resetsAtMs)})`
+  );
+}
+
+function usageDecile(reading: UsageReading): number | null {
+  return reading.fiveHourPercent === null ? null : Math.floor(reading.fiveHourPercent / 10);
+}
+
+/** Two readings of one window can disagree on its reset by a fraction of a second. */
+function sameWindow(a: number | null, b: number | null): boolean {
+  return a === null || b === null ? a === b : Math.abs(a - b) < 60_000;
+}
+
+/**
+ * The line to log for `reading`, or null when it says nothing new since
+ * `previous`. A reading arrives every minute, so the log hears about the first
+ * one, about every change of status or reason, and — while readings are live —
+ * about each further 10% of the window used and each new window; not about
+ * every poll.
+ */
+export function describeUsageChange(
+  previous: UsageReading | null,
+  reading: UsageReading,
+): string | null {
+  const unchanged =
+    previous !== null &&
+    previous.status === reading.status &&
+    previous.reason === reading.reason &&
+    usageDecile(previous) === usageDecile(reading) &&
+    sameWindow(previous.resetsAtMs, reading.resetsAtMs);
+  return unchanged ? null : formatUsageLine(reading);
+}
+
 export interface UsageMonitorOptions {
-  /** env.yaml's `anthropic_usage_token`. Blank or missing turns the gauge OFF. */
+  /** env.yaml's `anthropic_usage_token`. Blank or missing: the Claude CLI's own login is used. */
   token: string | null | undefined;
   emitter: EventEmitter;
   intervalMs?: number;
   fetchImpl?: typeof fetch;
   clock?: () => number;
+  /** Where the Claude CLI's login is read from when no token is configured. */
+  readCredentials?: ClaudeCredentialsReader;
+  /** Told, in one line, whenever a reading changes what the gauge says. */
+  log?: (line: string) => void;
 }
 
 /**
@@ -166,8 +274,11 @@ export class AnthropicUsageMonitor {
   private readonly intervalMs: number;
   private readonly clock: () => number;
   private readonly fetchOptions: FetchUsageOptions;
+  private readonly readCredentials: ClaudeCredentialsReader;
+  private readonly log: ((line: string) => void) | undefined;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
+  private last: UsageReading | null = null;
 
   constructor(options: UsageMonitorOptions) {
     this.token = options.token?.trim() ?? "";
@@ -178,24 +289,28 @@ export class AnthropicUsageMonitor {
       clock: this.clock,
       ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
     };
+    this.readCredentials = options.readCredentials ?? readClaudeCredentials;
+    this.log = options.log;
   }
 
-  /** True when a token is configured, i.e. there is anything to poll. */
+  /** True when env.yaml sets a token; otherwise the Claude CLI's login is used. */
   get configured(): boolean {
     return this.token.length > 0;
   }
 
+  /** What usage is read with, for the startup banner. */
+  get tokenLabel(): string {
+    return this.configured ? CONFIGURED_TOKEN_LABEL : CLAUDE_LOGIN_LABEL;
+  }
+
   /**
-   * Publish a reading now and, with a token configured, every interval after.
-   * Without one there is nothing to poll: the gauge is told it is OFF, once.
+   * Publish a reading now and every interval after. Polling continues even
+   * while there is nothing to read with, so a `claude` login made after
+   * startup lights the gauge without a restart.
    */
   start(): void {
     if (this.running) return;
     this.running = true;
-    if (!this.configured) {
-      this.publish(unconfiguredReading(this.clock()));
-      return;
-    }
     void this.pollAndReschedule();
   }
 
@@ -209,11 +324,23 @@ export class AnthropicUsageMonitor {
 
   /** Take one reading and publish it. */
   async poll(): Promise<UsageReading> {
-    const reading = this.configured
-      ? await fetchAnthropicUsage(this.token, this.fetchOptions)
-      : unconfiguredReading(this.clock());
+    const reading = await this.read();
     this.publish(reading);
     return reading;
+  }
+
+  private async read(): Promise<UsageReading> {
+    if (this.configured) {
+      return fetchAnthropicUsage(this.token, { ...this.fetchOptions, tokenLabel: CONFIGURED_TOKEN_LABEL });
+    }
+    let login: Awaited<ReturnType<typeof readClaudeLoginToken>>;
+    try {
+      login = await readClaudeLoginToken(this.clock(), this.readCredentials);
+    } catch {
+      login = { status: "unavailable", reason: "could not read the Claude CLI login" };
+    }
+    if (!("token" in login)) return readingWithoutNumbers(login.status, login.reason, this.clock());
+    return fetchAnthropicUsage(login.token, { ...this.fetchOptions, tokenLabel: CLAUDE_LOGIN_LABEL });
   }
 
   private async pollAndReschedule(): Promise<void> {
@@ -228,6 +355,15 @@ export class AnthropicUsageMonitor {
   }
 
   private publish(reading: UsageReading): void {
+    const line = describeUsageChange(this.last, reading);
+    this.last = reading;
+    if (line !== null) {
+      try {
+        this.log?.(line);
+      } catch {
+        // A log that cannot be written must not stop the gauge's polling.
+      }
+    }
     this.emitter.emit("usage-update", { ...reading });
   }
 }
