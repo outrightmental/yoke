@@ -200,6 +200,30 @@ function shortId(id: string): string {
  */
 const holdAnnouncer = new HoldAnnouncer();
 
+/**
+ * Dependency cycles already warned about, keyed by repo and sorted members.
+ * Every planning pass sees the same cycle, so it is reported only the first
+ * time; its issues simply stay blocked until someone edits a reference.
+ */
+const reportedDependencyCycles = new Set<string>();
+
+function reportDependencyCycles(
+  repoKey: string,
+  cycles: readonly number[][],
+  emitter: EventEmitter,
+): void {
+  for (const cycle of cycles) {
+    const key = `${repoKey}#${cycle.join(",")}`;
+    if (reportedDependencyCycles.has(key)) continue;
+    reportedDependencyCycles.add(key);
+    const message =
+      `Dependency cycle in ${repoKey}: issues ${cycle.join(", ")} block each other. ` +
+      `None of them can start until a "blocked by"/"blocks" reference is removed.`;
+    writeLogLine(message);
+    emitLogMessage("warning", message, emitter, repoKey);
+  }
+}
+
 /** Serialises planning across all engines to prevent double-booking. */
 class PlanningMutex {
   private locked = false;
@@ -339,7 +363,13 @@ async function broadcastBetweenCycleActivity(
     if (snapshotChanged) {
       broadcastRepositorySnapshot(snapshot, config.owner, config.repo, undefined, emitter);
     }
-    const { blockedIssueNumbers } = buildPlan(snapshot, ctx.cap, config.projectMode, config.focusMode);
+    const { blockedIssueNumbers, dependencyCycles } = buildPlan(
+      snapshot,
+      ctx.cap,
+      config.projectMode,
+      config.focusMode,
+    );
+    reportDependencyCycles(repoKey, dependencyCycles, emitter);
     broadcastLifecycleUpdate(
       snapshot,
       claimedImplementationIssueNumbers(claimedActions, repoKey),
@@ -626,6 +656,7 @@ async function runProjectMaintenance(
   }
 
   const plan = buildPlan(snapshot, ctx.cap, config.projectMode, config.focusMode);
+  reportDependencyCycles(repoKey, plan.dependencyCycles, emitter);
   broadcastLifecycleUpdate(
     snapshot,
     claimedImplementationIssueNumbers(claimedActions, repoKey),
@@ -670,6 +701,7 @@ async function planNextAction(
       continue;
     }
     const plan = buildPlan(snapshot, ctx.cap, ctx.config.projectMode, ctx.config.focusMode);
+    reportDependencyCycles(ctx.repoKey, plan.dependencyCycles, emitter);
 
     const claimed = tryClaimFromPlan(
       ctx.repoKey,
