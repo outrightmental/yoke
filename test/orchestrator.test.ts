@@ -5,8 +5,12 @@ import {
   buildMergedPullRequestBody,
   buildBlockedIssueIndex,
   buildPlan,
+  findDependencyCycles,
+  parseBlockedIssueRelationships,
+  parseBlockingRelationships,
   parseClosingIssueNumbers,
   parseLinkedIssueNumbers,
+  stripNonAuthoredText,
 } from "../src/orchestrator.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "../src/types.js";
 
@@ -1055,6 +1059,194 @@ test("buildPlan never starts issues blocked with colon-form dependency syntax", 
     !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
     "Issue 3 must not start while blocked by issue 4 via `blocks: #3` syntax",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Only the author's own text declares relationships (#257)
+// ---------------------------------------------------------------------------
+
+const NON_AUTHORED_WRAPPERS: Array<[string, (phrase: string) => string]> = [
+  ["a blockquote", (phrase) => `Context from the thread:\n\n> ${phrase}\n\nThanks.`],
+  ["a nested blockquote", (phrase) => `> > ${phrase}`],
+  ["a <details> block", (phrase) => `<details><summary>Email</summary>\n\n${phrase}\n\n</details>`],
+  ["a fenced code block", (phrase) => "```\n" + phrase + "\n```"],
+  ["a tilde fenced code block", (phrase) => "~~~markdown\n" + phrase + "\n~~~"],
+  ["inline code", (phrase) => `Write \`${phrase}\` to mark a dependency.`],
+  ["an HTML comment", (phrase) => `<!-- ${phrase} -->`],
+];
+
+for (const [wrapperName, wrap] of NON_AUTHORED_WRAPPERS) {
+  test(`a "blocked by" phrase inside ${wrapperName} produces no edge`, () => {
+    const issue = createIssue({ number: 2, body: wrap("blocked by #1") });
+    assert.deepEqual(parseBlockingRelationships(issue), []);
+    assert.deepEqual(buildBlockedIssueIndex([createIssue({ number: 1 }), issue]), {});
+  });
+
+  test(`a "blocks" phrase inside ${wrapperName} produces no edge`, () => {
+    const issue = createIssue({ number: 2, body: wrap("blocks #3") });
+    assert.deepEqual(parseBlockedIssueRelationships(issue), []);
+    assert.deepEqual(buildBlockedIssueIndex([issue, createIssue({ number: 3 })]), {});
+  });
+}
+
+test("relationship phrases outside quoted text still count", () => {
+  const issue = createIssue({
+    number: 2,
+    body: [
+      "blocked by #3",
+      "",
+      "> blocked by #4",
+      "",
+      "<details>blocks #5</details>",
+      "Also blocks #6, but not `blocks #7`.",
+    ].join("\n"),
+  });
+
+  assert.deepEqual(parseBlockingRelationships(issue), [3]);
+  assert.deepEqual(parseBlockedIssueRelationships(issue), [6]);
+});
+
+test("stripNonAuthoredText keeps the author's lines and drops quoted ones", () => {
+  assert.equal(
+    stripNonAuthoredText("Mine\n> theirs\n<!-- note -->Also mine\n```\ncode\n```\nEnd"),
+    "Mine\nAlso mine\n\nEnd",
+  );
+});
+
+test("a pasted email listing sibling issues gives the quoting issue no edges (butterfly#304)", () => {
+  // Regression: butterfly#304 quoted an email listing its siblings with their
+  // own relationships. Yoke read them as 304 being blocked by 305 and 304
+  // blocking 306, though 305 is only *related to* 304.
+  const body = [
+    "Splitting the daily-grain rollback into smaller steps.",
+    "",
+    "> On Mon, Oct 12, 2026, a teammate wrote:",
+    "> > Here is the plan for this round:",
+    "> >",
+    "> > 1. #304 Split the daily grain into steps — Task, related to #305",
+    "> > 2. #305 Roll back daily-grain complexity — Task, related to #304, blocks #306",
+    "> > 3. #306 Add pub/sub cycle subscriptions — Task, blocked by #305, related to #307",
+    "",
+    "Notes to follow.",
+  ].join("\r\n");
+  const issues = [
+    createIssue({ number: 304, body, createdAt: "2024-01-01T00:00:00.000Z" }),
+    createIssue({ number: 305, body: "blocks #306", createdAt: "2024-01-02T00:00:00.000Z" }),
+    createIssue({ number: 306, body: "blocked by #305", createdAt: "2024-01-03T00:00:00.000Z" }),
+  ];
+
+  assert.deepEqual(parseBlockingRelationships(issues[0]!), []);
+  assert.deepEqual(parseBlockedIssueRelationships(issues[0]!), []);
+  assert.deepEqual(buildBlockedIssueIndex(issues), { 306: [305] });
+
+  const plan = buildPlan({ issues, pullRequests: [], agentSessions: [] }, 3);
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 304 },
+    { type: "start-implementation", issueNumber: 305 },
+  ]);
+  assert.deepEqual(plan.blockedIssueNumbers, { 306: [305] });
+});
+
+// ---------------------------------------------------------------------------
+// An issue never blocks itself (#257)
+// ---------------------------------------------------------------------------
+
+const SELF_REFERENCES: Array<[string, Partial<Issue>]> = [
+  ["its body names itself as a blocker", { body: "blocked by #7" }],
+  ["its body names itself as blocked", { body: "blocks #7" }],
+  ["its native blockedByIssueNumbers contains itself", { blockedByIssueNumbers: [7] }],
+  ["its parentNumber is itself", { parentNumber: 7 }],
+];
+
+for (const [description, overrides] of SELF_REFERENCES) {
+  test(`an issue whose ${description} gets no index entry`, () => {
+    const issue = createIssue({ ...overrides, number: 7 });
+    assert.deepEqual(buildBlockedIssueIndex([issue]), {});
+
+    const plan = buildPlan({ issues: [issue], pullRequests: [], agentSessions: [] }, 3);
+    assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 7 }]);
+    assert.deepEqual(plan.dependencyCycles, []);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dependency cycles are reported, never broken (#257)
+// ---------------------------------------------------------------------------
+
+test("buildPlan reports two open issues that block each other and starts neither", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, body: "blocked by #2", createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({ number: 2, body: "blocked by #1", createdAt: "2024-01-02T00:00:00.000Z" }),
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.dependencyCycles, [[1, 2]]);
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 3 }]);
+  assert.deepEqual(plan.blockedIssueNumbers, { 1: [2], 2: [1] });
+});
+
+test("buildPlan reports dependency cycles even when at zero capacity", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, body: "blocked by #2" }),
+      createIssue({ number: 2, body: "blocked by #1" }),
+      createIssue({ number: 3 }),
+    ],
+    pullRequests: [createPullRequest({ number: 101, linkedIssueNumbers: [3] })],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 1);
+
+  assert.deepEqual(plan.dependencyCycles, [[1, 2]]);
+});
+
+test("buildPlan reports no cycle when one side of it is closed", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, body: "blocked by #2" }),
+      createIssue({ number: 2, body: "blocked by #1", state: "closed" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.dependencyCycles, []);
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 1 }]);
+});
+
+test("findDependencyCycles finds every cycle among open issues, sorted", () => {
+  const index = {
+    1: [2],
+    2: [1],
+    3: [9],
+    5: [8],
+    6: [5],
+    8: [6, 10],
+    9: [3, 11],
+    10: [11],
+  };
+  const open = new Set([1, 2, 3, 5, 6, 8, 9, 10, 11]);
+
+  // 5 → 8 → 6 → 5 and 3 ↔ 9; 10 and 11 only sit downstream of cycles.
+  assert.deepEqual(findDependencyCycles(index, open), [
+    [1, 2],
+    [3, 9],
+    [5, 6, 8],
+  ]);
+  // A closed member breaks the cycle it was part of.
+  assert.deepEqual(findDependencyCycles(index, new Set([1, 3, 5, 6, 8, 9])), [
+    [3, 9],
+    [5, 6, 8],
+  ]);
 });
 
 test("buildPlan starts issues from every milestone, not just the earliest", () => {
