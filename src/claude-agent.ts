@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1615,6 +1615,9 @@ export interface ClaudeAuthResult {
   reason?: string;
 }
 
+/** A Keychain read still running after this is treated as not found. */
+const KEYCHAIN_READ_TIMEOUT_MS = 10_000;
+
 /**
  * Read the raw Claude credentials blob.
  *
@@ -1628,13 +1631,18 @@ export interface ClaudeAuthResult {
  */
 export async function readClaudeCredentials(): Promise<{ raw: string } | ClaudeAuthResult> {
   if (process.platform === "darwin") {
-    const result = spawnSync(
-      "security",
-      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-      { encoding: "utf8" },
-    );
-    if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
-      return { raw: result.stdout.trim() };
+    // Asynchronous, and bounded: the usage gauge reads this every minute, and a
+    // `security` call stuck on a locked Keychain must not freeze the process.
+    const stdout = await new Promise<string>((resolveRead) => {
+      execFile(
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        { encoding: "utf8", timeout: KEYCHAIN_READ_TIMEOUT_MS },
+        (error, out) => resolveRead(error ? "" : out),
+      );
+    });
+    if (stdout.trim()) {
+      return { raw: stdout.trim() };
     }
     // Keychain item missing (status 44) or any other failure. Fall through to the
     // file in case the user keeps a file-based credential, then report not-found.
