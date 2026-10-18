@@ -6,6 +6,7 @@ import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
 import { pillActivity, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
+import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
 
 interface WireEvent {
   type: string;
@@ -974,4 +975,79 @@ test("pillActivity: follows a PR through its checks, an engine's action and revi
 
   s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 2, totalActions: 3, repo: "o/a" }));
   assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "waiting-ci", "the engine is done; now it waits on CI");
+});
+
+// ── dimming every pill no engine is working (issue #262) ──────────────────────
+
+/** A Lit TemplateResult flattened to the markup it describes. */
+function flatten(value: unknown): string {
+  if (value === null || value === undefined || typeof value === "symbol") return "";
+  if (Array.isArray(value)) return value.map(flatten).join("");
+  if (typeof value === "object" && "strings" in value && "values" in value) {
+    const { strings, values } = value as { strings: readonly string[]; values: readonly unknown[] };
+    return strings.reduce((out, s, i) => out + s + (i < values.length ? flatten(values[i]) : ""), "");
+  }
+  return String(value);
+}
+
+/** The classes on a pill rendered for `pair` the way the lifecycle list renders it. */
+function renderedPillClasses(s: DashboardState, pair: LifecyclePair): string[] {
+  const pill = new LifecyclePill();
+  Object.assign(pill, { pair, activity: pillActivity(pair, s.cylinders) });
+  const match = /class="(lifecycle-pill\b[^"]*)"/.exec(flatten(pill.render()));
+  assert.ok(match, "the pill renders its outer element");
+  return match[1]!.split(/\s+/);
+}
+
+test("lifecycle pill: the stylesheet dims every pill without the working class", () => {
+  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
+  const rule = /\.lifecycle-pill:not\(\.working\) \{ opacity: ([\d.]+); \}/.exec(css);
+  assert.ok(rule, "a pill no engine is working is rendered at a lowered opacity");
+  const opacity = Number(rule[1]);
+  assert.ok(opacity > 0 && opacity < 1, `dimmed, not hidden (opacity ${opacity})`);
+});
+
+test("lifecycle pill: only the pills an engine is working stay undimmed, whatever their phase or icon", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30),
+    { issue: null, pr: { number: 40, title: "Orphan", state: "open", draft: false, checksStatus: "pending" }, prPhase: "review" },
+    prPill(31),
+    prPill(32, {}, { checksStatus: "pending" }),
+    prPill(33, { disabled: true }),
+    prPill(34, { prPhase: "completed" }),
+    prPill(35, { prPhase: "active" }, { draft: true }),
+    { issue: { number: 2, title: "Untouched", state: "open" }, pr: null, prPhase: "absent" },
+    { issue: { number: 3, title: "Backlog", state: "open" }, pr: null, prPhase: "inactive", projectStatus: "Backlog" },
+    { issue: { number: 4, title: "Blocked", state: "open" }, pr: null, prPhase: "absent", blockedByIssueNumbers: [2] },
+    { issue: { number: 6, title: "Finished", state: "open" }, pr: null, prPhase: "planning" },
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 4, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 2, totalActions: 4, type: "self-review", pullRequestNumber: 30, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 3, totalActions: 4, type: "address-failing-checks", pullRequestNumber: 40, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 4, totalActions: 4, type: "start-implementation", issueNumber: 6, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 4, totalActions: 4, repo: "o/a" }));
+
+  const worked = [pillFor(s, 5), pillForPR(s, 30), pillForPR(s, 40)];
+  for (const pair of worked) {
+    const classes = renderedPillClasses(s, pair);
+    assert.ok(classes.includes("working"), `#${pair.issue?.number ?? pair.pr?.number} is worked: full opacity`);
+  }
+
+  const idle = [
+    pillForPR(s, 31), pillForPR(s, 32), pillForPR(s, 33), pillForPR(s, 34), pillForPR(s, 35),
+    pillFor(s, 2), pillFor(s, 3), pillFor(s, 4), pillFor(s, 6),
+  ];
+  for (const pair of idle) {
+    const classes = renderedPillClasses(s, pair);
+    assert.ok(!classes.includes("working"), `#${pair.issue?.number ?? pair.pr?.number} is not worked: dimmed`);
+  }
 });
