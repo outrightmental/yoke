@@ -66,7 +66,7 @@ function createPullRequest(
     hasCleanReviewOnHead: overrides.hasCleanReviewOnHead ?? false,
     unresolvedReviewCommentCount: overrides.unresolvedReviewCommentCount ?? 0,
     checksStatus: overrides.checksStatus ?? "success",
-    headCommitPushedAt: overrides.headCommitPushedAt,
+    pendingChecksStartedAt: overrides.pendingChecksStartedAt,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     labels: overrides.labels ?? [],
@@ -91,6 +91,8 @@ function createHarness(input: {
     failureReason?: string;
   };
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
+  /** How many runs the fake cancel reports cancelling. */
+  cancelledRunCount?: number;
   newPullRequest?: { number: number; headSha: string; created?: boolean };
   pullRequestComments?: Array<{
     id?: number;
@@ -134,12 +136,16 @@ function createHarness(input: {
       calls.push(`mark-ready:${pullRequestNumber}`);
     },
     async listFailingCheckRuns(args) {
-      calls.push(`list-failing:${args.pullRequestNumber}:${args.headSha}`);
+      calls.push(
+        `list-failing:${args.pullRequestNumber}:${args.headSha}:stalled-after=${args.stalledAfterMs}ms`,
+      );
       return input.failingCheckRuns ?? [];
     },
-    async cancelInProgressWorkflowRunsForHeadSha(headSha) {
-      calls.push(`cancel-in-progress:${headSha}`);
-      return 0;
+    async cancelStalledWorkflowRunsForPullRequest(args) {
+      calls.push(
+        `cancel-stalled:${args.pullRequestNumber}:${args.headSha}:${args.headRefName}:${args.runningLongerThanMs}ms`,
+      );
+      return input.cancelledRunCount ?? 0;
     },
     async postComment(pullRequestNumber, body) {
       calls.push(`post-comment:${pullRequestNumber}:${body}`);
@@ -439,8 +445,8 @@ test("executeAction passes failing check logs to Claude", async () => {
   });
 
   assert.deepEqual(harness.calls, [
-    "cancel-in-progress:sha-13",
-    "list-failing:13:sha-13",
+    "cancel-stalled:13:sha-13:branch-13:600000ms",
+    "list-failing:13:sha-13:stalled-after=600000ms",
     "address-checks:13:2-checks",
     "post-comment:13:Addressed failing CI checks and pushed a fix (lint, test).",
   ]);
@@ -453,6 +459,97 @@ test("executeAction passes failing check logs to Claude", async () => {
       result: { pullRequestHeadSha: "sha-after-checks" },
     },
   ]);
+});
+
+test("executeAction address-failing-checks on one PR never reaches another PR's CI", async () => {
+  // Two PRs in the same repository, both shepherded at once; #401's suite is
+  // mid-run. Working #400's failing checks must only ever ask to cancel
+  // #400's own stalled runs — keyed to #400's number, head SHA and branch.
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const failing = createPullRequest({
+    number: 400,
+    linkedIssueNumbers: [300],
+    checksStatus: "failure",
+    headSha: "sha-400",
+    headRefName: "yoke/issue-300",
+  });
+  const sibling = createPullRequest({
+    number: 401,
+    linkedIssueNumbers: [301],
+    checksStatus: "pending",
+    pendingChecksStartedAt: minutesAgo(4),
+    headSha: "sha-401",
+    headRefName: "yoke/issue-301",
+  });
+  const harness = createHarness({
+    pullRequests: [failing, sibling],
+    failingCheckRuns: [{ name: "test", logExcerpt: "1 failing test" }],
+  });
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: 300,
+    pullRequestNumber: 400,
+    pullRequestHeadSha: "sha-400",
+  });
+
+  const cancelCalls = harness.calls.filter((call) => call.startsWith("cancel-"));
+  assert.deepEqual(cancelCalls, ["cancel-stalled:400:sha-400:yoke/issue-300:600000ms"]);
+  assert.ok(
+    harness.calls.every((call) => !call.includes("401") && !call.includes("issue-301")),
+    `no call touched PR #401: ${JSON.stringify(harness.calls)}`,
+  );
+});
+
+test("executeAction logs a cancel of stalled runs as stalled, not as a pending-since-push timeout", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "log", (message: unknown) => {
+    logged.push(String(message));
+  });
+  const pullRequest = createPullRequest({
+    number: 13,
+    linkedIssueNumbers: [10],
+    checksStatus: "pending",
+    pendingChecksStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+    headSha: "sha-13",
+  });
+  const harness = createHarness({ pullRequests: [pullRequest], cancelledRunCount: 2 });
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: 10,
+    pullRequestNumber: 13,
+    pullRequestHeadSha: "sha-13",
+  });
+
+  const cancelLog = logged.find((line) => line.includes("Cancelled"));
+  assert.ok(cancelLog, `expected a cancel log line, got ${JSON.stringify(logged)}`);
+  assert.match(cancelLog, /Cancelled 2 stalled workflow run\(s\) for PR #13/);
+  assert.match(cancelLog, /more than 10 minutes after they started/);
+  assert.match(cancelLog, /oldest incomplete check started 12m \d+s ago/);
+});
+
+test("executeAction logs no cancel when no run on the PR had stalled", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "log", (message: unknown) => {
+    logged.push(String(message));
+  });
+  const pullRequest = createPullRequest({
+    number: 13,
+    linkedIssueNumbers: [10],
+    checksStatus: "failure",
+    headSha: "sha-13",
+  });
+  const harness = createHarness({ pullRequests: [pullRequest], cancelledRunCount: 0 });
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: 10,
+    pullRequestNumber: 13,
+    pullRequestHeadSha: "sha-13",
+  });
+
+  assert.deepEqual(logged.filter((line) => line.includes("Cancelled")), []);
 });
 
 test("executeAction asks Claude to resolve merge conflicts", async () => {

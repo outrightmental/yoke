@@ -26,8 +26,20 @@ export interface ActionGitHubClient {
   listFailingCheckRuns(input: {
     pullRequestNumber: number;
     headSha: string;
+    /** Incomplete checks running longer than this are reported as stalled. */
+    stalledAfterMs?: number;
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
-  cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
+  /**
+   * Cancel this PR's own workflow runs (its head SHA and branch) that are
+   * still incomplete more than `runningLongerThanMs` after they started.
+   * Never touches a run belonging to another PR. Returns how many it cancelled.
+   */
+  cancelStalledWorkflowRunsForPullRequest(input: {
+    pullRequestNumber: number;
+    headSha: string;
+    headRefName: string;
+    runningLongerThanMs: number;
+  }): Promise<number>;
   /** Posts a comment on a PR and returns its numeric id. */
   postComment(pullRequestNumber: number, body: string): Promise<number>;
   listPullRequestComments(
@@ -461,14 +473,20 @@ export async function executeAction(
 
     case "address-failing-checks": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
-      // Cancel any runs that are still in progress so Claude doesn't try to
-      // diagnose a job that hasn't finished yet.
-      const cancelledCount = await gitHubClient.cancelInProgressWorkflowRunsForHeadSha(
-        pullRequest.headSha,
-      );
+      // Cancel this PR's stalled runs — still incomplete past the timeout —
+      // so Claude doesn't try to diagnose a job that is never going to finish.
+      // A run still inside the timeout is left alone: it is progressing, and a
+      // fast-failing lint job is no reason to kill a long test suite mid-run.
+      // Runs belonging to any other PR in the repository are never touched.
+      const cancelledCount = await gitHubClient.cancelStalledWorkflowRunsForPullRequest({
+        pullRequestNumber: pullRequest.number,
+        headSha: pullRequest.headSha,
+        headRefName: pullRequest.headRefName,
+        runningLongerThanMs: CHECKS_TIMEOUT_MS,
+      });
       if (cancelledCount > 0) {
-        const pushedAt = pullRequest.headCommitPushedAt;
-        const pendingMs = pushedAt !== undefined ? Date.now() - Date.parse(pushedAt) : undefined;
+        const startedAt = pullRequest.pendingChecksStartedAt;
+        const pendingMs = startedAt !== undefined ? Date.now() - Date.parse(startedAt) : undefined;
         const pendingDesc =
           pendingMs !== undefined
             ? (() => {
@@ -480,14 +498,16 @@ export async function executeAction(
             : "unknown duration";
         const thresholdMin = Math.round(CHECKS_TIMEOUT_MS / 60_000);
         console.log(
-          `[yoke] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} ` +
-          `because CI checks have been pending for ${pendingDesc}, exceeding the ${thresholdMin}-minute timeout threshold.`,
+          `[yoke] Cancelled ${cancelledCount} stalled workflow run(s) for PR #${pullRequest.number}: ` +
+          `still running more than ${thresholdMin} minutes after they started ` +
+          `(oldest incomplete check started ${pendingDesc} ago).`,
         );
       }
       const [failingChecks, userComments] = await Promise.all([
         gitHubClient.listFailingCheckRuns({
           pullRequestNumber: pullRequest.number,
           headSha: pullRequest.headSha,
+          stalledAfterMs: CHECKS_TIMEOUT_MS,
         }),
         fetchHumanComments(gitHubClient, sessionStore, pullRequest.number),
       ]);

@@ -116,7 +116,7 @@ On every iteration, `yoke`:
 2. Builds a dependency-aware work plan from issue age plus relationships like `blocked by #123`, `depends on #123`, and `blocks #123`.
 3. Enforces a configurable concurrency limit so the repo does not get flooded with half-finished work.
 4. For each eligible issue, runs Claude locally in a fresh checkout to implement the change and open a draft pull request.
-5. Checks CI status on every open PR — waits for passing checks before advancing, fixes failing checks, and escalates checks stuck for more than 10 minutes.
+5. Checks CI status on every open PR — waits for passing checks before advancing, fixes failing checks, and escalates checks stuck for more than 10 minutes (timed from when the checks started, and only ever cancelling that PR's own stalled runs).
 6. Detects merge conflicts and asks Claude to resolve them before continuing.
 7. Asks Claude to self-review the diff and push fixes if needed. Requires two consecutive clean self-reviews before advancing.
 8. Generates a polished final PR description with Claude, updates the PR body, preserves closing references, and squash-merges. Retries with `--admin` if GitHub's branch policy requires it.

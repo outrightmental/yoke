@@ -51,7 +51,7 @@ function createPullRequest(
     hasCleanReviewOnHead: overrides.hasCleanReviewOnHead ?? false,
     unresolvedReviewCommentCount: overrides.unresolvedReviewCommentCount ?? 0,
     checksStatus: overrides.checksStatus ?? "success",
-    headCommitPushedAt: overrides.headCommitPushedAt,
+    pendingChecksStartedAt: overrides.pendingChecksStartedAt,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     labels: overrides.labels ?? [],
@@ -552,6 +552,98 @@ test("buildPlan emits no action while checks are pending", () => {
   const plan = buildPlan(snapshot, 3);
 
   assert.deepEqual(plan.actions, []);
+});
+
+// ─── Long-running checks on PRs shepherded side by side (issue #265) ─────────
+
+const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
+
+/** Two PRs in one repository, each with a finished implementation awaiting CI. */
+function siblingPullRequestSnapshot(
+  first: Partial<PullRequest>,
+  second: Partial<PullRequest>,
+): RepositorySnapshot {
+  return {
+    issues: [createIssue({ number: 400 }), createIssue({ number: 401 })],
+    pullRequests: [
+      createPullRequest({ number: 500, linkedIssueNumbers: [400], ...first }),
+      createPullRequest({ number: 501, linkedIssueNumbers: [401], ...second }),
+    ],
+    agentSessions: [
+      createSession({ id: "impl-400", issueNumber: 400, pullRequestNumber: 500, phase: "implementation" }),
+      createSession({ id: "impl-401", issueNumber: 401, pullRequestNumber: 501, phase: "implementation" }),
+    ],
+  };
+}
+
+test("buildPlan lets two PRs' checks keep running when they outlast a poll cycle", () => {
+  // Both suites started three minutes ago — three 60s cycles — and are still
+  // going. Neither is stuck, so neither PR is driven into
+  // address-failing-checks (whose first step cancels runs).
+  const snapshot = siblingPullRequestSnapshot(
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(3) },
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(3) },
+  );
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, []);
+});
+
+test("buildPlan escalates only the PR whose own checks are stuck, not its sibling's", () => {
+  const snapshot = siblingPullRequestSnapshot(
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(15) },
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(2) },
+  );
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [
+    {
+      type: "address-failing-checks",
+      issueNumber: 400,
+      pullRequestNumber: 500,
+      pullRequestHeadSha: "sha-500",
+    },
+  ]);
+});
+
+test("buildPlan addresses one PR's failing checks without touching a sibling whose suite is mid-run", () => {
+  const snapshot = siblingPullRequestSnapshot(
+    { checksStatus: "failure" },
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(5) },
+  );
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [
+    {
+      type: "address-failing-checks",
+      issueNumber: 400,
+      pullRequestNumber: 500,
+      pullRequestHeadSha: "sha-500",
+    },
+  ]);
+});
+
+test("buildPlan applies the stuck-checks timeout to the time the checks started", () => {
+  // A suite that started 9 minutes ago is inside the 10-minute timeout; one
+  // that started 11 minutes ago is past it.
+  const withinTimeout = siblingPullRequestSnapshot(
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(9) },
+    { checksStatus: "success" },
+  );
+  const pastTimeout = siblingPullRequestSnapshot(
+    { checksStatus: "pending", pendingChecksStartedAt: minutesAgo(11) },
+    { checksStatus: "success" },
+  );
+
+  const actionTypesFor = (snapshot: RepositorySnapshot, pullRequestNumber: number) =>
+    buildPlan(snapshot, 3)
+      .actions.filter(
+        (action) => action.type !== "start-implementation" && action.pullRequestNumber === pullRequestNumber,
+      )
+      .map((action) => action.type);
+
+  assert.deepEqual(actionTypesFor(withinTimeout, 500), []);
+  assert.deepEqual(actionTypesFor(pastTimeout, 500), ["address-failing-checks"]);
+  // The sibling with passing checks goes on to self-review either way.
+  assert.deepEqual(actionTypesFor(withinTimeout, 501), ["self-review"]);
+  assert.deepEqual(actionTypesFor(pastTimeout, 501), ["self-review"]);
 });
 
 test("buildPlan emits no action after squash-merge session has completed", () => {
