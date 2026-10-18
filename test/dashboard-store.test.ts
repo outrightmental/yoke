@@ -1164,3 +1164,28 @@ test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen i
   assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: #ff6600; \}/, "and its orange accent");
   assert.match(css, /\.lifecycle-pill\.shutdown \.pill-status \* \{ animation-play-state: paused; \}/, "icons freeze in place");
 });
+
+// ── action-start carries issue/PR titles for unlisted-work pills ──────────────
+
+test("reducer: action-start stores the worked issue and PR titles on the cylinder", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 1, type: "address-failing-checks",
+    issueNumber: 402, pullRequestNumber: 404,
+    issueTitle: "Never lapse an approval", pullRequestTitle: "Fix approvals", description: "d",
+  }));
+  assert.equal(s.cylinders[0]?.issueTitle, "Never lapse an approval");
+  assert.equal(s.cylinders[0]?.prTitle, "Fix approvals");
+
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 7, description: "d" }));
+  assert.equal(s.cylinders[0]?.issueTitle, null, "an action without titles leaves none behind");
+  assert.equal(s.cylinders[0]?.prTitle, null);
+});
+
+test("reducer: engine-idle clears the worked titles", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 7, issueTitle: "t", description: "d" }));
+  assert.equal(s.cylinders[0]?.issueTitle, "t");
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "nothing to do this cycle" }));
+  assert.equal(s.cylinders[0]?.issueTitle, null);
+});

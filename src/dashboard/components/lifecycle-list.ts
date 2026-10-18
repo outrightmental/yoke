@@ -2,6 +2,7 @@ import { LitElement, html } from 'lit';
 import type { CylinderState, LifecyclePair } from '../store/types.js';
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 import { pillActivity, pillKey, type PillActivity } from '../shared/pill-activity.js';
+import { withWorkedPairs } from '../shared/worked-pairs.js';
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
@@ -70,12 +71,16 @@ export class LifecycleList extends LitElement {
   protected override createRenderRoot() { return this; }
 
   override render() {
-    const sorted = [...this.pairs].sort((a, b) => compareLifecyclePairs(a, b, this.cylinderByIssue));
+    // Anything a cylinder is actively working gets a pill even when GitHub's
+    // open lists no longer carry it, so this pane never silently disagrees
+    // with the engine pane beside it.
+    const pairs = withWorkedPairs(this.pairs, this.cylinders);
+    const sorted = [...pairs].sort((a, b) => compareLifecyclePairs(a, b, this.cylinderByIssue));
 
-    const active = this.pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
-    const subtitle = this.pairs.length === 0
+    const active = pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
+    const subtitle = pairs.length === 0
       ? ''
-      : `${this.pairs.length} item${this.pairs.length !== 1 ? 's' : ''} · ${active} in progress`;
+      : `${pairs.length} item${pairs.length !== 1 ? 's' : ''} · ${active} in progress`;
 
     return html`
       <div class="panel panel-b">
