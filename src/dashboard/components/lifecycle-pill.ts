@@ -18,6 +18,23 @@ export class LifecyclePill extends LitElement {
       to   { opacity: 1; transform: scaleX(1); }
     }
 
+    /* An engine cylinder is working this pill right now (issue #262): a ring in
+       the issue's own color, set off from the halves so their phase styling
+       still reads, with a slowly breathing glow. */
+    .lifecycle-pill.working {
+      border-radius: 999px;
+      outline: 2px solid var(--pill-color);
+      outline-offset: 2px;
+      animation:
+        pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1),
+        workingGlow 2.4s ease-in-out infinite;
+    }
+
+    @keyframes workingGlow {
+      0%, 100% { box-shadow: 0 0 4px rgba(var(--pill-rgb), 0.3); }
+      50%       { box-shadow: 0 0 8px rgba(var(--pill-rgb), 0.75); }
+    }
+
     .pill-issue-half {
       flex: 1;
       display: flex;
@@ -113,6 +130,26 @@ export class LifecyclePill extends LitElement {
       white-space: nowrap;
     }
 
+    .pill-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .pill-engine {
+      font-size: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--pill-color);
+      color: var(--bg-dark, #0e0e10);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
     .pill-row {
       display: flex;
       align-items: center;
@@ -177,11 +214,14 @@ export class LifecyclePill extends LitElement {
     owner: { type: String },
     repo: { type: String },
     multiProject: { type: Boolean },
+    engineIndex: { attribute: false },
   };
 
   pair: LifecyclePair | null = null;
   color = '#555577';
   colorRgb = '85,85,119';
+  /** 1-based index of the cylinder working this pill right now, or null. */
+  engineIndex: number | null = null;
   owner = '';
   repo = '';
   multiProject = false;
@@ -262,11 +302,19 @@ export class LifecyclePill extends LitElement {
     const projectChip = this.multiProject && pair.repo
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
+    const working = this.engineIndex !== null;
+    const pillClass = `lifecycle-pill${working ? ' working' : ''}`;
+    const engineTag = working
+      ? html`<span class="pill-engine" title="Engine ${this.engineIndex} is working on this now">⚙ Engine ${this.engineIndex}</span>`
+      : '';
 
     if (!pair.issue) {
       return html`
-        <div class="lifecycle-pill" style="${style}">
-          <div class="pill-issue-half empty">${projectChip}</div>
+        <div class="${pillClass}" style="${style}">
+          <div class="pill-issue-half empty">
+            ${working ? html`<div class="pill-head">${engineTag}</div>` : ''}
+            ${projectChip}
+          </div>
           ${this._prHalf()}
         </div>`;
     }
@@ -274,9 +322,9 @@ export class LifecyclePill extends LitElement {
     const issue = pair.issue;
     const issueUrl = `${baseUrl}/issues/${issue.number}`;
     return html`
-      <div class="lifecycle-pill" style="${style}">
+      <div class="${pillClass}" style="${style}">
         <div class="pill-issue-half">
-          <div class="pill-label">Issue</div>
+          <div class="pill-head"><div class="pill-label">Issue</div>${engineTag}</div>
           <div class="pill-row">
             <span class="pill-number">
               <a class="gh-link" href="${issueUrl}" target="_blank" rel="noopener noreferrer">#${issue.number}</a>

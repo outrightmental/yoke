@@ -1,6 +1,7 @@
 import { LitElement, html } from 'lit';
-import type { LifecyclePair } from '../store/types.js';
+import type { CylinderState, LifecyclePair } from '../store/types.js';
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
+import { workingCylinder } from '../shared/working-cylinder.js';
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
@@ -44,6 +45,7 @@ function resolvePillColor(issueNumber: number | null | undefined): { hex: string
 export class LifecycleList extends LitElement {
   static override properties = {
     pairs: { type: Array },
+    cylinders: { attribute: false },
     cylinderByIssue: { attribute: false },
     cylinderByPR: { attribute: false },
     owner: { type: String },
@@ -52,6 +54,7 @@ export class LifecycleList extends LitElement {
   };
 
   pairs: LifecyclePair[] = [];
+  cylinders: CylinderState[] = [];
   cylinderByIssue: Map<number, number> = new Map();
   cylinderByPR: Map<number, number> = new Map();
   owner = '';
@@ -81,6 +84,7 @@ export class LifecycleList extends LitElement {
               : sorted.map((pair) => {
                   const issueNum = pair.issue?.number ?? null;
                   const color = resolvePillColor(issueNum);
+                  const worker = workingCylinder(pair, this.cylinders);
                   // Key includes the repo so pills from different projects that
                   // happen to share an issue/PR number don't collide in the DOM.
                   const ident = pair.issue ? `#${pair.issue.number}` : `pr-${pair.pr?.number ?? '?'}`;
@@ -91,6 +95,7 @@ export class LifecycleList extends LitElement {
                       .pair=${pair}
                       .color=${color.hex}
                       .colorRgb=${color.rgb}
+                      .engineIndex=${worker?.index ?? null}
                       .owner=${this.owner}
                       .repo=${this.repo}
                       .multiProject=${this.multiProject}

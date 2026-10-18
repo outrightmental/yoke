@@ -87,6 +87,7 @@ export class YokeApp extends LitElement {
         ></cylinder-engine>
         <lifecycle-list
           .pairs=${s.lastLifecyclePairs}
+          .cylinders=${s.cylinders}
           .cylinderByIssue=${s.cylinderByIssue}
           .cylinderByPR=${s.cylinderByPR}
           .owner=${s.owner}
