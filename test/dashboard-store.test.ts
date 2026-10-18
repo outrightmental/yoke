@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { dashboardReducer, initialState, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
+import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
 
 interface WireEvent {
   type: string;
@@ -688,4 +689,101 @@ test("reducer: a malformed usage-update degrades to unavailable rather than a bo
   assert.equal(okWithoutNumber.usage?.fiveHourPercent, null);
   assert.equal(okWithoutNumber.usage?.resetsAtMs, null);
   assert.equal(okWithoutNumber.usage?.reason, "");
+});
+
+// ── pills being worked by an engine cylinder (issue #262) ─────────────────────
+
+function pillFor(s: DashboardState, issueNumber: number, repo?: string) {
+  const pair = s.lastLifecyclePairs.find((p) => p.issue?.number === issueNumber && (repo === undefined || p.repo === repo));
+  assert.ok(pair, `pill for issue #${issueNumber} should exist`);
+  return pair;
+}
+
+function withPills(s: DashboardState, repo: string, pairs: unknown[]): DashboardState {
+  return dashboardReducer(s, makeEvent("lifecycle-update", { repo, pairs }));
+}
+
+test("workingCylinder: a pill is worked only while a cylinder is running an action on its issue", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 7, title: "Seven", state: "open" }, pr: null, prPhase: "planning" },
+    { issue: { number: 8, title: "Eight", state: "open" }, pr: null, prPhase: "absent" },
+  ]);
+  assert.equal(workingCylinder(pillFor(s, 7), s.cylinders), null, "nothing is working anything yet");
+
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 2, totalActions: 3, type: "start-implementation", issueNumber: 7, repo: "o/a", description: "d",
+  }));
+  assert.equal(workingCylinder(pillFor(s, 7), s.cylinders)?.index, 2, "engine 2 is working issue #7");
+  assert.equal(workingCylinder(pillFor(s, 8), s.cylinders), null, "issue #8 is untouched");
+});
+
+test("workingCylinder: a cylinder that finished, failed or went idle no longer works the pill", () => {
+  const start = makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 7, repo: "o/a", description: "d",
+  });
+  const base = dashboardReducer(withPills(initialState(), "o/a", [
+    { issue: { number: 7, title: "Seven", state: "open" }, pr: null, prPhase: "planning" },
+  ]), start);
+  assert.ok(workingCylinder(pillFor(base, 7), base.cylinders));
+
+  const done = dashboardReducer(base, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  assert.equal(done.cylinders[0]?.issueNumber, 7, "a done cylinder still remembers its issue");
+  assert.equal(workingCylinder(pillFor(done, 7), done.cylinders), null, "but is not working it");
+
+  const failed = dashboardReducer(base, makeEvent("action-error", { actionIndex: 1, totalActions: 3, error: "boom" }));
+  assert.equal(workingCylinder(pillFor(failed, 7), failed.cylinders), null);
+
+  const idle = dashboardReducer(base, makeEvent("engine-idle", { engineIndex: 0, reason: "done" }));
+  assert.equal(workingCylinder(pillFor(idle, 7), idle.cylinders), null);
+
+  const shutdown = dashboardReducer(base, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  assert.equal(workingCylinder(pillFor(shutdown, 7), shutdown.cylinders), null);
+});
+
+test("workingCylinder: a cylinder working the pill's PR without an issue number still works the pill", () => {
+  let s = withPills(initialState(), "o/a", [
+    {
+      issue: { number: 7, title: "Seven", state: "open" },
+      pr: { number: 30, title: "Fix seven", state: "open" },
+      prPhase: "active",
+    },
+    { issue: null, pr: { number: 31, title: "Orphan", state: "open" }, prPhase: "active" },
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "self-review", issueNumber: null, pullRequestNumber: 30, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 3, totalActions: 3, type: "resolve-conflicts", pullRequestNumber: 31, repo: "o/a", description: "d",
+  }));
+
+  assert.equal(workingCylinder(pillFor(s, 7), s.cylinders)?.index, 1, "matched through PR #30");
+  const orphan = s.lastLifecyclePairs.find((p) => p.pr?.number === 31);
+  assert.ok(orphan);
+  assert.equal(workingCylinder(orphan, s.cylinders)?.index, 3, "an issue-less pill is matched through its PR");
+});
+
+test("workingCylinder: projects sharing the dashboard never light each other's pills", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 1, title: "A1", state: "open" }, pr: null, prPhase: "planning" },
+  ]);
+  s = withPills(s, "o/b", [
+    { issue: { number: 1, title: "B1", state: "open" }, pr: null, prPhase: "absent" },
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 1, repo: "o/a", description: "d",
+  }));
+
+  assert.equal(workingCylinder(pillFor(s, 1, "o/a"), s.cylinders)?.index, 1);
+  assert.equal(workingCylinder(pillFor(s, 1, "o/b"), s.cylinders), null, "same issue number, other project");
+});
+
+test("workingCylinder: matches by number when either side does not know its project", () => {
+  // Single-project setups may emit lifecycle updates or actions without a repo.
+  let s = withPills(initialState(), "", [
+    { issue: { number: 4, title: "Four", state: "open" }, pr: null, prPhase: "planning" },
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 4, repo: "o/a", description: "d",
+  }));
+  assert.equal(workingCylinder(pillFor(s, 4), s.cylinders)?.index, 1);
 });

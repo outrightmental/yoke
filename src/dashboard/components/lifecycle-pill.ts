@@ -18,6 +18,21 @@ export class LifecyclePill extends LitElement {
       to   { opacity: 1; transform: scaleX(1); }
     }
 
+    /* An engine cylinder is working this pill right now (issue #262): a soft
+       glow in the issue's own color, slowly breathing around the whole pill so
+       the halves' phase styling still reads. */
+    .lifecycle-pill.working {
+      border-radius: 999px;
+      animation:
+        pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1),
+        workingGlow 2.4s ease-in-out infinite;
+    }
+
+    @keyframes workingGlow {
+      0%, 100% { box-shadow: 0 0 3px 0 rgba(var(--pill-rgb), 0.15); }
+      50%       { box-shadow: 0 0 10px 2px rgba(var(--pill-rgb), 0.55); }
+    }
+
     .pill-issue-half {
       flex: 1;
       display: flex;
@@ -177,11 +192,14 @@ export class LifecyclePill extends LitElement {
     owner: { type: String },
     repo: { type: String },
     multiProject: { type: Boolean },
+    working: { type: Boolean },
   };
 
   pair: LifecyclePair | null = null;
   color = '#555577';
   colorRgb = '85,85,119';
+  /** Whether an engine cylinder is actively working this pill right now. */
+  working = false;
   owner = '';
   repo = '';
   multiProject = false;
@@ -262,10 +280,11 @@ export class LifecyclePill extends LitElement {
     const projectChip = this.multiProject && pair.repo
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
+    const pillClass = `lifecycle-pill${this.working ? ' working' : ''}`;
 
     if (!pair.issue) {
       return html`
-        <div class="lifecycle-pill" style="${style}">
+        <div class="${pillClass}" style="${style}">
           <div class="pill-issue-half empty">${projectChip}</div>
           ${this._prHalf()}
         </div>`;
@@ -274,7 +293,7 @@ export class LifecyclePill extends LitElement {
     const issue = pair.issue;
     const issueUrl = `${baseUrl}/issues/${issue.number}`;
     return html`
-      <div class="lifecycle-pill" style="${style}">
+      <div class="${pillClass}" style="${style}">
         <div class="pill-issue-half">
           <div class="pill-label">Issue</div>
           <div class="pill-row">
