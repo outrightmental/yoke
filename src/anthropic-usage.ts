@@ -22,6 +22,10 @@ const ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20";
 /** How often the gauge is refreshed. The endpoint rate-limits per token. */
 export const USAGE_POLL_INTERVAL_MS = 60_000;
 
+/** The length of the rolling usage window. No reading older than this can
+ *  describe the window that is open now. */
+const USAGE_WINDOW_MS = 5 * 60 * 60_000;
+
 /** A request still hanging after this is given up on until the next poll. */
 const USAGE_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -41,14 +45,21 @@ export type UsageStatus = "ok" | "unconfigured" | "unavailable";
 /** One reading, exactly as it is sent to the Dashboard. Never holds the token. */
 export interface UsageReading {
   status: UsageStatus;
-  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok". */
+  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok",
+   *  or an "unavailable" reading holds over the last good one's (see `heldFromMs`). */
   fiveHourPercent: number | null;
   /** Epoch millis the 5-hour window resets; null when unknown or none is open. */
   resetsAtMs: number | null;
   /** Epoch millis this reading was taken. */
   fetchedAtMs: number;
-  /** Why there are no numbers, for the gauge's tooltip; empty when status is "ok". */
+  /** Why this reading has no fresh numbers, for the gauge's tooltip; empty when status is "ok". */
   reason: string;
+  /**
+   * Set only on an "unavailable" reading that carries the numbers of the last
+   * good one, so a failed read — a 529 from an overloaded endpoint, say — does
+   * not blank the gauge: the epoch millis those numbers were read.
+   */
+  heldFromMs?: number;
 }
 
 /**
@@ -88,6 +99,7 @@ function describeHttpFailure(status: number, tokenLabel: string): string {
     return `${tokenLabel} may not read usage (HTTP 403) — it needs the user:profile scope of a Claude login token`;
   }
   if (status === 429) return "Anthropic is rate-limiting usage reads (HTTP 429)";
+  if (status === 529) return "Anthropic is overloaded (HTTP 529)";
   return `Anthropic usage endpoint answered HTTP ${status}`;
 }
 
@@ -210,7 +222,10 @@ export async function readClaudeLoginToken(
 export function formatUsageLine(reading: UsageReading): string {
   if (reading.status === "unconfigured") return `Claude usage: off — ${reading.reason}`;
   if (reading.status !== "ok" || reading.fiveHourPercent === null) {
-    return `Claude usage: unavailable — ${reading.reason}`;
+    const held = reading.heldFromMs !== undefined && reading.fiveHourPercent !== null
+      ? ` · still showing ${Math.round(reading.fiveHourPercent)}% from ${formatLocalTime(reading.heldFromMs)}`
+      : "";
+    return `Claude usage: unavailable — ${reading.reason}${held}`;
   }
   const used = `${Math.round(reading.fiveHourPercent)}% of the 5-hour window used`;
   if (reading.resetsAtMs === null) return `Claude usage: ${used} · no window open yet`;
@@ -264,9 +279,9 @@ export interface UsageMonitorOptions {
 
 /**
  * Keeps the header gauge live: reads usage as soon as it starts, then once per
- * interval, publishing every reading as a `usage-update` event. The next read
- * is scheduled only after the previous one settles, so a slow endpoint can
- * never stack requests up.
+ * interval, publishing every reading as a `usage-update` event — a failed one
+ * carrying the last good numbers along. The next read is scheduled only after
+ * the previous one settles, so a slow endpoint can never stack requests up.
  */
 export class AnthropicUsageMonitor {
   private readonly token: string;
@@ -279,6 +294,7 @@ export class AnthropicUsageMonitor {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private last: UsageReading | null = null;
+  private lastOk: UsageReading | null = null;
 
   constructor(options: UsageMonitorOptions) {
     this.token = options.token?.trim() ?? "";
@@ -324,9 +340,38 @@ export class AnthropicUsageMonitor {
 
   /** Take one reading and publish it. */
   async poll(): Promise<UsageReading> {
-    const reading = await this.read();
+    const reading = this.holdLastOk(await this.read());
     this.publish(reading);
     return reading;
+  }
+
+  /**
+   * A failed read keeps the last good numbers on the gauge. The endpoint
+   * answers the odd poll with a 529 or not at all, and blanking the gauge for
+   * that minute made it flicker in and out (#261). The numbers are let go once
+   * the window they describe has reset — or, when no window was open, once a
+   * whole window's length has passed — or when there is no login left to read
+   * with; the reason still says why this reading failed.
+   */
+  private holdLastOk(reading: UsageReading): UsageReading {
+    if (reading.status === "ok") {
+      this.lastOk = reading;
+      return reading;
+    }
+    if (reading.status === "unconfigured") {
+      this.lastOk = null;
+      return reading;
+    }
+    const last = this.lastOk;
+    if (last === null || (last.resetsAtMs ?? last.fetchedAtMs + USAGE_WINDOW_MS) <= reading.fetchedAtMs) {
+      return reading;
+    }
+    return {
+      ...reading,
+      fiveHourPercent: last.fiveHourPercent,
+      resetsAtMs: last.resetsAtMs,
+      heldFromMs: last.fetchedAtMs,
+    };
   }
 
   private async read(): Promise<UsageReading> {

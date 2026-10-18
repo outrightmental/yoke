@@ -480,12 +480,16 @@ function applyUsageUpdate(state: DashboardState, data: Record<string, unknown>):
     data['status'] === 'ok' || data['status'] === 'unconfigured' ? data['status'] : 'unavailable';
   // "ok" without a number to show is not a reading the gauge can trust.
   if (status === 'ok' && fiveHourPercent === null) status = 'unavailable';
+  // A failed read may carry the last good numbers, so the gauge holds them.
+  const heldFromMs = status === 'unavailable' && fiveHourPercent !== null ? finiteOrNull(data['heldFromMs']) : null;
+  const hasNumbers = status === 'ok' || heldFromMs !== null;
   const usage: AccountUsage = {
     status,
-    fiveHourPercent: status === 'ok' ? fiveHourPercent : null,
-    resetsAtMs: status === 'ok' ? finiteOrNull(data['resetsAtMs']) : null,
+    fiveHourPercent: hasNumbers ? fiveHourPercent : null,
+    resetsAtMs: hasNumbers ? finiteOrNull(data['resetsAtMs']) : null,
     fetchedAtMs: finiteOrNull(data['fetchedAtMs']) ?? Date.now(),
     reason: typeof data['reason'] === 'string' ? data['reason'] : '',
+    ...(heldFromMs !== null ? { heldFromMs } : {}),
   };
   return { ...state, usage };
 }

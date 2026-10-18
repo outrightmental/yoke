@@ -41,14 +41,18 @@ export interface AccountUsage {
   /** "ok": live numbers; "unconfigured": no token to read with, so the gauge
    *  is OFF; "unavailable": there is a token but the reading could not be taken. */
   status: 'ok' | 'unconfigured' | 'unavailable';
-  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok". */
+  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok",
+   *  or an "unavailable" reading holds over the last good one's (see `heldFromMs`). */
   fiveHourPercent: number | null;
   /** Epoch millis the 5-hour window resets; null when unknown or none is open. */
   resetsAtMs: number | null;
   /** Epoch millis the reading was taken. */
   fetchedAtMs: number;
-  /** Why there are no numbers; empty when status is "ok". */
+  /** Why there are no fresh numbers; empty when status is "ok". */
   reason: string;
+  /** Set only on an "unavailable" reading that still carries the last good
+   *  reading's numbers: the epoch millis those numbers were read. */
+  heldFromMs?: number;
 }
 
 export interface IssueCard {

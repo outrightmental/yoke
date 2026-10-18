@@ -24,6 +24,16 @@ function okReading(fiveHourPercent: number, overrides: Partial<AccountUsage> = {
   };
 }
 
+/** A failed read that still carries the numbers of the last good one. */
+function heldReading(fiveHourPercent: number, overrides: Partial<AccountUsage> = {}): AccountUsage {
+  return okReading(fiveHourPercent, {
+    status: "unavailable",
+    reason: "Anthropic is overloaded (HTTP 529)",
+    heldFromMs: NOW - 80_000,
+    ...overrides,
+  });
+}
+
 /** A Lit TemplateResult flattened to the markup it describes. */
 function flatten(value: unknown): string {
   if (value === null || value === undefined || typeof value === "symbol") return "";
@@ -139,6 +149,38 @@ test("usageGaugeView: once the reset time passes, the old percentage is no longe
   assert.match(view.title, /window has reset/);
 });
 
+test("usageGaugeView: a failed read that holds the last good numbers keeps showing them (#261)", () => {
+  const live = usageGaugeView(okReading(15), NOW);
+  const held = usageGaugeView(heldReading(15), NOW);
+  assert.equal(held.tone, live.tone);
+  assert.equal(held.percentText, "15%");
+  assert.equal(held.fillPercent, 15);
+  assert.equal(held.resetText, live.resetText);
+  assert.match(
+    held.title,
+    /^Claude usage: 15% of the 5-hour window used as of .+, resets .+ · the latest reading failed: Anthropic is overloaded \(HTTP 529\)$/,
+  );
+  assert.equal(usageGaugeView(heldReading(92), NOW).tone, "critical");
+});
+
+test("usageGaugeView: held numbers still go dark once readings stop arriving or the window resets", () => {
+  const stopped = usageGaugeView(heldReading(15, { fetchedAtMs: NOW - USAGE_STALE_AFTER_MS - 1 }), NOW);
+  assert.equal(stopped.tone, "unknown");
+  assert.equal(stopped.percentText, "—");
+  assert.match(stopped.title, /last reading is .* old/);
+
+  const reset = usageGaugeView(heldReading(15, { resetsAtMs: NOW - 1 }), NOW);
+  assert.equal(reset.tone, "unknown");
+  assert.equal(reset.percentText, "—");
+  assert.match(reset.title, /window has reset/);
+});
+
+test("usageGaugeView: an unavailable reading shows no number unless it says what it holds over", () => {
+  const view = usageGaugeView(okReading(15, { status: "unavailable", reason: "could not reach the Anthropic usage endpoint" }), NOW);
+  assert.equal(view.tone, "unknown");
+  assert.equal(view.percentText, "—");
+});
+
 test("usageGaugeView: a Claude usage-limit hold reads LIMIT and counts down to the CLI's reset, whatever the reading", () => {
   const limitUntilMs = NOW + 1 * HOUR + 41 * MINUTE;
   const unavailable: AccountUsage = {
@@ -166,6 +208,7 @@ test("usageGaugeView: a Claude usage-limit hold reads LIMIT and counts down to t
 
   assert.match(usageGaugeView(okReading(41), NOW, limitUntilMs).title, /Anthropic last reported 41% of the 5-hour window used/);
   assert.match(usageGaugeView(unavailable, NOW, limitUntilMs).title, /usage reading: could not reach the Anthropic usage endpoint/);
+  assert.match(usageGaugeView(heldReading(41), NOW, limitUntilMs).title, /Anthropic last reported 41% of the 5-hour window used at /);
 });
 
 test("usageGaugeView: once the usage-limit hold has lifted, the gauge goes back to the reading", () => {
@@ -223,6 +266,25 @@ test("yoke-header shows a live reading's percent, meter and reset countdown", ()
   assert.match(markup, /<div class="usage-gauge-value">92%<\/div>/);
   assert.match(markup, /--usage-fill:92%/);
   assert.match(markup, /<div class="usage-gauge-value">2h 14m<\/div>/);
+});
+
+test("yoke-header keeps showing the last good reading when the latest read failed (#261)", () => {
+  const now = Date.now();
+  const markup = renderHeader({
+    usage: {
+      status: "unavailable",
+      fiveHourPercent: 15,
+      resetsAtMs: now + 2 * HOUR + 14 * MINUTE + 30_000,
+      fetchedAtMs: now,
+      reason: "Anthropic is overloaded (HTTP 529)",
+      heldFromMs: now - MINUTE,
+    },
+  });
+  assert.match(markup, /class="usage-gauge tone-ok"/);
+  assert.match(markup, /<div class="usage-gauge-value">15%<\/div>/);
+  assert.match(markup, /--usage-fill:15%/);
+  assert.match(markup, /<div class="usage-gauge-value">2h 14m<\/div>/);
+  assert.match(markup, /title="Claude usage: 15% of the 5-hour window used as of .* · the latest reading failed: Anthropic is overloaded \(HTTP 529\)"/);
 });
 
 test("yoke-header shows LIMIT and the reset countdown while a Claude usage-limit hold parks the pool", () => {

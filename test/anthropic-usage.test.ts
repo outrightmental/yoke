@@ -151,6 +151,7 @@ test("fetchAnthropicUsage explains HTTP failures without echoing the response", 
     [401, /rejected anthropic_usage_token.*401.*expired/],
     [403, /403.*user:profile/],
     [429, /rate-limiting.*429/],
+    [529, /overloaded.*529/],
     [500, /HTTP 500/],
   ];
   for (const [status, expected] of cases) {
@@ -402,6 +403,125 @@ test("AnthropicUsageMonitor keeps polling through failures and never publishes t
   }
 });
 
+test("AnthropicUsageMonitor holds the last good numbers through failed reads, so a 529 does not blank the gauge (#261)", async () => {
+  const emitter = new EventEmitter();
+  const events = collectUsageEvents(emitter);
+  const resetsAtMs = Date.parse(RESETS_AT);
+  const responses = [
+    () => jsonResponse({ five_hour: { utilization: 15, resets_at: RESETS_AT } }),
+    () => jsonResponse({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }, 529),
+    () => Promise.reject(new TypeError("fetch failed")),
+    () => jsonResponse({ five_hour: { utilization: 18, resets_at: RESETS_AT } }),
+  ];
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() => responses[n++]!());
+  let now = NOW;
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => now });
+
+  await monitor.poll();
+  now += 60_000;
+  assert.deepEqual(await monitor.poll(), {
+    status: "unavailable",
+    fiveHourPercent: 15,
+    resetsAtMs,
+    fetchedAtMs: NOW + 60_000,
+    reason: "Anthropic is overloaded (HTTP 529)",
+    heldFromMs: NOW,
+  });
+
+  now += 60_000;
+  const unreachable = await monitor.poll();
+  assert.equal(unreachable.status, "unavailable");
+  assert.equal(unreachable.fiveHourPercent, 15);
+  assert.equal(unreachable.heldFromMs, NOW, "held from the last good reading, not the last failed one");
+  assert.match(unreachable.reason, /could not reach/);
+
+  now += 60_000;
+  assert.deepEqual(await monitor.poll(), {
+    status: "ok",
+    fiveHourPercent: 18,
+    resetsAtMs,
+    fetchedAtMs: NOW + 180_000,
+    reason: "",
+  });
+  assert.deepEqual(events.map((e) => e.data["fiveHourPercent"]), [15, 15, 15, 18], "the Dashboard never loses the number");
+});
+
+test("AnthropicUsageMonitor holds nothing before its first good reading", async () => {
+  const emitter = new EventEmitter();
+  const { fetchImpl } = fakeFetch(() => jsonResponse({}, 529));
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => NOW });
+
+  const reading = await monitor.poll();
+  assert.equal(reading.status, "unavailable");
+  assert.equal(reading.fiveHourPercent, null);
+  assert.equal(reading.resetsAtMs, null);
+  assert.ok(!("heldFromMs" in reading));
+});
+
+test("AnthropicUsageMonitor lets held numbers go once their window resets", async () => {
+  const emitter = new EventEmitter();
+  const resetsAtMs = Date.parse(RESETS_AT);
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() => (n++ === 0 ? jsonResponse(OK_BODY) : jsonResponse({}, 529)));
+  let now = NOW;
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => now });
+
+  await monitor.poll();
+  now = resetsAtMs - 1;
+  assert.equal((await monitor.poll()).fiveHourPercent, 37);
+  now = resetsAtMs;
+  const afterReset = await monitor.poll();
+  assert.equal(afterReset.status, "unavailable");
+  assert.equal(afterReset.fiveHourPercent, null);
+  assert.equal(afterReset.resetsAtMs, null);
+  assert.ok(!("heldFromMs" in afterReset));
+});
+
+test("AnthropicUsageMonitor holds a reading with no open window for one window's length at most", async () => {
+  const emitter = new EventEmitter();
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() =>
+    n++ === 0 ? jsonResponse({ five_hour: { utilization: 0, resets_at: null } }) : jsonResponse({}, 529));
+  let now = NOW;
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => now });
+
+  await monitor.poll();
+  now = NOW + 5 * 60 * 60_000 - 1;
+  const held = await monitor.poll();
+  assert.equal(held.fiveHourPercent, 0);
+  assert.equal(held.heldFromMs, NOW);
+  // A window may have opened and filled since: 0% is no longer worth showing.
+  now = NOW + 5 * 60 * 60_000;
+  const letGo = await monitor.poll();
+  assert.equal(letGo.status, "unavailable");
+  assert.equal(letGo.fiveHourPercent, null);
+  assert.ok(!("heldFromMs" in letGo));
+});
+
+test("AnthropicUsageMonitor lets held numbers go when the Claude login is gone", async () => {
+  const emitter = new EventEmitter();
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() => (n++ === 0 ? jsonResponse(OK_BODY) : jsonResponse({}, 529)));
+  let loggedIn = true;
+  const readCredentials: ClaudeCredentialsReader = async () =>
+    loggedIn ? { raw: claudeCredentials(TOKEN) } : { valid: false, reason: "credentials not found" };
+  const monitor = new AnthropicUsageMonitor({ token: undefined, emitter, fetchImpl, clock: () => NOW, readCredentials });
+
+  await monitor.poll();
+  loggedIn = false;
+  const loggedOut = await monitor.poll();
+  assert.equal(loggedOut.status, "unconfigured");
+  assert.equal(loggedOut.fiveHourPercent, null);
+
+  // Whoever logs in next may be another account: 37% was not theirs.
+  loggedIn = true;
+  const failed = await monitor.poll();
+  assert.equal(failed.status, "unavailable");
+  assert.equal(failed.fiveHourPercent, null);
+  assert.ok(!("heldFromMs" in failed));
+});
+
 test("AnthropicUsageMonitor.poll takes and publishes a single reading on demand", async () => {
   const emitter = new EventEmitter();
   const events = collectUsageEvents(emitter);
@@ -492,6 +612,15 @@ test("formatUsageLine says what the gauge shows, in one line", () => {
     "Claude usage: unavailable — could not reach the Anthropic usage endpoint",
   );
   assert.equal(formatUsageLine(without("unconfigured", "no Claude login")), "Claude usage: off — no Claude login");
+  assert.equal(
+    formatUsageLine({
+      ...without("unavailable", "Anthropic is overloaded (HTTP 529)"),
+      fiveHourPercent: 41.4,
+      resetsAtMs: Date.parse(RESETS_AT),
+      heldFromMs: NOW - 60_000,
+    }),
+    `Claude usage: unavailable — Anthropic is overloaded (HTTP 529) · still showing 41% from ${formatLocalTime(NOW - 60_000)}`,
+  );
 });
 
 test("describeUsageChange speaks up for the first reading, each further 10%, a new window and any change of status", () => {
@@ -537,7 +666,8 @@ test("AnthropicUsageMonitor logs the first reading and changes, not every poll, 
   assert.deepEqual(logged.map((line) => line.replace(/ · resets in .*$/, "")), [
     "Claude usage: 41% of the 5-hour window used",
     "Claude usage: 71% of the 5-hour window used",
-    "Claude usage: unavailable — Anthropic rejected the Claude CLI login (HTTP 401) — it may have expired",
+    "Claude usage: unavailable — Anthropic rejected the Claude CLI login (HTTP 401) — it may have expired" +
+      ` · still showing 71% from ${formatLocalTime(NOW)}`,
   ]);
   assert.ok(!logged.join("\n").includes(TOKEN), "the log leaked the token");
 });
