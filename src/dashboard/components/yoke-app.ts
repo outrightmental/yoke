@@ -2,6 +2,7 @@ import { LitElement, html } from 'lit';
 import type { DashboardState } from '../store/dashboard-store.js';
 import type { DashboardStore } from '../store/dashboard-store.js';
 import { usageLimitUntilMs } from '../shared/usage-gauge.js';
+import { pillsDark } from '../shared/pill-activity.js';
 import './yoke-header.js';
 import './hold-banner.js';
 import './cylinder-engine.js';
@@ -93,7 +94,7 @@ export class YokeApp extends LitElement {
           .owner=${s.owner}
           .repo=${s.repo}
           .multiProject=${s.multiProject}
-          .appShutdown=${s.appShutdown}
+          .dark=${pillsDark(s)}
         ></lifecycle-list>
         <broadcast-feed
           .events=${s.broadcastVisible}
