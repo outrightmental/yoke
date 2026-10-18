@@ -8,6 +8,14 @@ const STATUS_ICONS: Record<PillActivity, { title: string; icon: TemplateResult }
     title: 'An engine is working on this',
     icon: html`<span class="meteor"></span>`,
   },
+  'shutdown': {
+    title: 'Shut down — no engine will work on this until yoke restarts',
+    icon: html`
+      <svg viewBox="0 0 18 18" aria-hidden="true">
+        <circle cx="9" cy="9" r="7.5"/>
+        <rect class="solid" x="6" y="6" width="6" height="6" rx="1"/>
+      </svg>`,
+  },
   'waiting-ci': {
     title: 'Waiting for GitHub Actions to finish',
     icon: html`
@@ -192,6 +200,14 @@ export class LifecyclePill extends LitElement {
       }
     }
 
+    /* The cylinder that was working this pill has shut down, or yoke has
+       (issue #268): nothing on it is live anymore, so it goes dark like the
+       shut-down cylinder row — dimmed, with every pulse stopped. */
+    .lifecycle-pill.shutdown { opacity: 0.5; }
+
+    .lifecycle-pill.shutdown .pill-issue-half,
+    .lifecycle-pill.shutdown .pill-pr-half { animation: none; }
+
     .pill-label {
       font-size: 8px;
       text-transform: uppercase;
@@ -305,6 +321,9 @@ export class LifecyclePill extends LitElement {
       100% { transform: rotate(360deg); }
     }
 
+    /* Shut down: a still stop sign in the shutdown orange of the cylinder row. */
+    .pill-status.shutdown { color: #ff6600; }
+
     /* Waiting on GitHub Actions: an hourglass whose sand runs out, then flips. */
     .pill-status .hourglass { transform-origin: 9px 9px; animation: hourglassFlip 2.4s ease-in-out infinite; }
     .pill-status .sand-top { transform-origin: 9px 7px; animation: sandTop 2.4s linear infinite; }
@@ -385,7 +404,7 @@ export class LifecyclePill extends LitElement {
         return html`
           <div class="${prClass}">
             <div class="pill-label">PR</div>
-            <div class="pill-row"><span class="pill-title">implementing…</span></div>
+            <div class="pill-row"><span class="pill-title">${this.activity === 'shutdown' ? 'shut down' : 'implementing…'}</span></div>
           </div>`;
       }
       if (pair.prPhase === 'inactive' && pair.projectStatus) {
@@ -452,7 +471,8 @@ export class LifecyclePill extends LitElement {
     const projectChip = this.multiProject && pair.repo
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
-    const pillClass = `lifecycle-pill${this.activity === 'working' ? ' working' : ''}${this.activity ? ' has-status' : ''}`;
+    const activityClass = this.activity === 'working' || this.activity === 'shutdown' ? ` ${this.activity}` : '';
+    const pillClass = `lifecycle-pill${activityClass}${this.activity ? ' has-status' : ''}`;
 
     if (!pair.issue) {
       return html`

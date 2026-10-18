@@ -93,6 +93,7 @@ export class YokeApp extends LitElement {
           .owner=${s.owner}
           .repo=${s.repo}
           .multiProject=${s.multiProject}
+          .appShutdown=${s.appShutdown}
         ></lifecycle-list>
         <broadcast-feed
           .events=${s.broadcastVisible}
