@@ -6,6 +6,7 @@ import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
 import { pillActivity, pillKey, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
+import { withWorkedPairs } from "../src/dashboard/shared/worked-pairs.js";
 import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
 
 interface WireEvent {
@@ -1126,6 +1127,19 @@ test("frozenPillActivity: a pill first seen after the pills went dark is frozen 
   assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
 });
 
+test("frozenPillActivity: a pill synthesized for unlisted worked work is frozen too", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30)]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 1, type: "address-failing-checks",
+    issueNumber: 402, pullRequestNumber: 404, repo: "o/a", description: "d",
+  }));
+  const unlisted = withWorkedPairs(s.lastLifecyclePairs, s.cylinders).find(p => p.issue?.number === 402);
+  assert.ok(unlisted, "the open lists no longer carry #402, so it gets a synthesized pill");
+
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+  assert.equal(s.frozenPillActivity?.get(pillKey(unlisted)), "working");
+});
+
 test("frozenPillActivity: a dashboard that only hears app-shutdown freezes the pills then", () => {
   let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
   s = dashboardReducer(s, makeEvent("app-shutdown", {}));
@@ -1163,4 +1177,29 @@ test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen i
   assert.match(css, /\.lifecycle-pill\.shutdown \{ opacity: 0\.5; \}/, "the shut-down cylinder row's opacity");
   assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: #ff6600; \}/, "and its orange accent");
   assert.match(css, /\.lifecycle-pill\.shutdown \.pill-status \* \{ animation-play-state: paused; \}/, "icons freeze in place");
+});
+
+// ── action-start carries issue/PR titles for unlisted-work pills ──────────────
+
+test("reducer: action-start stores the worked issue and PR titles on the cylinder", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 1, type: "address-failing-checks",
+    issueNumber: 402, pullRequestNumber: 404,
+    issueTitle: "Never lapse an approval", pullRequestTitle: "Fix approvals", description: "d",
+  }));
+  assert.equal(s.cylinders[0]?.issueTitle, "Never lapse an approval");
+  assert.equal(s.cylinders[0]?.prTitle, "Fix approvals");
+
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 7, description: "d" }));
+  assert.equal(s.cylinders[0]?.issueTitle, null, "an action without titles leaves none behind");
+  assert.equal(s.cylinders[0]?.prTitle, null);
+});
+
+test("reducer: engine-idle clears the worked titles", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 7, issueTitle: "t", description: "d" }));
+  assert.equal(s.cylinders[0]?.issueTitle, "t");
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "nothing to do this cycle" }));
+  assert.equal(s.cylinders[0]?.issueTitle, null);
 });

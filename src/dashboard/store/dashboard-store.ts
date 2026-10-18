@@ -2,6 +2,7 @@ import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
 import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage } from './types.js';
 import { formatClockTime, formatDuration } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
+import { withWorkedPairs } from '../shared/worked-pairs.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -33,6 +34,8 @@ function initCylinders(n: number): CylinderState[] {
       repo: null,
       issueNumber: null,
       prNumber: null,
+      issueTitle: null,
+      prTitle: null,
       model: null,
       iterationNumber: 0,
       thinkingLines: [],
@@ -185,6 +188,8 @@ function applyIterationStart(state: DashboardState, data: Record<string, unknown
       repo: null,
       issueNumber: null,
       prNumber: null,
+      issueTitle: null,
+      prTitle: null,
       actionType: null,
       idleStatusText: 'idle',
       thinkingLines: [],
@@ -235,6 +240,8 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>):
       repo: (data['repo'] as string) || null,
       issueNumber,
       prNumber,
+      issueTitle: typeof data['issueTitle'] === 'string' ? data['issueTitle'] : null,
+      prTitle: typeof data['pullRequestTitle'] === 'string' ? data['pullRequestTitle'] : null,
       model: (data['model'] as string) ?? null,
       thinkingLines: [],
       actionStartedAt: typeof data['startedAt'] === 'number' ? data['startedAt'] : Date.now(),
@@ -311,6 +318,8 @@ function applyEngineIdle(state: DashboardState, data: Record<string, unknown>): 
     repo: null,
     issueNumber: null,
     prNumber: null,
+    issueTitle: null,
+    prTitle: null,
     actionType: null,
     actionStartedAt: null,
     thinkingLines: [],
@@ -323,11 +332,13 @@ function applyEngineIdle(state: DashboardState, data: Record<string, unknown>): 
 
 /** The pills go dark at shutdown (issue #268): freeze each one's activity the
  *  first time it is seen dark, so its status icon stays as it was while the
- *  engines drain — including a pill whose first lifecycle update comes later. */
+ *  engines drain — including a pill whose first lifecycle update comes later,
+ *  and a pill synthesized for worked work the open lists no longer carry. */
 function freezePills(state: DashboardState): DashboardState {
+  const pairs = withWorkedPairs(state.lastLifecyclePairs, state.cylinders);
   return {
     ...state,
-    frozenPillActivity: freezePillActivity(state.lastLifecyclePairs, state.cylinders, state.frozenPillActivity),
+    frozenPillActivity: freezePillActivity(pairs, state.cylinders, state.frozenPillActivity),
   };
 }
 

@@ -37,6 +37,7 @@ import {
   type ShutdownSignal,
 } from "./scheduler.js";
 import { reconcileSessions } from "./reconcile.js";
+import { MergedIssueGrace, MERGED_ISSUE_GRACE_MS } from "./merge-grace.js";
 import { FileSessionStore, migrateLegacySessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
 import { AnthropicUsageMonitor, USAGE_POLL_INTERVAL_MS } from "./anthropic-usage.js";
@@ -297,14 +298,23 @@ interface ProjectContext {
   cap: number;
   snapshotCache: { snapshot: RepositorySnapshot; atMs: number } | null;
   lastMaintenanceAtMs: number;
+  /**
+   * Issues a just-merged PR closes, hidden from every snapshot until GitHub
+   * reports them closed — see `MergedIssueGrace`.
+   */
+  mergedIssueGrace: MergedIssueGrace;
 }
 
 async function loadProjectSnapshot(ctx: ProjectContext): Promise<RepositorySnapshot> {
-  return loadSnapshot(
+  const snapshot = await loadSnapshot(
     ctx.gitHubClient,
     ctx.sessionStore,
     ctx.config.projectMode ? { projectNumber: ctx.config.projectMode.projectNumber } : undefined,
   );
+  // Every consumer — planning, maintenance, the between-cycle refresh — sees
+  // the same view, so an issue whose PR just merged cannot be re-planned (or
+  // re-drawn as open) while GitHub is still closing it.
+  return ctx.mergedIssueGrace.apply(snapshot).snapshot;
 }
 
 /** Returns a recent snapshot, reusing the cache while it is still fresh. */
@@ -947,6 +957,16 @@ async function runEngine(
           issueNumber: action.issueNumber ?? null,
           pullRequestNumber:
             action.type !== "start-implementation" ? action.pullRequestNumber : null,
+          // Titles travel with the cylinder so the dashboard can still draw a
+          // pill for work whose issue or PR has since left GitHub's open lists.
+          issueTitle:
+            action.issueNumber !== undefined
+              ? (snapshot.issues.find((i) => i.number === action.issueNumber)?.title ?? null)
+              : null,
+          pullRequestTitle:
+            action.type !== "start-implementation"
+              ? (snapshot.pullRequests.find((p) => p.number === action.pullRequestNumber)?.title ?? null)
+              : null,
           model: action.type === "squash-merge"
             ? (config.claudeCommitModel ?? DEFAULT_COMMIT_MODEL)
             : action.type === "self-review"
@@ -999,6 +1019,18 @@ async function runEngine(
                   ? mergedPR.closingIssueNumbers
                   : mergedPR.linkedIssueNumbers;
               for (const n of linked) mergedIssueNumbers.add(n);
+            }
+            if (mergedIssueNumbers.size > 0 && !config.dryRun) {
+              // GitHub closes these a beat after the merge. Until it does, keep
+              // them out of every snapshot so no engine plans a fresh
+              // implementation of work that just shipped.
+              ctx.mergedIssueGrace.add(mergedIssueNumbers);
+              const list = [...mergedIssueNumbers].map((n) => `#${n}`).join(", ");
+              const noun = mergedIssueNumbers.size === 1 ? "issue" : "issues";
+              note(
+                `treating ${noun} ${list} as closed for up to ${formatDuration(MERGED_ISSUE_GRACE_MS)} while GitHub closes ${mergedIssueNumbers.size === 1 ? "it" : "them"}`,
+                2,
+              );
             }
             if (mergedIssueNumbers.size > 0) {
               broadcastLifecycleUpdate(
@@ -1212,6 +1244,7 @@ async function main(): Promise<void> {
       cap: Math.min(config.maxConcurrency, globalMaxConcurrency),
       snapshotCache: null,
       lastMaintenanceAtMs: 0,
+      mergedIssueGrace: new MergedIssueGrace(),
     } satisfies ProjectContext;
   });
 
