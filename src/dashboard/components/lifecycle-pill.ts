@@ -61,13 +61,6 @@ export class LifecyclePill extends LitElement {
       to   { transform: scaleX(1); }
     }
 
-    /* Every pill no engine cylinder is working right now is dimmed, whatever
-       its phase or status icon, so the worked ones stand out by contrast
-       (issue #262). Same test as the border pulse below. */
-    .lifecycle-pill:not(.working) {
-      opacity: 0.55;
-    }
-
     .pill-issue-half {
       flex: 1;
       display: flex;
