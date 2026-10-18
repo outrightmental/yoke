@@ -1,8 +1,8 @@
 export interface LinkContext {
-  prNumber?: number;
-  issueNumber?: number;
-  commitHash?: string;
-  runId?: string;
+  prNumber?: number | undefined;
+  issueNumber?: number | undefined;
+  commitHash?: string | undefined;
+  runId?: string | undefined;
 }
 
 function escapeHtml(text: string): string {

@@ -1,6 +1,6 @@
 import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage } from './types.js';
-import { formatClockTime, formatDuration } from '../shared/format.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef } from './types.js';
+import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
 import { WsClient } from './ws-client.js';
 
@@ -45,22 +45,42 @@ function initCylinders(n: number): CylinderState[] {
   });
 }
 
-function makeEventLine(text: string, cylinderIdx: number, level: string, color: string | null, repo = ''): EventLine {
+/**
+ * When an event happened, from the server's stamp. Lines and cards keep the
+ * instant, not a rendering of it, and are drawn in the viewer's time zone
+ * (issue #272); a replayed event keeps its own time, not the replay's.
+ */
+function eventTimeMs(event: DashboardEvent): number {
+  const ms = Date.parse(event.timestamp);
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
+/** The wall-clock times the server rendered into an event's text, with their instants. */
+function clockTimesOf(data: Record<string, unknown>): ClockTimeRef[] {
+  const raw = data['clockTimes'];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((ref): ref is ClockTimeRef =>
+    typeof ref === 'object' && ref !== null &&
+    typeof (ref as ClockTimeRef).text === 'string' &&
+    typeof (ref as ClockTimeRef).atMs === 'number' && Number.isFinite((ref as ClockTimeRef).atMs));
+}
+
+function makeEventLine(text: string, atMs: number, cylinderIdx: number, level: string, color: string | null, repo = ''): EventLine {
   return {
     text,
     cylinderIdx,
     level,
-    time: new Date().toLocaleTimeString('en', { hour12: false }),
+    atMs,
     color,
     ...(repo ? { repo } : {}),
   };
 }
 
-function addToStream(state: DashboardState, text: string, cylinderIdx: number, level: string, repo = ''): DashboardState {
+function addToStream(state: DashboardState, atMs: number, text: string, cylinderIdx: number, level: string, repo = ''): DashboardState {
   // Log lines are tinted with the stable color of the issue the cylinder is
   // working (if any); everything else stays neutral.
   const color = cylinderIdx >= 0 ? (state.cylinders[cylinderIdx]?.color ?? null) : null;
-  const line = makeEventLine(text, cylinderIdx, level, color, repo);
+  const line = makeEventLine(text, atMs, cylinderIdx, level, color, repo);
   const stream = [...state.eventStream, line];
   return {
     ...state,
@@ -112,33 +132,34 @@ export function initialState(): DashboardState {
 }
 
 export function dashboardReducer(state: DashboardState, event: DashboardEvent): DashboardState {
+  const atMs = eventTimeMs(event);
   switch (event.type) {
-    case 'iteration-start':    return applyIterationStart(state, event.data);
-    case 'action-start':       return applyActionStart(state, event.data);
-    case 'action-complete':    return applyActionComplete(state, event.data);
-    case 'action-error':       return applyActionError(state, event.data);
+    case 'iteration-start':    return applyIterationStart(state, event.data, atMs);
+    case 'action-start':       return applyActionStart(state, event.data, atMs);
+    case 'action-complete':    return applyActionComplete(state, event.data, atMs);
+    case 'action-error':       return applyActionError(state, event.data, atMs);
     case 'claude-thinking':    return applyClaudeThinking(state, event.data);
     case 'engine-idle':        return applyEngineIdle(state, event.data);
-    case 'engine-shutdown':    return applyEngineShutdown(state, event.data);
-    case 'cylinder-cancel':    return applyCylinderCancel(state, event.data);
-    case 'shutdown-requested': return addToStream(freezePills({ ...state, shutdownRequested: true }), '⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
-    case 'app-shutdown':       return addToStream(freezePills({ ...state, appShutdown: true }), '⏹ Yoke shutdown complete', -1, 'warning');
-    case 'snapshot-update':    return applySnapshotUpdate(state, event.data);
+    case 'engine-shutdown':    return applyEngineShutdown(state, event.data, atMs);
+    case 'cylinder-cancel':    return applyCylinderCancel(state, event.data, atMs);
+    case 'shutdown-requested': return addToStream(freezePills({ ...state, shutdownRequested: true }), atMs, '⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
+    case 'app-shutdown':       return addToStream(freezePills({ ...state, appShutdown: true }), atMs, '⏹ Yoke shutdown complete', -1, 'warning');
+    case 'snapshot-update':    return applySnapshotUpdate(state, event.data, atMs);
     case 'lifecycle-update': {
       const next = applyLifecycleUpdate(state, event.data);
       return pillsDark(next) ? freezePills(next) : next;
     }
-    case 'phase-update':       return addToStream(state, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
-    case 'log-message':        return addToStream(state, (event.data['message'] as string) ?? '', -1, (event.data['level'] as string) ?? 'info', (event.data['repo'] as string) || '');
-    case 'workflow-approval':  return applyWorkflowApproval(state, event.data);
+    case 'phase-update':       return addToStream(state, atMs, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
+    case 'log-message':        return applyLogMessage(state, event.data, atMs);
+    case 'workflow-approval':  return applyWorkflowApproval(state, event.data, atMs);
     case 'github-rate-limit': {
       const msg = (event.data['message'] as string) || 'rate limited';
-      return addToStream(state, `⚠ GitHub rate limited: ${msg}`, -1, 'warning');
+      return addToStream(state, atMs, `⚠ GitHub rate limited: ${msg}`, -1, 'warning');
     }
     case 'github-rate-limit-cleared':
-      return addToStream(state, '✓ GitHub rate limit cleared', -1, 'success');
-    case 'work-hold':         return applyWorkHold(state, event.data);
-    case 'work-hold-cleared': return applyWorkHoldCleared(state);
+      return addToStream(state, atMs, '✓ GitHub rate limit cleared', -1, 'success');
+    case 'work-hold':         return applyWorkHold(state, event.data, atMs);
+    case 'work-hold-cleared': return applyWorkHoldCleared(state, atMs);
     case 'usage-update':      return applyUsageUpdate(state, event.data);
     case 'broadcast-github-activity':
     case 'broadcast-commit':
@@ -146,13 +167,22 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'broadcast-ci-status':
     case 'broadcast-review-comment':
     case 'broadcast-issue-update':
-      return applyBroadcastEvent(state, event);
+      return applyBroadcastEvent(state, event, atMs);
     default:
-      return addToStream(state, `[EVENT] ${event.type}`, -1, 'info');
+      return addToStream(state, atMs, `[EVENT] ${event.type}`, -1, 'info');
   }
 }
 
-function applyIterationStart(state: DashboardState, data: Record<string, unknown>): DashboardState {
+/** A server log line. Any wall-clock time in it was rendered in the server's
+ *  zone, so it is rendered again here in the viewer's. */
+function applyLogMessage(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
+  const message = typeof data['message'] === 'string' ? data['message'] : '';
+  const level = typeof data['level'] === 'string' ? data['level'] : 'info';
+  const repo = typeof data['repo'] === 'string' ? data['repo'] : '';
+  return addToStream(state, atMs, localizeClockTimes(message, clockTimesOf(data)), -1, level, repo);
+}
+
+function applyIterationStart(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const engineIndex = typeof data['engineIndex'] === 'number' ? data['engineIndex'] : 0;
   const iterationNumber = typeof data['iterationNumber'] === 'number' ? data['iterationNumber'] : 0;
   const n = typeof data['maxConcurrency'] === 'number' ? data['maxConcurrency'] : state.maxConcurrency;
@@ -200,12 +230,13 @@ function applyIterationStart(state: DashboardState, data: Record<string, unknown
 
   return addToStream(
     { ...state, cylinders, cylinderByIssue, cylinderByPR, maxConcurrency: n },
+    atMs,
     `🔄 Engine ${engineIndex + 1} · cycle ${iterationNumber}`,
     engineIndex, 'info'
   );
 }
 
-function applyActionStart(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyActionStart(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const idx = ((data['actionIndex'] as number) || 1) - 1;
 
   let cylinders = state.cylinders;
@@ -252,12 +283,13 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>):
   const actionDesc = (data['description'] as string) || (data['type'] as string) || 'action';
   return addToStream(
     { ...state, cylinders, cylinderByIssue, cylinderByPR },
+    atMs,
     `▶ [${data['actionIndex'] as number}/${data['totalActions'] as number}] ${actionDesc}`,
     idx, 'info', (data['repo'] as string) || ''
   );
 }
 
-function applyActionComplete(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyActionComplete(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const idx = ((data['actionIndex'] as number) || 1) - 1;
   let cylinders = state.cylinders;
   const cyl = cylinders[idx];
@@ -265,10 +297,10 @@ function applyActionComplete(state: DashboardState, data: Record<string, unknown
     cylinders = [...cylinders];
     cylinders[idx] = { ...cyl, status: 'done', thinkingLines: [] };
   }
-  return addToStream({ ...state, cylinders }, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
+  return addToStream({ ...state, cylinders }, atMs, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
 }
 
-function applyActionError(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyActionError(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const idx = ((data['actionIndex'] as number) || 1) - 1;
   let cylinders = state.cylinders;
   const cyl = cylinders[idx];
@@ -276,7 +308,7 @@ function applyActionError(state: DashboardState, data: Record<string, unknown>):
     cylinders = [...cylinders];
     cylinders[idx] = { ...cyl, status: 'error', thinkingLines: [] };
   }
-  return addToStream({ ...state, cylinders }, `✗ action [${data['actionIndex']}/${data['totalActions']}] failed: ${data['error'] ?? ''}`, idx, 'error', (data['repo'] as string) || '');
+  return addToStream({ ...state, cylinders }, atMs, `✗ action [${data['actionIndex']}/${data['totalActions']}] failed: ${data['error'] ?? ''}`, idx, 'error', (data['repo'] as string) || '');
 }
 
 function applyClaudeThinking(state: DashboardState, data: Record<string, unknown>): DashboardState {
@@ -339,7 +371,7 @@ function freezePills(state: DashboardState): DashboardState {
   };
 }
 
-function applyEngineShutdown(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyEngineShutdown(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const engineIndex = data['engineIndex'] as number;
   const cyl = state.cylinders[engineIndex];
   let cylinders = state.cylinders;
@@ -347,10 +379,10 @@ function applyEngineShutdown(state: DashboardState, data: Record<string, unknown
     cylinders = [...cylinders];
     cylinders[engineIndex] = { ...cyl, status: 'shutdown', thinkingLines: [] };
   }
-  return addToStream({ ...state, cylinders }, `⏹ Engine ${(engineIndex ?? 0) + 1} shut down`, engineIndex >= 0 ? engineIndex : -1, 'warning');
+  return addToStream({ ...state, cylinders }, atMs, `⏹ Engine ${(engineIndex ?? 0) + 1} shut down`, engineIndex >= 0 ? engineIndex : -1, 'warning');
 }
 
-function applyCylinderCancel(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyCylinderCancel(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const engineIndex = typeof data['engineIndex'] === 'number' ? data['engineIndex'] : -1;
   let cylinders = state.cylinders;
   const cyl = engineIndex >= 0 ? cylinders[engineIndex] : undefined;
@@ -358,10 +390,10 @@ function applyCylinderCancel(state: DashboardState, data: Record<string, unknown
     cylinders = [...cylinders];
     cylinders[engineIndex] = { ...cyl, idleStatusText: 'cancelling…', nextCycleAtMs: null };
   }
-  return addToStream({ ...state, cylinders }, `⊗ Engine ${engineIndex >= 0 ? engineIndex + 1 : '?'} cancel requested`, engineIndex, 'warning');
+  return addToStream({ ...state, cylinders }, atMs, `⊗ Engine ${engineIndex >= 0 ? engineIndex + 1 : '?'} cancel requested`, engineIndex, 'warning');
 }
 
-function applySnapshotUpdate(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applySnapshotUpdate(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const issueCards = new Map<number, IssueCard>();
   const prCards = new Map<number, PRCard>();
   const repo = (data['repo'] as string) || '';
@@ -383,6 +415,7 @@ function applySnapshotUpdate(state: DashboardState, data: Record<string, unknown
 
   const newState = addToStream(
     { ...state, issueCards, prCards, sessionCountByRepo, sessionCount },
+    atMs,
     `📊 ${repo ? repo + ' ' : ''}Snapshot: ${data['issueCount'] ?? 0} issues, ${data['prCount'] ?? 0} PRs, ${repoSessionCount} sessions`,
     -1, 'info', repo
   );
@@ -425,7 +458,7 @@ function broadcastLabel(type: string, category: string, data: Record<string, unk
   return type.replace('broadcast-', '').replace(/-/g, ' ').toUpperCase();
 }
 
-function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): DashboardState {
+function applyBroadcastEvent(state: DashboardState, event: DashboardEvent, atMs: number): DashboardState {
   const data = event.data;
   const category =
     event.type === 'broadcast-ci-status' ? 'ci' :
@@ -458,7 +491,7 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
     ...(issueNumber !== undefined ? { issueNumber } : {}),
     ...(commitHash !== undefined ? { commitHash } : {}),
     ...(repo ? { repo } : {}),
-    time: new Date().toLocaleTimeString(),
+    atMs,
     color,
   };
 
@@ -470,7 +503,7 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
  * than inferred from the cylinders: every engine reports itself idle during a
  * hold, which is indistinguishable from an idle run with nothing to do.
  */
-function applyWorkHold(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyWorkHold(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const untilMs = typeof data['untilMs'] === 'number' ? data['untilMs'] : 0;
   const reason = typeof data['reason'] === 'string' ? data['reason'] : 'a shared limit';
   const kind = typeof data['kind'] === 'string' ? data['kind'] : 'hold';
@@ -481,14 +514,15 @@ function applyWorkHold(state: DashboardState, data: Record<string, unknown>): Da
   if (state.hold?.untilMs === untilMs && state.hold.kind === kind) return state;
   return addToStream(
     { ...state, hold },
+    atMs,
     `⏸ Waiting ${formatDuration(untilMs - Date.now())} until ${formatClockTime(untilMs)} for ${reason}`,
     -1, 'warning',
   );
 }
 
-function applyWorkHoldCleared(state: DashboardState): DashboardState {
+function applyWorkHoldCleared(state: DashboardState, atMs: number): DashboardState {
   if (state.hold === null) return state;
-  return addToStream({ ...state, hold: null }, '▶ Done waiting — resuming work', -1, 'success');
+  return addToStream({ ...state, hold: null }, atMs, '▶ Done waiting — resuming work', -1, 'success');
 }
 
 function finiteOrNull(value: unknown): number | null {
@@ -511,13 +545,15 @@ function applyUsageUpdate(state: DashboardState, data: Record<string, unknown>):
     fiveHourPercent: hasNumbers ? fiveHourPercent : null,
     resetsAtMs: hasNumbers ? finiteOrNull(data['resetsAtMs']) : null,
     fetchedAtMs: finiteOrNull(data['fetchedAtMs']) ?? Date.now(),
-    reason: typeof data['reason'] === 'string' ? data['reason'] : '',
+    // A reason can name a time ("the Claude CLI login expired at …"), rendered
+    // in the server's zone; the gauge's tooltip shows it in the viewer's.
+    reason: localizeClockTimes(typeof data['reason'] === 'string' ? data['reason'] : '', clockTimesOf(data)),
     ...(heldFromMs !== null ? { heldFromMs } : {}),
   };
   return { ...state, usage };
 }
 
-function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const runName = (data['runName'] as string) || 'unknown';
   const runIdVal = data['runId'] as string | undefined;
   const item: BroadcastEventData = {
@@ -529,7 +565,7 @@ function applyWorkflowApproval(state: DashboardState, data: Record<string, unkno
     stateAfter: `✅ Workflow "${runName}" approved and queued`,
     excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
     ...(runIdVal !== undefined ? { runId: runIdVal } : {}),
-    time: new Date().toLocaleTimeString(),
+    atMs,
     color: NEUTRAL_COLOR,
   };
   return { ...state, broadcastQueue: [...state.broadcastQueue, item] };
