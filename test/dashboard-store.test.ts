@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { dashboardReducer, initialState, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
-import { shutDownCylinder, workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
-import { pillActivity, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
+import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
+import { pillActivity, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
 
 interface WireEvent {
   type: string;
@@ -143,19 +143,6 @@ test("reducer: engine-shutdown sets cylinder to shutdown", () => {
   let s = initialState();
   s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 1 }));
   assert.equal(s.cylinders[1]?.status, "shutdown");
-});
-
-test("reducer: engine-shutdown keeps the issue/PR the cylinder last worked, so its pill can go dark with it", () => {
-  let s = initialState();
-  s = dashboardReducer(s, makeEvent("action-start", {
-    actionIndex: 2, totalActions: 3, type: "self-review", issueNumber: 5, pullRequestNumber: 30, repo: "o/a", description: "d",
-  }));
-  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 2, totalActions: 3, repo: "o/a" }));
-  s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 1 }));
-  assert.equal(s.cylinders[1]?.status, "shutdown");
-  assert.equal(s.cylinders[1]?.issueNumber, 5);
-  assert.equal(s.cylinders[1]?.prNumber, 30);
-  assert.equal(s.cylinders[1]?.repo, "o/a");
 });
 
 // ── shutdown-requested / app-shutdown ─────────────────────────────────────────
@@ -988,162 +975,46 @@ test("pillActivity: follows a PR through its checks, an engine's action and revi
   assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "waiting-ci", "the engine is done; now it waits on CI");
 });
 
-// ── pills going dark with their cylinder at shutdown (issue #268) ─────────────
+// ── every pill going dark at shutdown (issue #268) ────────────────────────────
 
-function startAction(s: DashboardState, actionIndex: number, data: Record<string, unknown>): DashboardState {
-  return dashboardReducer(s, makeEvent("action-start", {
-    actionIndex, totalActions: 3, repo: "o/a", description: "d", ...data,
-  }));
-}
-
-function completeAction(s: DashboardState, actionIndex: number): DashboardState {
-  return dashboardReducer(s, makeEvent("action-complete", { actionIndex, totalActions: 3, repo: "o/a" }));
-}
-
-function shutDownEngine(s: DashboardState, engineIndex: number): DashboardState {
-  return dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex }));
-}
-
-test("shutDownCylinder: a pill goes dark with the cylinder that finished its action on it and shut down", () => {
-  let s = withPills(initialState(), "o/a", [
-    { issue: { number: 7, title: "Seven", state: "open" }, pr: null, prPhase: "planning" },
-    { issue: { number: 8, title: "Eight", state: "open" }, pr: null, prPhase: "absent" },
-  ]);
-  s = startAction(s, 2, { type: "start-implementation", issueNumber: 7 });
-  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
-  assert.equal(shutDownCylinder(pillFor(s, 7), s.cylinders), null, "its engine is still finishing the action");
-
-  s = completeAction(s, 2);
-  assert.equal(shutDownCylinder(pillFor(s, 7), s.cylinders), null, "done, but not yet retired");
-
-  s = shutDownEngine(s, 1);
-  assert.equal(shutDownCylinder(pillFor(s, 7), s.cylinders)?.index, 2, "engine 2 went dark on issue #7");
-  assert.equal(shutDownCylinder(pillFor(s, 8), s.cylinders), null, "issue #8 was never worked");
-});
-
-test("shutDownCylinder: a failed action's pill goes dark too, and a PR action darkens its pill through the PR", () => {
-  let s = withPills(initialState(), "o/a", [
-    { issue: { number: 7, title: "Seven", state: "open" }, pr: null, prPhase: "planning" },
-    { issue: null, pr: { number: 31, title: "Orphan", state: "open" }, prPhase: "active" },
-  ]);
-  s = startAction(s, 1, { type: "start-implementation", issueNumber: 7 });
-  s = startAction(s, 3, { type: "resolve-conflicts", pullRequestNumber: 31 });
-  s = dashboardReducer(s, makeEvent("action-error", { actionIndex: 1, totalActions: 3, error: "boom" }));
-  s = completeAction(s, 3);
-  s = shutDownEngine(s, 0);
-  s = shutDownEngine(s, 2);
-
-  assert.equal(shutDownCylinder(pillFor(s, 7), s.cylinders)?.index, 1);
-  const orphan = s.lastLifecyclePairs.find((p) => p.pr?.number === 31);
-  assert.ok(orphan);
-  assert.equal(shutDownCylinder(orphan, s.cylinders)?.index, 3, "an issue-less pill is matched through its PR");
-});
-
-test("shutDownCylinder: an engine that was between cycles when it retired darkens no pill", () => {
-  // Its last pill was let go when it went idle, and has been kept current since.
-  let s = withPills(initialState(), "o/a", [prPill(30)]);
-  s = startAction(s, 1, { type: "self-review", pullRequestNumber: 30 });
-  s = completeAction(s, 1);
-  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, nextCycleAtMs: Date.now() + 60_000 }));
-  s = shutDownEngine(s, 0);
-  assert.equal(shutDownCylinder(pillForPR(s, 30), s.cylinders), null);
-  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "review");
-});
-
-test("shutDownCylinder: projects sharing the dashboard never darken each other's pills", () => {
-  let s = withPills(initialState(), "o/a", [
-    { issue: { number: 1, title: "A1", state: "open" }, pr: null, prPhase: "planning" },
-  ]);
-  s = withPills(s, "o/b", [
-    { issue: { number: 1, title: "B1", state: "open" }, pr: null, prPhase: "planning" },
-  ]);
-  s = startAction(s, 1, { type: "start-implementation", issueNumber: 1 });
-  s = completeAction(s, 1);
-  s = shutDownEngine(s, 0);
-
-  assert.equal(shutDownCylinder(pillFor(s, 1, "o/a"), s.cylinders)?.index, 1);
-  assert.equal(shutDownCylinder(pillFor(s, 1, "o/b"), s.cylinders), null, "same issue number, other project");
-});
-
-test("pillActivity: a pill whose cylinder shut down on it is dark, whatever it last showed", () => {
-  let s = withPills(initialState(), "o/a", [
-    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
-    prPill(30, {}, { checksStatus: "pending" }),
-    prPill(31, { disabled: true }),
-  ]);
-  s = startAction(s, 1, { type: "start-implementation", issueNumber: 5 });
-  s = startAction(s, 2, { type: "address-failing-checks", pullRequestNumber: 30 });
-  s = startAction(s, 3, { type: "self-review", pullRequestNumber: 31 });
-  for (const i of [1, 2, 3]) s = shutDownEngine(completeAction(s, i), i - 1);
-
-  assert.equal(pillActivity(pillFor(s, 5), s.cylinders), "shutdown", "no longer implementing…");
-  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "shutdown", "its checks will not be watched");
-  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "shutdown", "even a manual PR");
-});
-
-test("pillActivity: a working cylinder still beats one that shut down on the same pill", () => {
-  let s = withPills(initialState(), "o/a", [prPill(30)]);
-  s = startAction(s, 1, { type: "self-review", pullRequestNumber: 30 });
-  s = shutDownEngine(completeAction(s, 1), 0);
-  s = startAction(s, 2, { type: "squash-merge", pullRequestNumber: 30 });
-  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "working");
-});
-
-test("pillActivity: a lifecycle update after the cylinder shut down does not bring its pill back to life", () => {
-  // Another engine's in-flight merge can still broadcast its project's pills.
-  let s = withPills(initialState(), "o/a", [
-    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
-  ]);
-  s = startAction(s, 1, { type: "start-implementation", issueNumber: 5 });
-  s = shutDownEngine(completeAction(s, 1), 0);
-  s = withPills(s, "o/a", [
-    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
-  ]);
-  assert.equal(pillActivity(pillFor(s, 5), s.cylinders), "shutdown");
-});
-
-test("pillActivity: while engines drain at shutdown, only the pills of retired cylinders go dark", () => {
+test("pillsDark: every pill goes dark once a shutdown is requested, and stays dark", () => {
   let s = withPills(initialState(), "o/a", [
     { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
     prPill(30),
-    prPill(31),
-    prPill(32, {}, { checksStatus: "pending" }),
-    prPill(33, { disabled: true }),
   ]);
-  s = startAction(s, 1, { type: "start-implementation", issueNumber: 5 });
-  s = startAction(s, 3, { type: "self-review", pullRequestNumber: 30 });
-  const activities = () => ({
-    5: pillActivity(pillFor(s, 5), s.cylinders, s.appShutdown),
-    30: pillActivity(pillForPR(s, 30), s.cylinders, s.appShutdown),
-    31: pillActivity(pillForPR(s, 31), s.cylinders, s.appShutdown),
-    32: pillActivity(pillForPR(s, 32), s.cylinders, s.appShutdown),
-    33: pillActivity(pillForPR(s, 33), s.cylinders, s.appShutdown),
-  });
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+  assert.equal(pillsDark(s), false, "yoke is running");
 
   s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
-  s = shutDownEngine(s, 1);
-  assert.deepEqual(activities(), { 5: "working", 30: "working", 31: "review", 32: "waiting-ci", 33: "manual" },
-    "an idle engine retires at once; in-flight work carries on");
+  assert.equal(pillsDark(s), true, "dark at once, while in-flight work still finishes");
 
-  s = shutDownEngine(completeAction(s, 1), 0);
-  assert.deepEqual(activities(), { 5: "shutdown", 30: "working", 31: "review", 32: "waiting-ci", 33: "manual" },
-    "engine 1 finished and went dark on issue #5");
-
-  s = shutDownEngine(completeAction(s, 3), 2);
-  assert.deepEqual(activities(), { 5: "shutdown", 30: "shutdown", 31: "review", 32: "waiting-ci", 33: "manual" },
-    "engine 3 finished and went dark on PR #30");
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  s = withPills(s, "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30),
+  ]);
+  assert.equal(pillsDark(s), true, "a later lifecycle update does not bring the pills back to life");
 
   s = dashboardReducer(s, makeEvent("app-shutdown", {}));
-  assert.deepEqual(activities(), { 5: "shutdown", 30: "shutdown", 31: "shutdown", 32: "shutdown", 33: "shutdown" },
-    "yoke has stopped: every pill is dark");
+  assert.equal(pillsDark(s), true);
 });
 
-test("pillActivity: once yoke has shut down, even a pill whose engine died mid-action is dark", () => {
-  // An engine that exits abnormally never reports its action done, so its
-  // cylinder is left looking active.
-  let s = withPills(initialState(), "o/a", [prPill(30)]);
-  s = startAction(s, 1, { type: "self-review", pullRequestNumber: 30 });
-  s = dashboardReducer(s, makeEvent("app-shutdown", {}));
-  assert.equal(s.cylinders[0]?.status, "active");
-  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders, s.appShutdown), "shutdown");
+test("pillsDark: a dashboard that only hears app-shutdown still goes dark", () => {
+  const s = dashboardReducer(initialState(), makeEvent("app-shutdown", {}));
+  assert.equal(s.shutdownRequested, false);
+  assert.equal(pillsDark(s), true);
+});
+
+test("pillsDark: a dark pill keeps its activity, so its status icon freezes in place rather than changing", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" }), prPill(31)]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "self-review", pullRequestNumber: 31, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+  assert.equal(pillsDark(s), true);
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "waiting-ci");
+  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "working");
 });

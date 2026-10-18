@@ -51,7 +51,7 @@ export class LifecycleList extends LitElement {
     owner: { type: String },
     repo: { type: String },
     multiProject: { type: Boolean },
-    appShutdown: { type: Boolean },
+    dark: { type: Boolean },
   };
 
   pairs: LifecyclePair[] = [];
@@ -61,8 +61,8 @@ export class LifecycleList extends LitElement {
   owner = '';
   repo = '';
   multiProject = false;
-  /** Yoke has shut down: every pill goes dark (issue #268). */
-  appShutdown = false;
+  /** Yoke is shutting down: every pill goes dark (issue #268). */
+  dark = false;
 
   protected override createRenderRoot() { return this; }
 
@@ -97,7 +97,8 @@ export class LifecycleList extends LitElement {
                       .pair=${pair}
                       .color=${color.hex}
                       .colorRgb=${color.rgb}
-                      .activity=${pillActivity(pair, this.cylinders, this.appShutdown)}
+                      .activity=${pillActivity(pair, this.cylinders)}
+                      .dark=${this.dark}
                       .owner=${this.owner}
                       .repo=${this.repo}
                       .multiProject=${this.multiProject}
