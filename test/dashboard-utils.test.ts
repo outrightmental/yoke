@@ -46,7 +46,7 @@ function makePR(overrides: Partial<PullRequest> = {}): PullRequest {
     hasCleanReviewOnHead: false,
     unresolvedReviewCommentCount: 0,
     checksStatus: "success",
-    headCommitPushedAt: undefined,
+    pendingChecksStartedAt: undefined,
     closingIssueNumbers: [],
     labels: [],
     linkedIssueNumbers: [],

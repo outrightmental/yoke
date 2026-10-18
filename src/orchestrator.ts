@@ -345,10 +345,14 @@ function planPullRequestAction(
       });
     }
     if (pullRequest.checksStatus === "pending") {
-      // If the commit has been pushed longer than the timeout threshold,
-      // treat the stuck checks as a failure so Claude can investigate.
-      const pushedAt = pullRequest.headCommitPushedAt;
-      if (pushedAt !== undefined && Date.now() - Date.parse(pushedAt) > CHECKS_TIMEOUT_MS) {
+      // If a check has been running longer than the timeout threshold, treat
+      // the stuck checks as a failure so Claude can investigate. The clock
+      // starts when the oldest still-incomplete check started, never at the
+      // commit date: that can predate the push by a whole Claude run, which
+      // made freshly started suites look stuck and get cancelled a minute in.
+      // A suite that outlasts a poll cycle but not the timeout runs to the end.
+      const startedAt = pullRequest.pendingChecksStartedAt;
+      if (startedAt !== undefined && Date.now() - Date.parse(startedAt) > CHECKS_TIMEOUT_MS) {
         return withIssueNumber({
           type: "address-failing-checks",
           pullRequestNumber: pullRequest.number,

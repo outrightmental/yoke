@@ -94,10 +94,14 @@ export interface PullRequest {
    */
   checksStatus: "success" | "failure" | "pending" | "none";
   /**
-   * ISO timestamp of when the head commit was pushed, used to detect
-   * checks that have been pending for too long.
+   * ISO timestamp of when the longest-running of the head commit's
+   * still-incomplete checks started, used to detect checks that have been
+   * pending for too long. Undefined when no incomplete check reports a
+   * start time. Taken from the checks themselves, never from the commit: a
+   * commit's date can predate its push by the length of a whole Claude
+   * run, which made freshly started runs look stuck and get cancelled.
    */
-  headCommitPushedAt: string | undefined;
+  pendingChecksStartedAt: string | undefined;
   /** Label names applied to this PR. */
   labels: string[];
   /** Issue numbers referenced as closing this PR (Closes/Fixes/Resolves). */

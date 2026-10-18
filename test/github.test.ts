@@ -239,8 +239,6 @@ test("listOpenPullRequests counts a legacy-marked review on the head sha as a cl
         {
           commit: {
             oid: `head-${number}`,
-            pushedDate: null,
-            committedDate: null,
             statusCheckRollup: null,
           },
         },
@@ -1112,7 +1110,7 @@ function makePr(overrides: Partial<{ updatedAt: string; draft: boolean }> = {}) 
     hasCleanReviewOnHead: false,
     unresolvedReviewCommentCount: 0,
     checksStatus: "success" as const,
-    headCommitPushedAt: undefined,
+    pendingChecksStartedAt: undefined,
     createdAt: "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-02T00:00:00.000Z",
     linkedIssueNumbers: [1],
@@ -1227,4 +1225,202 @@ test("loadSnapshot does not throw when listing open pull requests fails", async 
 
   assert.deepEqual(snapshot.pullRequests, []);
   assert.equal(snapshot.issues.length, 0);
+});
+
+// ─── Stuck-check timing and run cancellation (issue #265) ────────────────────
+
+const jsonResponse = (payload: unknown): Response =>
+  new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+
+test("listOpenPullRequests times pending checks from the oldest incomplete check, not the commit", async (t) => {
+  const restPr = (number: number) => ({
+    number,
+    title: `PR ${number}`,
+    body: "",
+    head: { sha: `head-${number}`, ref: `yoke/issue-${number}` },
+    base: { ref: "main" },
+    state: "open",
+    draft: false,
+    created_at: "2024-03-01T10:00:00Z",
+    updated_at: "2024-03-01T10:00:00Z",
+    labels: [],
+  });
+  const graphqlPr = (number: number, commit: Record<string, unknown>) => ({
+    number,
+    mergeable: "MERGEABLE",
+    headRefOid: `head-${number}`,
+    closingIssuesReferences: { nodes: [] },
+    reviews: { nodes: [] },
+    reviewThreads: { nodes: [] },
+    commits: { nodes: [{ commit: { oid: `head-${number}`, ...commit } }] },
+  });
+  const graphqlBodies: string[] = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (String(url).includes("/pulls?state=open")) {
+        return jsonResponse([restPr(400), restPr(401), restPr(402)]);
+      }
+      if (String(url).endsWith("/graphql")) {
+        graphqlBodies.push(String(init?.body));
+        return jsonResponse({
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [
+                  graphqlPr(400, {
+                    // Committed long before the push; the commit date no longer matters.
+                    committedDate: "2024-03-01T09:00:00Z",
+                    statusCheckRollup: {
+                      state: "PENDING",
+                      contexts: {
+                        nodes: [
+                          // Finished checks — including one from before a re-run — are ignored.
+                          { __typename: "CheckRun", status: "COMPLETED", startedAt: "2024-03-01T09:05:00Z" },
+                          { __typename: "StatusContext", state: "SUCCESS", createdAt: "2024-03-01T09:06:00Z" },
+                          { __typename: "CheckRun", status: "QUEUED", startedAt: "2024-03-01T10:03:00Z" },
+                          { __typename: "CheckRun", status: "IN_PROGRESS", startedAt: "2024-03-01T10:01:00Z" },
+                          { __typename: "StatusContext", state: "PENDING", createdAt: "2024-03-01T10:02:00Z" },
+                          { __typename: "CheckRun", status: "IN_PROGRESS", startedAt: null },
+                          null,
+                        ],
+                      },
+                    },
+                  }),
+                  graphqlPr(401, {
+                    statusCheckRollup: {
+                      state: "PENDING",
+                      contexts: {
+                        nodes: [{ __typename: "StatusContext", state: "PENDING", createdAt: "2024-03-01T10:04:00Z" }],
+                      },
+                    },
+                  }),
+                  graphqlPr(402, { statusCheckRollup: null }),
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${String(url)}`);
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "butterfly", token: "token" });
+  const pullRequests = await client.listOpenPullRequests();
+  const byNumber = (number: number) => pullRequests.find((pr) => pr.number === number);
+
+  assert.equal(byNumber(400)?.checksStatus, "pending");
+  assert.equal(byNumber(400)?.pendingChecksStartedAt, "2024-03-01T10:01:00Z");
+  assert.equal(byNumber(401)?.pendingChecksStartedAt, "2024-03-01T10:04:00Z");
+  assert.equal(byNumber(402)?.pendingChecksStartedAt, undefined);
+  assert.ok(graphqlBodies.length > 0);
+  for (const body of graphqlBodies) {
+    assert.doesNotMatch(body, /pushedDate|committedDate/, "the commit's own dates are not queried");
+    assert.match(body, /startedAt/);
+  }
+});
+
+test("cancelStalledWorkflowRunsForPullRequest cancels only this PR's runs that ran past the threshold", async (t) => {
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const run = (overrides: Record<string, unknown>) => ({
+    status: "in_progress",
+    head_sha: "sha-400",
+    head_branch: "yoke/issue-400",
+    run_started_at: minutesAgo(20),
+    created_at: minutesAgo(20),
+    pull_requests: [{ number: 400 }],
+    ...overrides,
+  });
+  const cancelled: number[] = [];
+  let listUrl = "";
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const href = String(url);
+      const cancelMatch = /\/actions\/runs\/(\d+)\/cancel$/.exec(href);
+      if (cancelMatch && init?.method === "POST") {
+        cancelled.push(Number(cancelMatch[1]));
+        return new Response(null, { status: 202 });
+      }
+      if (href.includes("/actions/runs?")) {
+        listUrl = href;
+        return jsonResponse({
+          total_count: 9,
+          workflow_runs: [
+            run({ id: 1 }), // this PR's run, stalled 20 minutes in → cancelled
+            run({ id: 2, status: "queued", run_started_at: null, created_at: minutesAgo(30) }), // stalled in the queue → cancelled
+            run({ id: 3, run_started_at: minutesAgo(3) }), // still progressing → left to finish
+            run({ id: 4, created_at: minutesAgo(40), run_started_at: minutesAgo(2) }), // fresh re-run of an old run → left alone
+            run({ id: 5, status: "completed" }), // already finished
+            // The sibling PR's suite, even if the API ignored the head_sha filter.
+            run({ id: 6, head_sha: "sha-401", head_branch: "yoke/issue-401", pull_requests: [{ number: 401 }] }),
+            // Another PR whose branch happens to sit on the same commit.
+            run({ id: 7, head_branch: "yoke/issue-401", pull_requests: [{ number: 401 }] }),
+            // Same commit and branch, but GitHub attributes the run to another PR.
+            run({ id: 8, pull_requests: [{ number: 402 }] }),
+            // A fork PR's run: GitHub leaves pull_requests empty.
+            run({ id: 9, pull_requests: [] }),
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${href}`);
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "butterfly", token: "token" });
+  const count = await client.cancelStalledWorkflowRunsForPullRequest({
+    pullRequestNumber: 400,
+    headSha: "sha-400",
+    headRefName: "yoke/issue-400",
+    runningLongerThanMs: 10 * 60_000,
+  });
+
+  assert.match(listUrl, /head_sha=sha-400/);
+  assert.deepEqual(cancelled, [1, 2, 9]);
+  assert.equal(count, 3);
+});
+
+test("listFailingCheckRuns tells a stalled check apart from one that is still running", async (t) => {
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request): Promise<Response> => {
+      if (String(url).includes("/commits/sha-400/check-runs")) {
+        return jsonResponse({
+          check_runs: [
+            { id: 1, name: "lint", status: "completed", conclusion: "failure", started_at: minutesAgo(5) },
+            { id: 2, name: "test", status: "in_progress", conclusion: null, started_at: minutesAgo(4) },
+            { id: 3, name: "e2e", status: "in_progress", conclusion: null, started_at: minutesAgo(25) },
+            { id: 4, name: "build", status: "completed", conclusion: "success", started_at: minutesAgo(5) },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${String(url)}`);
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "butterfly", token: "token" });
+  const failing = await client.listFailingCheckRuns({
+    pullRequestNumber: 400,
+    headSha: "sha-400",
+    stalledAfterMs: 10 * 60_000,
+  });
+
+  assert.deepEqual(failing.map((check) => check.name), ["lint", "test", "e2e"]);
+  const excerptFor = (name: string) => failing.find((check) => check.name === name)?.logExcerpt ?? "";
+  assert.match(excerptFor("test"), /still running/);
+  assert.doesNotMatch(excerptFor("test"), /cancel/);
+  assert.match(excerptFor("e2e"), /stalled: still not finished 10\+ minutes after it started/);
+  assert.doesNotMatch(excerptFor("lint"), /status:/);
 });

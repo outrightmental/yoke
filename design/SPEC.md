@@ -120,7 +120,7 @@ The six orchestrator action types each record a session in the local store. The 
 | --- | --- |
 | `start-implementation` (session: `implementation`) | Claude implements the issue in a local checkout and Yoke opens a draft PR. In project mode, the issue moves to "In Progress". |
 | `self-review` | Claude reviews the PR diff on the current head, optionally addresses human PR comments, and either pushes fixes or confirms clean. Yoke posts a summary comment. |
-| `address-failing-checks` | Yoke fetches failing CI log excerpts; Claude reads them and pushes a fix. Stuck pending checks (> 10 min) are cancelled first. |
+| `address-failing-checks` | Yoke fetches failing CI log excerpts; Claude reads them and pushes a fix. Checks count as stuck once one has run for more than 10 minutes, timed from when the check started rather than from the commit. Before Claude starts, yoke cancels only this PR's own workflow runs (its head SHA and branch) that have run past those 10 minutes. Runs still inside the window, and every run belonging to another PR, are left to finish. |
 | `resolve-conflicts` | Claude rebases the PR branch on the base branch and resolves any merge conflicts. |
 | `squash-merge` | Claude generates a final PR body from the branch commits and diff. Yoke updates the PR body, promotes the draft to ready-for-review, and squash-merges. |
 | `request-review` | (Project SDLC only) Yoke marks the PR ready-for-review, requests human review, and moves the issue to "In Review" on the project board. |

@@ -42,7 +42,7 @@ function createPullRequest(
     hasCleanReviewOnHead: overrides.hasCleanReviewOnHead ?? false,
     unresolvedReviewCommentCount: overrides.unresolvedReviewCommentCount ?? 0,
     checksStatus: overrides.checksStatus ?? "success",
-    headCommitPushedAt: overrides.headCommitPushedAt,
+    pendingChecksStartedAt: overrides.pendingChecksStartedAt,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     labels: overrides.labels ?? [],
@@ -247,7 +247,7 @@ test("executeAction start-implementation copies the review label onto the new PR
     updatePullRequestBody: async () => {},
     squashMergePullRequest: async () => {},
     listFailingCheckRuns: async () => [],
-    cancelInProgressWorkflowRunsForHeadSha: async () => 0,
+    cancelStalledWorkflowRunsForPullRequest: async () => 0,
     postComment: async () => 9000,
     listPullRequestComments: async () => [],
     addEyesReaction: async () => {},
@@ -295,7 +295,7 @@ test("executeAction start-implementation leaves unlabelled issues alone", async 
     updatePullRequestBody: async () => {},
     squashMergePullRequest: async () => {},
     listFailingCheckRuns: async () => [],
-    cancelInProgressWorkflowRunsForHeadSha: async () => 0,
+    cancelStalledWorkflowRunsForPullRequest: async () => 0,
     postComment: async () => 9000,
     listPullRequestComments: async () => [],
     addEyesReaction: async () => {},
@@ -343,7 +343,7 @@ test("executeAction request-review with no reviewers marks ready without request
     updatePullRequestBody: async () => {},
     squashMergePullRequest: async () => {},
     listFailingCheckRuns: async () => [],
-    cancelInProgressWorkflowRunsForHeadSha: async () => 0,
+    cancelStalledWorkflowRunsForPullRequest: async () => 0,
     postComment: async (prNumber: number, body: string) => {
       calls.push(`postComment:${prNumber}:${body}`);
       return 9000;

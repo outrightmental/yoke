@@ -27,6 +27,37 @@ function mergeSortedUnique(...sources: ReadonlyArray<readonly number[]>): number
   return [...merged].sort((left, right) => left - right);
 }
 
+/** One entry of a commit's `statusCheckRollup.contexts`: a check run or a commit status. */
+type StatusCheckRollupContext =
+  | { __typename: "CheckRun"; status: string; startedAt: string | null }
+  | { __typename: "StatusContext"; state: string; createdAt: string | null }
+  | { __typename: string };
+
+/**
+ * When the longest-running of a commit's still-incomplete checks started:
+ * the earliest `startedAt` of a check run that has not completed, or
+ * `createdAt` of a commit status still pending. Completed checks are ignored,
+ * so a re-run is timed from the re-run, not from the original run. Undefined
+ * when no incomplete check carries a start time.
+ */
+function earliestPendingCheckStart(
+  contexts: ReadonlyArray<StatusCheckRollupContext | null>,
+): string | undefined {
+  let earliest: string | undefined;
+  for (const context of contexts) {
+    let startedAt: string | null = null;
+    if (context?.__typename === "CheckRun" && "status" in context) {
+      if (context.status.toUpperCase() !== "COMPLETED") startedAt = context.startedAt;
+    } else if (context?.__typename === "StatusContext" && "state" in context) {
+      const state = context.state.toUpperCase();
+      if (state === "PENDING" || state === "EXPECTED") startedAt = context.createdAt;
+    }
+    if (startedAt === null || Number.isNaN(Date.parse(startedAt))) continue;
+    if (earliest === undefined || Date.parse(startedAt) < Date.parse(earliest)) earliest = startedAt;
+  }
+  return earliest;
+}
+
 interface GitHubIssueResponse {
   number: number;
   title: string;
@@ -641,7 +672,7 @@ export class GitHubClient {
         hasCleanReviewOnHead: graphQLData?.hasCleanReviewOnHead ?? false,
         unresolvedReviewCommentCount: graphQLData?.unresolvedReviewCommentCount ?? 0,
         checksStatus: graphQLData?.checksStatus ?? "none",
-        headCommitPushedAt: graphQLData?.headCommitPushedAt,
+        pendingChecksStartedAt: graphQLData?.pendingChecksStartedAt,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         labels: (pullRequest.labels ?? []).map((label) => label.name),
@@ -682,7 +713,7 @@ export class GitHubClient {
         hasCleanReviewOnHead: boolean;
         unresolvedReviewCommentCount: number;
         checksStatus: "success" | "failure" | "pending" | "none";
-        headCommitPushedAt: string | undefined;
+        pendingChecksStartedAt: string | undefined;
       }
     >
   > {
@@ -709,7 +740,10 @@ export class GitHubClient {
               nodes: Array<{
                 commit: {
                   oid: string;
-                  pushedDate: string | null;                  committedDate: string | null;                  statusCheckRollup: { state: string } | null;
+                  statusCheckRollup: {
+                    state: string;
+                    contexts: { nodes: Array<StatusCheckRollupContext | null> } | null;
+                  } | null;
                 };
               }>;
             } | null;
@@ -727,7 +761,7 @@ export class GitHubClient {
         hasCleanReviewOnHead: boolean;
         unresolvedReviewCommentCount: number;
         checksStatus: "success" | "failure" | "pending" | "none";
-        headCommitPushedAt: string | undefined;
+        pendingChecksStartedAt: string | undefined;
       }
     >();
     let after: string | null = null;
@@ -759,9 +793,16 @@ export class GitHubClient {
                     nodes {
                       commit {
                         oid
-                        pushedDate
-                        committedDate
-                        statusCheckRollup { state }
+                        statusCheckRollup {
+                          state
+                          contexts(first: 100) {
+                            nodes {
+                              __typename
+                              ... on CheckRun { status startedAt }
+                              ... on StatusContext { state createdAt }
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -812,9 +853,9 @@ export class GitHubClient {
         } else {
           checksStatus = "none";
         }
-        const headCommitPushedAt =
+        const pendingChecksStartedAt =
           headCommitNode?.oid === node.headRefOid
-            ? (headCommitNode?.pushedDate ?? headCommitNode?.committedDate ?? undefined)
+            ? earliestPendingCheckStart(headCommitNode.statusCheckRollup?.contexts?.nodes ?? [])
             : undefined;
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
@@ -822,7 +863,7 @@ export class GitHubClient {
           hasCleanReviewOnHead,
           unresolvedReviewCommentCount,
           checksStatus,
-          headCommitPushedAt,
+          pendingChecksStartedAt,
         });
       }
 
@@ -1229,17 +1270,21 @@ export class GitHubClient {
   /**
    * Return failing check runs for the head SHA of a pull request, with a
    * short log excerpt for each. Used to seed the prompt for the
-   * `address-failing-checks` action.
+   * `address-failing-checks` action. Checks that have not finished are
+   * included too, each noted as either still running or — once it has run
+   * longer than `stalledAfterMs` — stalled, so Claude knows which is which.
    */
   async listFailingCheckRuns(input: {
     pullRequestNumber: number;
     headSha: string;
+    stalledAfterMs?: number;
   }): Promise<Array<{ name: string; logExcerpt: string }>> {
     interface CheckRun {
       id: number;
       name: string;
       conclusion: string | null;
       status: string | null;
+      started_at?: string | null;
       output?: { title?: string | null; summary?: string | null; text?: string | null } | null;
     }
     let response: { check_runs?: CheckRun[] };
@@ -1261,43 +1306,72 @@ export class GitHubClient {
       (run) =>
         run.conclusion === "failure" ||
         run.conclusion === "timed_out" ||
-        // Include still-running/queued jobs so Claude knows they were cancelled
-        // and can re-trigger them if needed.
+        // Include still-running/queued jobs so Claude knows they had not
+        // finished (and, if stalled, were cancelled) and can re-trigger them.
         run.status === "in_progress" ||
         run.status === "queued" ||
         run.status === "waiting",
     );
+    const { stalledAfterMs } = input;
+    const stalledSinceMs = stalledAfterMs === undefined ? undefined : Date.now() - stalledAfterMs;
     return failing.map((run) => {
       const summary = run.output?.summary ?? "";
       const text = run.output?.text ?? "";
       const combined = [summary, text].filter(Boolean).join("\n\n");
       const excerpt = combined.length > 4000 ? combined.slice(0, 4000) + "\n…(truncated)" : combined;
+      const startedAtMs = run.started_at ? Date.parse(run.started_at) : Number.NaN;
       const statusNote =
-        run.conclusion === null
-          ? `(status: ${run.status ?? "unknown"} — run was cancelled before completing)`
-          : "";
+        run.conclusion !== null
+          ? ""
+          : stalledAfterMs !== undefined && stalledSinceMs !== undefined && startedAtMs < stalledSinceMs
+            ? `(status: ${run.status ?? "unknown"} — stalled: still not finished ` +
+              `${Math.round(stalledAfterMs / 60_000)}+ minutes after it started; ` +
+              `yoke cancelled this PR's stalled workflow runs)`
+            : `(status: ${run.status ?? "unknown"} — still running; it had not finished when yoke read the checks)`;
       return { name: run.name, logExcerpt: [statusNote, excerpt].filter(Boolean).join("\n") || "(no log excerpt available)" };
     });
   }
 
   /**
-   * Cancel any workflow runs that are still in progress (status:
-   * in_progress, queued, or waiting) for the given commit SHA. This is
-   * called before Claude tries to address failing/timed-out checks so that
-   * the run is definitively finished before new fixes are pushed.
+   * Cancel this pull request's stalled workflow runs: runs on its head SHA
+   * and head branch that are still in progress (status: in_progress, queued,
+   * waiting, requested, or pending) and started more than
+   * `runningLongerThanMs` ago. Called before Claude addresses failing or
+   * stuck checks, so a hung run is definitively finished before new fixes
+   * are pushed.
+   *
+   * Nothing outside that set is touched. A run that is younger than the
+   * threshold is still progressing and is left to finish, however long the
+   * suite takes relative to yoke's poll interval. A run that belongs to a
+   * different pull request — another branch, another SHA, or a run GitHub
+   * attributes to another PR — is never cancelled, even if the API returns
+   * it (the `head_sha` filter is re-checked here rather than trusted).
    *
    * Returns the number of runs that were cancelled.
    */
-  async cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number> {
+  async cancelStalledWorkflowRunsForPullRequest(input: {
+    pullRequestNumber: number;
+    headSha: string;
+    headRefName: string;
+    runningLongerThanMs: number;
+  }): Promise<number> {
     interface WorkflowRunListResponse {
       total_count: number;
-      workflow_runs: Array<{ id: number; status: string | null; head_sha: string }>;
+      workflow_runs: Array<{
+        id: number;
+        status: string | null;
+        head_sha: string;
+        head_branch: string | null;
+        run_started_at?: string | null;
+        created_at?: string | null;
+        pull_requests?: Array<{ number: number }> | null;
+      }>;
     }
 
     let response: WorkflowRunListResponse;
     try {
       response = await this.request<WorkflowRunListResponse>(
-        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`,
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?head_sha=${encodeURIComponent(input.headSha)}&per_page=100`,
       );
     } catch (error) {
       const statusCode = (error as Error & { statusCode?: number }).statusCode;
@@ -1308,9 +1382,24 @@ export class GitHubClient {
     }
 
     const inProgressStatuses = new Set(["in_progress", "queued", "waiting", "requested", "pending"]);
-    const toCancel = (response.workflow_runs ?? []).filter(
-      (run) => run.status !== null && inProgressStatuses.has(run.status),
-    );
+    const startedBeforeMs = Date.now() - input.runningLongerThanMs;
+    const toCancel = (response.workflow_runs ?? []).filter((run) => {
+      if (run.status === null || !inProgressStatuses.has(run.status)) return false;
+      if (run.head_sha !== input.headSha || run.head_branch !== input.headRefName) return false;
+      // GitHub lists the PRs a run belongs to (same-repo branches only; fork
+      // runs leave this empty). A run it attributes elsewhere is not ours.
+      const attributedTo = run.pull_requests ?? [];
+      if (
+        attributedTo.length > 0 &&
+        !attributedTo.some((pullRequest) => pullRequest.number === input.pullRequestNumber)
+      ) {
+        return false;
+      }
+      // `run_started_at` restarts with each re-run attempt; `created_at` does not.
+      const startedAt = run.run_started_at ?? run.created_at;
+      const startedAtMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+      return !Number.isNaN(startedAtMs) && startedAtMs < startedBeforeMs;
+    });
 
     let cancelled = 0;
     for (const run of toCancel) {
