@@ -51,11 +51,21 @@ export class LifecyclePill extends LitElement {
       width: 100%;
       min-width: 380px;
       animation: pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1);
+      transition: opacity 0.5s ease;
     }
 
+    /* Fades in to the pill's own opacity, so a dimmed pill doesn't flash to
+       full opacity first. */
     @keyframes pillAppear {
       from { opacity: 0; transform: scaleX(0.85); }
-      to   { opacity: 1; transform: scaleX(1); }
+      to   { transform: scaleX(1); }
+    }
+
+    /* Every pill no engine cylinder is working right now is dimmed, whatever
+       its phase or status icon, so the worked ones stand out by contrast
+       (issue #262). Same test as the border pulse below. */
+    .lifecycle-pill:not(.working) {
+      opacity: 0.55;
     }
 
     .pill-issue-half {
