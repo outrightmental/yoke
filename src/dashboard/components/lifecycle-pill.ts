@@ -1,11 +1,51 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, type TemplateResult } from 'lit';
 import type { LifecyclePair } from '../store/types.js';
+import type { PillActivity } from '../shared/pill-activity.js';
+
+/** The status icon and its tooltip for each pill activity (issue #262). */
+const STATUS_ICONS: Record<PillActivity, { title: string; icon: TemplateResult }> = {
+  'working': {
+    title: 'An engine is working on this',
+    icon: html`<span class="meteor"></span>`,
+  },
+  'waiting-ci': {
+    title: 'Waiting for GitHub Actions to finish',
+    icon: html`
+      <svg viewBox="0 0 18 18" aria-hidden="true">
+        <g class="hourglass">
+          <path d="M4 2h10M4 16h10M5 2c0 4 3.2 5 3.2 7s-3.2 3-3.2 7M13 2c0 4-3.2 5-3.2 7s3.2 3 3.2 7"/>
+          <path class="solid sand-top" d="M6.2 3.5h5.6L9 7z"/>
+          <path class="solid sand-bottom" d="M6.2 14.5h5.6L9 11z"/>
+        </g>
+      </svg>`,
+  },
+  'review': {
+    title: 'Ready for review',
+    icon: html`
+      <svg viewBox="0 0 18 18" aria-hidden="true">
+        <g class="eye">
+          <path d="M1.5 9C3.5 5.3 6 3.5 9 3.5s5.5 1.8 7.5 5.5c-2 3.7-4.5 5.5-7.5 5.5S3.5 12.7 1.5 9z"/>
+          <circle class="solid pupil" cx="9" cy="9" r="2.4"/>
+        </g>
+      </svg>`,
+  },
+  'manual': {
+    title: 'Manual — yoke will not work on this',
+    icon: html`
+      <svg viewBox="0 0 18 18" aria-hidden="true">
+        <circle cx="7" cy="4" r="2"/>
+        <path d="M7 6.5v5M7 11.5L5 16M7 11.5L9 16M7 8l-3 2.5"/>
+        <path class="waving-arm" d="M7 8l4.5-3.5"/>
+      </svg>`,
+  },
+};
 
 export class LifecyclePill extends LitElement {
   static override styles = css`
     :host { display: block; }
 
     .lifecycle-pill {
+      position: relative;
       display: flex;
       height: 52px;
       width: 100%;
@@ -16,21 +56,6 @@ export class LifecyclePill extends LitElement {
     @keyframes pillAppear {
       from { opacity: 0; transform: scaleX(0.85); }
       to   { opacity: 1; transform: scaleX(1); }
-    }
-
-    /* An engine cylinder is working this pill right now (issue #262): a soft
-       glow in the issue's own color, slowly breathing around the whole pill so
-       the halves' phase styling still reads. */
-    .lifecycle-pill.working {
-      border-radius: 999px;
-      animation:
-        pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1),
-        workingGlow 2.4s ease-in-out infinite;
-    }
-
-    @keyframes workingGlow {
-      0%, 100% { box-shadow: 0 0 3px 0 rgba(var(--pill-rgb), 0.15); }
-      50%       { box-shadow: 0 0 10px 2px rgba(var(--pill-rgb), 0.55); }
     }
 
     .pill-issue-half {
@@ -119,6 +144,44 @@ export class LifecyclePill extends LitElement {
       opacity: 0.75;
     }
 
+    /* An engine cylinder is working this pill right now (issue #262): its
+       border pulses brighter and darker, on the implementing… pulse's beat but
+       never dimming as far. Only the border color moves, so each phase's
+       dashed/solid style, fill and seam stay as they are; the PR half's gray
+       borders (absent, inactive, blocked, manual) are left alone. */
+    .lifecycle-pill.working .pill-issue-half {
+      animation: workingBorder 1.8s ease-in-out infinite;
+    }
+
+    .lifecycle-pill.working .pill-pr-half.planning {
+      animation:
+        planningPulse 1.8s ease-in-out infinite,
+        workingBorder 1.8s ease-in-out infinite;
+    }
+
+    .lifecycle-pill.working .pill-pr-half:is(.review, .active, .completed):not(.disabled) {
+      animation: workingBorderOuter 1.8s ease-in-out infinite;
+    }
+
+    @keyframes workingBorder {
+      0%, 100% { border-color: rgba(var(--pill-rgb), 0.7); }
+      50%       { border-color: color-mix(in srgb, var(--pill-color), white 40%); }
+    }
+
+    /* The same pulse for a PR half with a seam on its left: it keeps the seam. */
+    @keyframes workingBorderOuter {
+      0%, 100% {
+        border-top-color: rgba(var(--pill-rgb), 0.7);
+        border-right-color: rgba(var(--pill-rgb), 0.7);
+        border-bottom-color: rgba(var(--pill-rgb), 0.7);
+      }
+      50% {
+        border-top-color: color-mix(in srgb, var(--pill-color), white 40%);
+        border-right-color: color-mix(in srgb, var(--pill-color), white 40%);
+        border-bottom-color: color-mix(in srgb, var(--pill-color), white 40%);
+      }
+    }
+
     .pill-label {
       font-size: 8px;
       text-transform: uppercase;
@@ -183,6 +246,98 @@ export class LifecyclePill extends LitElement {
 
     a.gh-link { color: inherit; text-decoration: none; cursor: pointer; }
     a.gh-link:hover { text-decoration: underline; filter: brightness(1.4); }
+
+    /* The animated status icon at the pill's far right (issue #262), sized
+       like the engine cylinder's spinner. It sits over the PR half rather than
+       inside it, so a manual PR's greyed-out half doesn't grey it out too. The
+       room for it is kept inside the PR half's row, not its padding, so both
+       halves stay the same width and the seams of all pills line up. */
+    .lifecycle-pill.has-status .pill-pr-half .pill-row { padding-right: 24px; }
+
+    .pill-status {
+      position: absolute;
+      right: 14px;
+      top: 50%;
+      width: 18px;
+      height: 18px;
+      margin-top: -9px;
+      color: var(--pill-color);
+    }
+
+    .pill-status svg {
+      display: block;
+      width: 18px;
+      height: 18px;
+      overflow: visible;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .pill-status .solid { fill: currentColor; stroke: none; }
+
+    /* Working: the engine cylinder's meteor chasing its tail. */
+    .pill-status .meteor {
+      display: block;
+      box-sizing: border-box;
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(var(--pill-rgb), 0.2);
+      border-top-color: var(--pill-color);
+      border-radius: 50%;
+      animation: statusSpin 0.8s linear infinite;
+    }
+
+    @keyframes statusSpin {
+      0%   { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Waiting on GitHub Actions: an hourglass whose sand runs out, then flips. */
+    .pill-status .hourglass { transform-origin: 9px 9px; animation: hourglassFlip 2.4s ease-in-out infinite; }
+    .pill-status .sand-top { transform-origin: 9px 7px; animation: sandTop 2.4s linear infinite; }
+    .pill-status .sand-bottom { transform-origin: 9px 15px; animation: sandBottom 2.4s linear infinite; }
+
+    @keyframes hourglassFlip {
+      0%, 75% { transform: rotate(0deg); }
+      100%     { transform: rotate(180deg); }
+    }
+
+    @keyframes sandTop {
+      0%        { transform: scale(1); }
+      75%, 100% { transform: scale(0); }
+    }
+
+    @keyframes sandBottom {
+      0%        { transform: scale(0); }
+      75%, 100% { transform: scale(1); }
+    }
+
+    /* Ready for review: an eye glancing over the PR, blinking now and then. */
+    .pill-status .eye { transform-origin: 9px 9px; animation: eyeBlink 3.2s ease-in-out infinite; }
+    .pill-status .pupil { animation: eyeGlance 3.2s ease-in-out infinite; }
+
+    @keyframes eyeBlink {
+      0%, 90%, 100% { transform: scaleY(1); }
+      95%            { transform: scaleY(0.1); }
+    }
+
+    @keyframes eyeGlance {
+      0%, 10%, 85%, 100% { transform: translateX(0); }
+      25%, 40%           { transform: translateX(-2px); }
+      55%, 70%           { transform: translateX(2px); }
+    }
+
+    /* Manual: a person waving — this one is in human hands. */
+    .pill-status .waving-arm { transform-origin: 7px 8px; animation: armWave 2s ease-in-out infinite; }
+
+    @keyframes armWave {
+      0%, 60%, 100% { transform: rotate(0deg); }
+      15%, 45%      { transform: rotate(-25deg); }
+      30%           { transform: rotate(10deg); }
+    }
   `;
 
   static override properties = {
@@ -192,14 +347,14 @@ export class LifecyclePill extends LitElement {
     owner: { type: String },
     repo: { type: String },
     multiProject: { type: Boolean },
-    working: { type: Boolean },
+    activity: { type: String },
   };
 
   pair: LifecyclePair | null = null;
   color = '#555577';
   colorRgb = '85,85,119';
-  /** Whether an engine cylinder is actively working this pill right now. */
-  working = false;
+  /** What this pill is doing or waiting on right now, if anything. */
+  activity: PillActivity | null = null;
   owner = '';
   repo = '';
   multiProject = false;
@@ -271,6 +426,13 @@ export class LifecyclePill extends LitElement {
       </div>`;
   }
 
+  /** The animated icon at the pill's far right; nothing when there's no activity. */
+  private _statusIcon() {
+    if (!this.activity) return '';
+    const { title, icon } = STATUS_ICONS[this.activity];
+    return html`<span class="pill-status ${this.activity}" role="img" title="${title}" aria-label="${title}">${icon}</span>`;
+  }
+
   override render() {
     const pair = this.pair;
     if (!pair) return html``;
@@ -280,13 +442,14 @@ export class LifecyclePill extends LitElement {
     const projectChip = this.multiProject && pair.repo
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
-    const pillClass = `lifecycle-pill${this.working ? ' working' : ''}`;
+    const pillClass = `lifecycle-pill${this.activity === 'working' ? ' working' : ''}${this.activity ? ' has-status' : ''}`;
 
     if (!pair.issue) {
       return html`
         <div class="${pillClass}" style="${style}">
           <div class="pill-issue-half empty">${projectChip}</div>
           ${this._prHalf()}
+          ${this._statusIcon()}
         </div>`;
     }
 
@@ -306,6 +469,7 @@ export class LifecyclePill extends LitElement {
           </div>
         </div>
         ${this._prHalf()}
+        ${this._statusIcon()}
       </div>`;
   }
 }

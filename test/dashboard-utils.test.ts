@@ -15,6 +15,8 @@ import {
   filterNewCommits,
 } from "../src/dashboard-utils.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
+import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
+import { pillActivity } from "../src/dashboard/shared/pill-activity.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
 import type { PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
 import type { GitHubRateLimitHold } from "../src/github-rate-limit.js";
@@ -714,6 +716,33 @@ test("broadcastLifecycleUpdate: a manual orphan PR is flagged disabled", async (
   const pairs = data.pairs as Array<{ issue: unknown; disabled?: boolean }>;
   assert.equal(pairs[0]!.issue, null);
   assert.equal(pairs[0]!.disabled, true);
+});
+
+test("broadcastLifecycleUpdate: pills whose PR checks are running read as waiting on GitHub Actions (#262)", async () => {
+  const snapshot = {
+    issues: [makeIssue({ number: 10 }), makeIssue({ number: 11 })],
+    pullRequests: [
+      makePR({ number: 20, closingIssueNumbers: [10], checksStatus: "pending" }),
+      makePR({ number: 21, closingIssueNumbers: [11], checksStatus: "success" }),
+      makePR({ number: 22, draft: true, checksStatus: "pending" }),
+    ],
+    agentSessions: [],
+  };
+  const event = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, false, false, globalEventEmitter, "o/a");
+  const state = dashboardReducer(initialState(), {
+    type: "lifecycle-update",
+    timestamp: new Date().toISOString(),
+    data: await event,
+  });
+  const activityOf = (prNumber: number) => {
+    const pair = state.lastLifecyclePairs.find((p) => p.pr?.number === prNumber);
+    assert.ok(pair, `pill for PR #${prNumber} should exist`);
+    return pillActivity(pair, state.cylinders);
+  };
+  assert.equal(activityOf(20), "waiting-ci");
+  assert.equal(activityOf(21), "review", "its checks have finished");
+  assert.equal(activityOf(22), "waiting-ci", "an orphan draft PR");
 });
 
 test("broadcastIssueUpdate: emits nothing when the issue is labelled 'manual'", async () => {
