@@ -10,11 +10,10 @@ import {
   formatUsageLine,
   parseUsageResponse,
   readClaudeLoginToken,
-  usageLineClockTimes,
   type ClaudeCredentialsReader,
   type UsageReading,
 } from "../src/anthropic-usage.js";
-import { formatLocalTime, type ClockTimeRef } from "../src/claude-agent.js";
+import { formatLocalTime } from "../src/claude-agent.js";
 import { EventEmitter, type DashboardEvent } from "../src/event-emitter.js";
 
 const TOKEN = "test-usage-token-do-not-leak";
@@ -310,16 +309,12 @@ test("AnthropicUsageMonitor sends the time an expired login's reason names, so t
   const events = collectUsageEvents(emitter);
   const expiresAt = NOW - 1;
   const { readCredentials } = fakeCredentials(claudeCredentials(TOKEN, expiresAt));
-  const logged: Array<readonly ClockTimeRef[]> = [];
-  const monitor = new AnthropicUsageMonitor({
-    token: undefined, emitter, clock: () => NOW, readCredentials, log: (_line, clockTimes) => logged.push(clockTimes),
-  });
+  const monitor = new AnthropicUsageMonitor({ token: undefined, emitter, clock: () => NOW, readCredentials });
 
   const reading = await monitor.poll();
   const expired = { text: formatLocalTime(expiresAt), atMs: expiresAt };
   assert.deepEqual(reading.clockTimes, [expired]);
   assert.deepEqual(events[0]!.data["clockTimes"], [expired], "the usage-update carries it to the gauge");
-  assert.deepEqual(logged, [[expired]], "and so does the log line");
 });
 
 test("AnthropicUsageMonitor names the Claude login, not anthropic_usage_token, when Anthropic rejects it", async () => {
@@ -639,28 +634,6 @@ test("formatUsageLine says what the gauge shows, in one line", () => {
     }),
     `Claude usage: unavailable — Anthropic is overloaded (HTTP 529) · still showing 41% from ${formatLocalTime(NOW - 60_000)}`,
   );
-});
-
-test("usageLineClockTimes names every time formatUsageLine renders", () => {
-  const live = ok(41.4);
-  const line = formatUsageLine(live);
-  const refs = usageLineClockTimes(live);
-  assert.deepEqual(refs, [{ text: formatLocalTime(live.resetsAtMs!), atMs: live.resetsAtMs! }]);
-  assert.ok(line.includes(refs[0]!.text));
-
-  const held: UsageReading = {
-    ...without("unavailable", "Anthropic is overloaded (HTTP 529)"),
-    fiveHourPercent: 41.4,
-    resetsAtMs: Date.parse(RESETS_AT),
-    heldFromMs: NOW - 60_000,
-  };
-  assert.ok(formatUsageLine(held).includes(formatLocalTime(NOW - 60_000)));
-  assert.deepEqual(
-    usageLineClockTimes(held).map((ref) => ref.atMs),
-    [NOW - 60_000, Date.parse(RESETS_AT)],
-    "the held time, and the reset (which this line does not name, so the log drops it)",
-  );
-  assert.deepEqual(usageLineClockTimes(without("unconfigured", "no Claude login")), []);
 });
 
 test("describeUsageChange speaks up for the first reading, each further 10%, a new window and any change of status", () => {

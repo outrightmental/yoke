@@ -18,12 +18,13 @@ export function formatDuration(ms: number): string {
 //
 // Every wall-clock time the dashboard shows is rendered here, in the browser,
 // from an instant: so it reads in the viewer's own time zone — the one their
-// browser reports — and never in the server's (issue #272). `timeZone` exists
-// so tests can pin a zone; the dashboard leaves it out.
+// browser reports — and never in the server's (issue #272). Only the zone
+// follows the viewer: the shapes are fixed en-US ones, whatever the browser's
+// locale. `timeZone` exists so tests can pin a zone; the dashboard leaves it out.
 
 /** Wall-clock form of a deadline, e.g. "Sep 21, 8:50 AM". */
 export function formatClockTime(ms: number, timeZone?: string): string {
-  return new Date(ms).toLocaleString(undefined, {
+  return new Date(ms).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -36,12 +37,12 @@ export function formatClockTime(ms: number, timeZone?: string): string {
 export function formatLogTime(ms: number, timeZone?: string): string {
   // `hourCycle`, not `hour12: false`, which some engines render as "24:05:00"
   // in the hour after midnight.
-  return new Date(ms).toLocaleTimeString('en', { hourCycle: 'h23', timeZone });
+  return new Date(ms).toLocaleTimeString('en-US', { hourCycle: 'h23', timeZone });
 }
 
-/** Stamp of a broadcast card, in the viewer's locale, e.g. "6:45:07 PM". */
+/** Stamp of a broadcast card, e.g. "6:45:07 PM". */
 export function formatTimeOfDay(ms: number, timeZone?: string): string {
-  return new Date(ms).toLocaleTimeString(undefined, { timeZone });
+  return new Date(ms).toLocaleTimeString('en-US', { timeZone });
 }
 
 /**

@@ -1233,31 +1233,25 @@ test("reducer: broadcast cards keep their event's own instant", () => {
   assert.deepEqual(s.broadcastQueue.map((card) => card.atMs), [atMs, atMs + 1_000]);
 });
 
-test("reducer: a server log line names its times in the viewer's zone, not the server's", () => {
+test("reducer: a server log line keeps the server's rendering of any time it names", () => {
+  // Issue #272: log text stays as the server wrote it, even when it carries clockTimes.
   const untilMs = Date.parse("2026-10-18T22:45:00Z");
-  // The server, in New York, rendered the deadline into the line's text.
   const served = formatClockTime(untilMs, "America/New_York");
-  const event = makeEvent("log-message", {
-    level: "info",
-    message: `⏸ waiting 2h until ${served} for Claude usage limit — no work will be planned or started until then.`,
-    clockTimes: [{ text: served, atMs: untilMs }],
-  });
-  for (const zone of ["America/Los_Angeles", "Asia/Tokyo"]) {
-    const s = asViewerIn(zone, () => dashboardReducer(initialState(), event));
-    assert.equal(
-      s.eventStream[0]?.text,
-      `⏸ waiting 2h until ${formatClockTime(untilMs, zone)} for Claude usage limit — no work will be planned or started until then.`,
-      zone,
-    );
-  }
+  const message = `⏸ waiting 2h until ${served} for Claude usage limit`;
+  const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("log-message", {
+    level: "info", message, clockTimes: [{ text: served, atMs: untilMs }],
+  })));
+  assert.equal(s.eventStream[0]?.text, message);
 });
 
-test("reducer: a log line without usable clockTimes keeps the server's text", () => {
-  const message = "⏸ waiting 2h until Oct 18, 6:45 PM for Claude usage limit";
+test("reducer: a usage reason with no usable clockTimes keeps the server's text", () => {
+  const reason = "the Claude CLI login expired at Oct 18, 6:45 PM — claude renews it the next time it runs";
   for (const clockTimes of [undefined, "Oct 18, 6:45 PM", [null, { text: "Oct 18, 6:45 PM" }, { text: "Oct 18, 6:45 PM", atMs: Number.NaN }]]) {
-    const s = asViewerIn("Asia/Tokyo", () =>
-      dashboardReducer(initialState(), makeEvent("log-message", { message, ...(clockTimes !== undefined ? { clockTimes } : {}) })));
-    assert.equal(s.eventStream[0]?.text, message);
+    const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("usage-update", {
+      status: "unavailable", fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: 1_000, reason,
+      ...(clockTimes !== undefined ? { clockTimes } : {}),
+    })));
+    assert.equal(s.usage?.reason, reason);
   }
 });
 

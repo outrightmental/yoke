@@ -7,8 +7,6 @@ import {
   announceWait,
   CLAUDE_QUOTA_WAIT_KEY,
   clearWait,
-  clockTimeRefs,
-  type ClockTimeRef,
   createClaudeAgentClient,
   DEFAULT_COMMIT_MODEL,
   formatWaitStatusLine,
@@ -73,8 +71,8 @@ const HEAVY_RULE = "═".repeat(80);
  */
 const SNAPSHOT_FRESH_MS = 8000;
 
-function timestamp(epochMs: number = Date.now()): string {
-  return new Date(epochMs).toISOString().replace("T", " ").slice(0, 19);
+function timestamp(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
 // ─── Exit diagnostics ────────────────────────────────────────────────────────
@@ -149,11 +147,9 @@ function installExitDiagnostics(): void {
 // Claude status board owns the bottom rows of the terminal and erases whatever
 // it finds there every 500 ms, which silently destroyed every error yoke
 // printed while any run was in flight.
-// A line naming a wall-clock time passes its `clockTimes`, so the dashboard can
-// show the time in the viewer's zone rather than the server's.
-function write(line: string, clockTimes: readonly ClockTimeRef[] = []): void {
+function write(line: string): void {
   writeLogLine(line);
-  emitLogMessage("info", line, globalEventEmitter, "", clockTimes);
+  emitLogMessage("info", line);
 }
 
 function blank(): void {
@@ -166,16 +162,14 @@ function failure(text: string): void {
 }
 
 function createLogger(emitter: EventEmitter, repo = "") {
-  function write(line: string, clockTimes: readonly ClockTimeRef[] = []): void {
+  function write(line: string): void {
     writeLogLine(line);
-    emitLogMessage("info", line, emitter, repo, clockTimes);
+    emitLogMessage("info", line, emitter, repo);
   }
   function blank(): void { writeLogLine(""); }
   function section(title: string): void { blank(); write(title); write(RULE); }
   function bullet(text: string, indent = 1): void { write(`${"  ".repeat(indent)}• ${text}`); }
-  function note(text: string, indent = 1, clockTimes: readonly ClockTimeRef[] = []): void {
-    write(`${"  ".repeat(indent)}${text}`, clockTimes);
-  }
+  function note(text: string, indent = 1): void { write(`${"  ".repeat(indent)}${text}`); }
   /** Log a failure. Multi-line reasons are indented so none of it is mistaken for a new event. */
   function failure(text: string, indent = 1): void {
     const pad = "  ".repeat(indent);
@@ -785,7 +779,6 @@ async function runEngine(
     write(
       `⏸ ${formatWaitStatusLine({ untilMs: hold.untilMs, reason: hold.reason })} — ` +
         `no work will be planned or started until then.`,
-      clockTimeRefs(hold.untilMs),
     );
     if (hold.detail !== undefined) bullet(hold.detail);
   };
@@ -1084,7 +1077,6 @@ async function runEngine(
             note(
               `⏸ not attempted — ${formatWaitStatusLine({ untilMs: quotaHold.blockedUntilMs, reason: quotaHold.reason })}.`,
               2,
-              clockTimeRefs(quotaHold.blockedUntilMs),
             );
           } else {
             emitter.emit("action-error", {
@@ -1297,9 +1289,7 @@ async function main(): Promise<void> {
 
   // ── Banner ────────────────────────────────────────────────────────────────
   write(HEAVY_RULE);
-  const startedAtMs = Date.now();
-  const startedAt = timestamp(startedAtMs);
-  write(`yoke starting · ${startedAt}`, [{ text: startedAt, atMs: startedAtMs }]);
+  write(`yoke starting · ${timestamp()}`);
   write(`projects (${contexts.length}): ${contexts.map((c) => `${c.repoKey} [cap ${c.cap}]`).join(", ")}`);
   if (dashboardReady) {
     write(`dashboard: ${dashboard.getUrl()}${noBrowser ? " (browser launch suppressed)" : ""}`);

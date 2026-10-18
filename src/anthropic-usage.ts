@@ -254,11 +254,6 @@ export function formatUsageLine(reading: UsageReading): string {
   );
 }
 
-/** The wall-clock times `formatUsageLine(reading)` names, for the Dashboard to render in the viewer's zone. */
-export function usageLineClockTimes(reading: UsageReading): ClockTimeRef[] {
-  return [...(reading.clockTimes ?? []), ...clockTimeRefs(reading.heldFromMs, reading.resetsAtMs)];
-}
-
 function usageDecile(reading: UsageReading): number | null {
   return reading.fiveHourPercent === null ? null : Math.floor(reading.fiveHourPercent / 10);
 }
@@ -297,9 +292,8 @@ export interface UsageMonitorOptions {
   clock?: () => number;
   /** Where the Claude CLI's login is read from when no token is configured. */
   readCredentials?: ClaudeCredentialsReader;
-  /** Told, in one line, whenever a reading changes what the gauge says — with
-   *  the wall-clock times the line names. */
-  log?: (line: string, clockTimes: readonly ClockTimeRef[]) => void;
+  /** Told, in one line, whenever a reading changes what the gauge says. */
+  log?: (line: string) => void;
 }
 
 /**
@@ -315,7 +309,7 @@ export class AnthropicUsageMonitor {
   private readonly clock: () => number;
   private readonly fetchOptions: FetchUsageOptions;
   private readonly readCredentials: ClaudeCredentialsReader;
-  private readonly log: ((line: string, clockTimes: readonly ClockTimeRef[]) => void) | undefined;
+  private readonly log: ((line: string) => void) | undefined;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private last: UsageReading | null = null;
@@ -429,7 +423,7 @@ export class AnthropicUsageMonitor {
     this.last = reading;
     if (line !== null) {
       try {
-        this.log?.(line, usageLineClockTimes(reading));
+        this.log?.(line);
       } catch {
         // A log that cannot be written must not stop the gauge's polling.
       }

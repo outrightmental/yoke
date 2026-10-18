@@ -150,7 +150,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
       return pillsDark(next) ? freezePills(next) : next;
     }
     case 'phase-update':       return addToStream(state, atMs, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
-    case 'log-message':        return applyLogMessage(state, event.data, atMs);
+    case 'log-message':        return addToStream(state, atMs, (event.data['message'] as string) ?? '', -1, (event.data['level'] as string) ?? 'info', (event.data['repo'] as string) || '');
     case 'workflow-approval':  return applyWorkflowApproval(state, event.data, atMs);
     case 'github-rate-limit': {
       const msg = (event.data['message'] as string) || 'rate limited';
@@ -171,15 +171,6 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     default:
       return addToStream(state, atMs, `[EVENT] ${event.type}`, -1, 'info');
   }
-}
-
-/** A server log line. Any wall-clock time in it was rendered in the server's
- *  zone, so it is rendered again here in the viewer's. */
-function applyLogMessage(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
-  const message = typeof data['message'] === 'string' ? data['message'] : '';
-  const level = typeof data['level'] === 'string' ? data['level'] : 'info';
-  const repo = typeof data['repo'] === 'string' ? data['repo'] : '';
-  return addToStream(state, atMs, localizeClockTimes(message, clockTimesOf(data)), -1, level, repo);
 }
 
 function applyIterationStart(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {

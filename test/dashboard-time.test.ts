@@ -35,9 +35,6 @@ function asViewerIn<T>(timeZone: string, fn: () => T): T {
   }
 }
 
-/** The exact strings below are en-US renderings; other locales only get the zone-relative checks. */
-const EN_US = new Intl.DateTimeFormat().resolvedOptions().locale === "en-US";
-const needsEnUs = { skip: EN_US ? false : "the default locale is not en-US" };
 /** Newer ICU puts a narrow no-break space before AM/PM. */
 const spaced = (text: string): string => text.replace(/\s/g, " ");
 
@@ -61,7 +58,7 @@ test("formatClockTime renders an instant in the viewer's time zone", () => {
   assert.notEqual(asViewerIn(TOKYO, () => formatClockTime(AT)), asViewerIn(NEW_YORK, () => formatClockTime(AT)));
 });
 
-test("formatClockTime keeps the Mon D, h:mm AM/PM shape", needsEnUs, () => {
+test("formatClockTime keeps the fixed Mon D, h:mm AM/PM shape, whatever the browser's locale", () => {
   assert.equal(spaced(formatClockTime(AT, NEW_YORK)), "Oct 18, 6:45 PM");
   assert.equal(spaced(formatClockTime(AT, LOS_ANGELES)), "Oct 18, 3:45 PM");
   assert.equal(spaced(formatClockTime(AT, TOKYO)), "Oct 19, 7:45 AM", "the date follows the zone too");
@@ -79,8 +76,28 @@ test("formatTimeOfDay renders a broadcast stamp in the viewer's time zone", () =
   assert.notEqual(formatTimeOfDay(AT, TOKYO), formatTimeOfDay(AT, NEW_YORK));
 });
 
-test("formatTimeOfDay keeps the locale's own time shape", needsEnUs, () => {
+test("formatTimeOfDay keeps the fixed h:mm:ss AM/PM shape, whatever the browser's locale", () => {
   assert.equal(spaced(formatTimeOfDay(AT + 7_000, NEW_YORK)), "6:45:07 PM");
+});
+
+test("the time shapes do not follow the browser's locale", () => {
+  // A browser set to German or British English still reads the fixed shapes.
+  const toLocaleString = Date.prototype.toLocaleString;
+  const toLocaleTimeString = Date.prototype.toLocaleTimeString;
+  const forced = (orig: typeof toLocaleString) =>
+    function (this: Date, locales?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions): string {
+      return orig.call(this, locales ?? "de-DE", options);
+    };
+  Date.prototype.toLocaleString = forced(toLocaleString);
+  Date.prototype.toLocaleTimeString = forced(toLocaleTimeString);
+  try {
+    assert.equal(spaced(formatClockTime(AT, NEW_YORK)), "Oct 18, 6:45 PM");
+    assert.equal(spaced(formatTimeOfDay(AT + 7_000, NEW_YORK)), "6:45:07 PM");
+    assert.equal(formatLogTime(AT + 7_000, NEW_YORK), "18:45:07");
+  } finally {
+    Date.prototype.toLocaleString = toLocaleString;
+    Date.prototype.toLocaleTimeString = toLocaleTimeString;
+  }
 });
 
 // ── localizeClockTimes ───────────────────────────────────────────────────────
