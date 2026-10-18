@@ -1,3 +1,5 @@
+import type { PillActivity } from '../shared/pill-activity.js';
+
 export interface CylinderState {
   index: number;
   /** Stable color of the issue this cylinder is working, or null when it has
@@ -137,6 +139,9 @@ export interface DashboardState {
   sessionCount: number;
   shutdownRequested: boolean;
   appShutdown: boolean;
+  /** Each pill's activity, by pill key, as it stood when the pills went dark at
+   *  shutdown (issue #268); null while yoke is running. */
+  frozenPillActivity: Map<string, PillActivity | null> | null;
   /** The hold parking every engine, or null when work is free to run. */
   hold: WorkHold | null;
   /** Latest Claude account usage reading, or null until the first arrives. */

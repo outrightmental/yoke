@@ -204,7 +204,7 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
   When more than one applies, the first in that list wins. Pills in none of these states show no icon.
 
-  Once a graceful shutdown is requested, every pill goes dark, like the shut-down cylinder rows: it dims, takes on their orange accent at its left edge, and stops pulsing — a planned implementation reads *shut down* instead of *implementing…* — and its status icon, if it has one, freezes in place. No engine starts new work after the request, and nothing will keep the pills live, so whatever they show is no longer current.
+  Once a graceful shutdown is requested, every pill goes dark, like the shut-down cylinder rows: it dims, takes on their orange accent at its left edge, and stops pulsing — a planned implementation reads *shut down* instead of *implementing…* — and its status icon, if it had one, freezes in place: it stays the icon the pill had when the shutdown was requested, even as the engines finish their in-flight work. No engine starts new work after the request, and nothing will keep the pills live, so whatever they show is no longer current.
 
 - **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
 

@@ -95,6 +95,7 @@ export class YokeApp extends LitElement {
           .repo=${s.repo}
           .multiProject=${s.multiProject}
           .dark=${pillsDark(s)}
+          .frozenActivity=${s.frozenPillActivity}
         ></lifecycle-list>
         <broadcast-feed
           .events=${s.broadcastVisible}

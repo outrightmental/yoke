@@ -5,7 +5,7 @@ import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
-import { pillActivity, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
+import { pillActivity, pillKey, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
 import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
 
 interface WireEvent {
@@ -1085,13 +1085,33 @@ test("pillsDark: a dashboard that only hears app-shutdown still goes dark", () =
   assert.equal(pillsDark(s), true);
 });
 
-test("pillsDark: a dark pill keeps its activity, so its status icon freezes in place rather than changing", () => {
+test("frozenPillActivity: a dark pill's status icon stays frozen as it was while the engines drain", () => {
   let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" }), prPill(31)]);
   s = dashboardReducer(s, makeEvent("action-start", {
     actionIndex: 1, totalActions: 3, type: "self-review", pullRequestNumber: 31, repo: "o/a", description: "d",
   }));
+  assert.equal(s.frozenPillActivity, null, "nothing is frozen while yoke is running");
+
   s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
   assert.equal(pillsDark(s), true);
-  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "waiting-ci");
-  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "working");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 31))), "working");
+
+  // The in-flight action finishes, its engine retires, and a last lifecycle
+  // update says the checks passed: live, both pills would now show the
+  // review eye, but the dark pills keep the icons they had.
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  s = withPills(s, "o/a", [prPill(30, {}, { checksStatus: "success" }), prPill(31)]);
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "review", "live, the checks are done");
+  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "review", "live, nothing is working it anymore");
+  s = dashboardReducer(s, makeEvent("app-shutdown", {}));
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 31))), "working");
+});
+
+test("frozenPillActivity: a dashboard that only hears app-shutdown freezes the pills then", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
+  s = dashboardReducer(s, makeEvent("app-shutdown", {}));
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
 });
