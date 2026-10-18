@@ -192,6 +192,19 @@ export class LifecyclePill extends LitElement {
       }
     }
 
+    /* Yoke is shutting down (issue #268): every pill goes dark like the
+       shut-down cylinder row — dimmed, with its orange accent on the left
+       edge — and every pulse stops. The status icon stays, frozen in place. */
+    .lifecycle-pill.shutdown { opacity: 0.5; }
+
+    .lifecycle-pill.shutdown .pill-issue-half { border-left-color: #ff6600; }
+
+    .lifecycle-pill.shutdown .pill-issue-half,
+    .lifecycle-pill.shutdown .pill-pr-half { animation: none; }
+
+    .lifecycle-pill.shutdown .pill-status,
+    .lifecycle-pill.shutdown .pill-status * { animation-play-state: paused; }
+
     .pill-label {
       font-size: 8px;
       text-transform: uppercase;
@@ -358,6 +371,7 @@ export class LifecyclePill extends LitElement {
     repo: { type: String },
     multiProject: { type: Boolean },
     activity: { type: String },
+    dark: { type: Boolean },
   };
 
   pair: LifecyclePair | null = null;
@@ -365,6 +379,8 @@ export class LifecyclePill extends LitElement {
   colorRgb = '85,85,119';
   /** What this pill is doing or waiting on right now, if anything. */
   activity: PillActivity | null = null;
+  /** Yoke is shutting down, so this pill has gone dark (issue #268). */
+  dark = false;
   owner = '';
   repo = '';
   multiProject = false;
@@ -385,7 +401,7 @@ export class LifecyclePill extends LitElement {
         return html`
           <div class="${prClass}">
             <div class="pill-label">PR</div>
-            <div class="pill-row"><span class="pill-title">implementing…</span></div>
+            <div class="pill-row"><span class="pill-title">${this.dark ? 'shut down' : 'implementing…'}</span></div>
           </div>`;
       }
       if (pair.prPhase === 'inactive' && pair.projectStatus) {
@@ -452,7 +468,8 @@ export class LifecyclePill extends LitElement {
     const projectChip = this.multiProject && pair.repo
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
-    const pillClass = `lifecycle-pill${this.activity === 'working' ? ' working' : ''}${this.activity ? ' has-status' : ''}`;
+    const stateClass = this.dark ? ' shutdown' : this.activity === 'working' ? ' working' : '';
+    const pillClass = `lifecycle-pill${stateClass}${this.activity ? ' has-status' : ''}`;
 
     if (!pair.issue) {
       return html`

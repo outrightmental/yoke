@@ -5,7 +5,7 @@ import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
-import { pillActivity, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
+import { pillActivity, pillKey, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
 import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
 
 interface WireEvent {
@@ -1050,4 +1050,117 @@ test("lifecycle pill: only the pills an engine is working stay undimmed, whateve
     const classes = renderedPillClasses(s, pair);
     assert.ok(!classes.includes("working"), `#${pair.issue?.number ?? pair.pr?.number} is not worked: dimmed`);
   }
+});
+
+// ── every pill going dark at shutdown (issue #268) ────────────────────────────
+
+test("pillsDark: every pill goes dark once a shutdown is requested, and stays dark", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30),
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+  assert.equal(pillsDark(s), false, "yoke is running");
+
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+  assert.equal(pillsDark(s), true, "dark at once, while in-flight work still finishes");
+
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  s = withPills(s, "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30),
+  ]);
+  assert.equal(pillsDark(s), true, "a later lifecycle update does not bring the pills back to life");
+
+  s = dashboardReducer(s, makeEvent("app-shutdown", {}));
+  assert.equal(pillsDark(s), true);
+});
+
+test("pillsDark: a dashboard that only hears app-shutdown still goes dark", () => {
+  const s = dashboardReducer(initialState(), makeEvent("app-shutdown", {}));
+  assert.equal(s.shutdownRequested, false);
+  assert.equal(pillsDark(s), true);
+});
+
+test("frozenPillActivity: a dark pill's status icon stays frozen as it was while the engines drain", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" }), prPill(31)]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "self-review", pullRequestNumber: 31, repo: "o/a", description: "d",
+  }));
+  assert.equal(s.frozenPillActivity, null, "nothing is frozen while yoke is running");
+
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+  assert.equal(pillsDark(s), true);
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 31))), "working");
+
+  // The in-flight action finishes, its engine retires, and a last lifecycle
+  // update says the checks passed: live, both pills would now show the
+  // review eye, but the dark pills keep the icons they had.
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  s = withPills(s, "o/a", [prPill(30, {}, { checksStatus: "success" }), prPill(31)]);
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "review", "live, the checks are done");
+  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "review", "live, nothing is working it anymore");
+  s = dashboardReducer(s, makeEvent("app-shutdown", {}));
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 31))), "working");
+});
+
+test("frozenPillActivity: a pill first seen after the pills went dark is frozen as it appears", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+  // Another project's first lifecycle update (or a reconnecting dashboard's
+  // replay) arrives only after the shutdown request.
+  s = withPills(s, "o/b", [prPill(40, {}, { checksStatus: "pending" })]);
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 40))), "waiting-ci");
+
+  // Its checks then pass, but it keeps the icon it went dark with, and the
+  // pill frozen before it is left as it was.
+  s = withPills(s, "o/b", [prPill(40)]);
+  s = withPills(s, "o/a", [prPill(30)]);
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 40))), "waiting-ci");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+});
+
+test("frozenPillActivity: a dashboard that only hears app-shutdown freezes the pills then", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
+  s = dashboardReducer(s, makeEvent("app-shutdown", {}));
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+});
+
+test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen icon", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30, {}, { checksStatus: "pending" }),
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+
+  const render = (pair: LifecyclePair) => {
+    const pill = new LifecyclePill();
+    Object.assign(pill, { pair, activity: s.frozenPillActivity?.get(pillKey(pair)) ?? null, dark: pillsDark(s) });
+    return flatten(pill.render());
+  };
+
+  const worked = render(pillFor(s, 5));
+  const classes = /class="(lifecycle-pill\b[^"]*)"/.exec(worked)![1]!.split(/\s+/);
+  assert.ok(classes.includes("shutdown"), "dark");
+  assert.ok(!classes.includes("working"), "no working pulse, though an engine was on it");
+  assert.ok(worked.includes("shut down") && !worked.includes("implementing…"), "the planned PR half reads shut down");
+  assert.ok(worked.includes('class="meteor"'), "the meteor stays, frozen");
+
+  const waiting = render(pillForPR(s, 30));
+  assert.ok(waiting.includes("lifecycle-pill shutdown has-status"), "dark, with its icon");
+  assert.ok(waiting.includes('class="hourglass"'), "the hourglass stays, frozen");
+
+  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
+  assert.match(css, /\.lifecycle-pill\.shutdown \{ opacity: 0\.5; \}/, "the shut-down cylinder row's opacity");
+  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: #ff6600; \}/, "and its orange accent");
+  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-status \* \{ animation-play-state: paused; \}/, "icons freeze in place");
 });

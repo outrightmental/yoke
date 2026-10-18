@@ -1,4 +1,4 @@
-import type { CylinderState, LifecyclePair } from '../store/types.js';
+import type { CylinderState, DashboardState, LifecyclePair } from '../store/types.js';
 import { workingCylinder } from './working-cylinder.js';
 
 /**
@@ -39,4 +39,46 @@ export function pillActivity(
   if (waitingOnChecks(pair)) return 'waiting-ci';
   if (pair.prPhase === 'review') return 'review';
   return null;
+}
+
+/**
+ * Whether every lifecycle pill is dark (issue #268): from the moment a shutdown
+ * is requested — or, for a dashboard that only hears the end of it, once yoke
+ * has shut down. No engine starts new work after that, and the pills will get
+ * no further updates to keep them live, so they all go dark together, active
+ * or not, like the shut-down cylinder rows.
+ */
+export function pillsDark(state: Pick<DashboardState, 'shutdownRequested' | 'appShutdown'>): boolean {
+  return state.shutdownRequested || state.appShutdown;
+}
+
+/**
+ * A pill's identity across lifecycle updates: its issue, or its PR when it has
+ * none, qualified by its project so projects sharing one dashboard never
+ * collide on a number.
+ */
+export function pillKey(pair: LifecyclePair): string {
+  const ident = pair.issue ? `#${pair.issue.number}` : `pr-${pair.pr?.number ?? '?'}`;
+  return `${pair.repo ?? ''}${ident}`;
+}
+
+/**
+ * Every pill's activity at the moment the pills go dark, by pill key, so a dark
+ * pill's status icon stays frozen as it was (issue #268) rather than changing
+ * or disappearing as the in-flight work drains — the meteor of a pill whose
+ * engine then finishes its last action stays, stopped where it stood. Pills
+ * already in `frozen` keep the activity they were frozen with; a pill first
+ * seen after the pills went dark is frozen as it is when it appears.
+ */
+export function freezePillActivity(
+  pairs: readonly LifecyclePair[],
+  cylinders: readonly CylinderState[],
+  frozen: ReadonlyMap<string, PillActivity | null> | null = null,
+): Map<string, PillActivity | null> {
+  const next = new Map(frozen ?? []);
+  for (const pair of pairs) {
+    const key = pillKey(pair);
+    if (!next.has(key)) next.set(key, pillActivity(pair, cylinders));
+  }
+  return next;
 }
