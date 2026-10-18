@@ -1,4 +1,5 @@
 import { globalEventEmitter, type EventEmitter } from "./event-emitter.js";
+import type { ClockTimeRef } from "./claude-agent.js";
 import type { GitHubRateLimitHold } from "./github-rate-limit.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
@@ -397,11 +398,24 @@ export function broadcastCommit(commit: Commit, workerIndex?: number, emitter: E
   });
 }
 
-export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string, emitter: EventEmitter = globalEventEmitter, repo = ""): void {
+/**
+ * Send a log line to the dashboard. `clockTimes` are the wall-clock times the
+ * line names, as the server rendered them, so the dashboard can show them in the
+ * viewer's time zone instead; those the line does not contain are dropped.
+ */
+export function emitLogMessage(
+  level: "info" | "success" | "warning" | "error",
+  message: string,
+  emitter: EventEmitter = globalEventEmitter,
+  repo = "",
+  clockTimes: readonly ClockTimeRef[] = [],
+): void {
+  const named = clockTimes.filter((ref) => ref.text !== "" && message.includes(ref.text));
   emitter.emit("log-message", {
     level,
     message,
     repo,
+    ...(named.length > 0 ? { clockTimes: named } : {}),
   });
 }
 

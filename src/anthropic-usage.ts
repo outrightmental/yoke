@@ -1,8 +1,10 @@
 import {
+  clockTimeRefs,
   formatLocalTime,
   formatWaitRemaining,
   readClaudeCredentials,
   type ClaudeAuthResult,
+  type ClockTimeRef,
 } from "./claude-agent.js";
 import type { EventEmitter } from "./event-emitter.js";
 
@@ -60,6 +62,12 @@ export interface UsageReading {
    * not blank the gauge: the epoch millis those numbers were read.
    */
   heldFromMs?: number;
+  /**
+   * The wall-clock times `reason` names, as the server rendered them, so the
+   * Dashboard can show them in the viewer's time zone instead. Absent when the
+   * reason names none.
+   */
+  clockTimes?: ClockTimeRef[];
 }
 
 /**
@@ -115,8 +123,16 @@ function readingWithoutNumbers(
   status: Exclude<UsageStatus, "ok">,
   reason: string,
   nowMs: number,
+  clockTimes: ClockTimeRef[] = [],
 ): UsageReading {
-  return { status, fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: nowMs, reason };
+  return {
+    status,
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: nowMs,
+    reason,
+    ...(clockTimes.length > 0 ? { clockTimes } : {}),
+  };
 }
 
 /** Read the account's 5-hour window once. Never throws: a failure is a reading too. */
@@ -184,7 +200,9 @@ const NO_CLAUDE_LOGIN_REASON =
 export async function readClaudeLoginToken(
   nowMs: number,
   readCredentials: ClaudeCredentialsReader = readClaudeCredentials,
-): Promise<{ token: string } | { status: Exclude<UsageStatus, "ok">; reason: string }> {
+): Promise<
+  { token: string } | { status: Exclude<UsageStatus, "ok">; reason: string; clockTimes?: ClockTimeRef[] }
+> {
   const read = await readCredentials();
   if ("valid" in read) {
     return read.reason === "credentials not found"
@@ -210,6 +228,7 @@ export async function readClaudeLoginToken(
     return {
       status: "unavailable",
       reason: `the Claude CLI login expired at ${formatLocalTime(expiresAt)} — claude renews it the next time it runs`,
+      clockTimes: clockTimeRefs(expiresAt),
     };
   }
   return { token };
@@ -233,6 +252,11 @@ export function formatUsageLine(reading: UsageReading): string {
     `Claude usage: ${used} · resets in ${formatWaitRemaining(reading.resetsAtMs - reading.fetchedAtMs)}` +
     ` (${formatLocalTime(reading.resetsAtMs)})`
   );
+}
+
+/** The wall-clock times `formatUsageLine(reading)` names, for the Dashboard to render in the viewer's zone. */
+export function usageLineClockTimes(reading: UsageReading): ClockTimeRef[] {
+  return [...(reading.clockTimes ?? []), ...clockTimeRefs(reading.heldFromMs, reading.resetsAtMs)];
 }
 
 function usageDecile(reading: UsageReading): number | null {
@@ -273,8 +297,9 @@ export interface UsageMonitorOptions {
   clock?: () => number;
   /** Where the Claude CLI's login is read from when no token is configured. */
   readCredentials?: ClaudeCredentialsReader;
-  /** Told, in one line, whenever a reading changes what the gauge says. */
-  log?: (line: string) => void;
+  /** Told, in one line, whenever a reading changes what the gauge says — with
+   *  the wall-clock times the line names. */
+  log?: (line: string, clockTimes: readonly ClockTimeRef[]) => void;
 }
 
 /**
@@ -290,7 +315,7 @@ export class AnthropicUsageMonitor {
   private readonly clock: () => number;
   private readonly fetchOptions: FetchUsageOptions;
   private readonly readCredentials: ClaudeCredentialsReader;
-  private readonly log: ((line: string) => void) | undefined;
+  private readonly log: ((line: string, clockTimes: readonly ClockTimeRef[]) => void) | undefined;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private last: UsageReading | null = null;
@@ -384,7 +409,7 @@ export class AnthropicUsageMonitor {
     } catch {
       login = { status: "unavailable", reason: "could not read the Claude CLI login" };
     }
-    if (!("token" in login)) return readingWithoutNumbers(login.status, login.reason, this.clock());
+    if (!("token" in login)) return readingWithoutNumbers(login.status, login.reason, this.clock(), login.clockTimes);
     return fetchAnthropicUsage(login.token, { ...this.fetchOptions, tokenLabel: CLAUDE_LOGIN_LABEL });
   }
 
@@ -404,7 +429,7 @@ export class AnthropicUsageMonitor {
     this.last = reading;
     if (line !== null) {
       try {
-        this.log?.(line);
+        this.log?.(line, usageLineClockTimes(reading));
       } catch {
         // A log that cannot be written must not stop the gauge's polling.
       }

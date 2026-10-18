@@ -13,9 +13,12 @@ import {
   broadcastGitHubRateLimitCleared,
   hasPrStateChanged,
   filterNewCommits,
+  emitLogMessage,
 } from "../src/dashboard-utils.js";
-import { globalEventEmitter } from "../src/event-emitter.js";
+import { clockTimeRefs, formatLocalTime } from "../src/claude-agent.js";
+import { EventEmitter, globalEventEmitter } from "../src/event-emitter.js";
 import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
+import { formatClockTime } from "../src/dashboard/shared/format.js";
 import { pillActivity } from "../src/dashboard/shared/pill-activity.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
 import type { PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
@@ -834,4 +837,54 @@ test("filterNewCommits: excludes commits whose hash is already seen", () => {
 test("filterNewCommits: returns empty array when all commits are seen", () => {
   const commits = [makeCommit("aaa"), makeCommit("bbb")];
   assert.deepEqual(filterNewCommits(commits, new Set(["aaa", "bbb"])), []);
+});
+
+// ── wall-clock times in log lines (issue #272) ──────────────────────────────────
+
+/** Run `fn` with `timeZone` as the local zone: the server's, or the viewing browser's. */
+function inTimeZone<T>(timeZone: string, fn: () => T): T {
+  const saved = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+}
+
+function captureLogMessages(emitter: EventEmitter): DashboardEvent[] {
+  const events: DashboardEvent[] = [];
+  emitter.subscribe((event) => {
+    if (event.type === "log-message") events.push(event);
+  });
+  return events;
+}
+
+test("emitLogMessage sends the times a line names alongside it, and only those", () => {
+  const emitter = new EventEmitter();
+  const events = captureLogMessages(emitter);
+  const untilMs = Date.UTC(2026, 9, 18, 22, 45, 0);
+  const [until, other] = clockTimeRefs(untilMs, untilMs + 3 * 60 * 60 * 1000);
+  emitLogMessage("info", `⏸ waiting 2h until ${formatLocalTime(untilMs)} for a limit`, emitter, "o/r", [until!, other!, { text: "", atMs: 0 }]);
+  emitLogMessage("info", "plain line", emitter, "o/r", [until!]);
+  emitLogMessage("info", "no times given", emitter);
+
+  assert.deepEqual(events[0]!.data["clockTimes"], [until], "a time the line does not contain is dropped");
+  assert.equal("clockTimes" in events[1]!.data, false);
+  assert.equal("clockTimes" in events[2]!.data, false);
+});
+
+test("a log line the server rendered in its zone reaches the dashboard in the viewer's", () => {
+  const emitter = new EventEmitter();
+  const events = captureLogMessages(emitter);
+  const untilMs = Date.UTC(2026, 9, 18, 22, 45, 0);
+  // The server runs in New York, and renders the deadline there.
+  inTimeZone("America/New_York", () =>
+    emitLogMessage("info", `⏸ waiting 2h until ${formatLocalTime(untilMs)} for a limit`, emitter, "", clockTimeRefs(untilMs)));
+  // A dashboard opened from Tokyo shows Tokyo's time for the same instant.
+  const event = JSON.parse(JSON.stringify(events[0])) as DashboardEvent;
+  const state = inTimeZone("Asia/Tokyo", () => dashboardReducer(initialState(), event));
+  assert.equal(state.eventStream[0]?.text, `⏸ waiting 2h until ${formatClockTime(untilMs, "Asia/Tokyo")} for a limit`);
+  assert.notEqual(formatClockTime(untilMs, "Asia/Tokyo"), formatClockTime(untilMs, "America/New_York"));
 });

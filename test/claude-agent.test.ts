@@ -13,6 +13,7 @@ import {
   CLAUDE_QUOTA_WAIT_REASON,
   clearClaudeQuotaHold,
   clearWait,
+  clockTimeRefs,
   createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
@@ -23,6 +24,7 @@ import {
   IMPLEMENTATION_PAYLOAD_START_MARKER,
   SELF_REVIEW_PAYLOAD_END_MARKER,
   SELF_REVIEW_PAYLOAD_START_MARKER,
+  formatLocalTime,
   formatUserCommentsSection,
   formatWaitStatusLine,
   getClaudeQuotaBlockedUntilMs,
@@ -386,6 +388,15 @@ test("formatWaitStatusLine reads as the polite one-line CLI form", (t) => {
   );
   assert.match(line, /^waiting 2h 14m until .+ for Claude usage limit$/, line);
   t.diagnostic(line);
+});
+
+test("clockTimeRefs pairs each instant with the text formatLocalTime renders for it", () => {
+  const now = Date.UTC(2026, 9, 18, 22, 45, 0);
+  const line = formatWaitStatusLine({ untilMs: now + 60 * 60 * 1000, reason: "a limit" }, now);
+  const refs = clockTimeRefs(now + 60 * 60 * 1000);
+  assert.deepEqual(refs, [{ text: formatLocalTime(now + 60 * 60 * 1000), atMs: now + 60 * 60 * 1000 }]);
+  assert.ok(line.includes(refs[0]!.text), "the dashboard finds the time in the line it was rendered into");
+  assert.deepEqual(clockTimeRefs(null, undefined, Number.NaN, now).map((ref) => ref.atMs), [now], "absent instants are skipped");
 });
 
 test("formatWaitStatusLine drops to minutes and seconds for short waits", () => {
