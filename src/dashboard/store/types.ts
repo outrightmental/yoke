@@ -13,6 +13,11 @@ export interface CylinderState {
   repo: string | null;
   issueNumber: number | null;
   prNumber: number | null;
+  /** Titles of the issue/PR being worked, carried on the action so a pill can
+   *  still be drawn for work that has left GitHub's open lists (e.g. an issue
+   *  closed mid-flight). Null when unknown or idle. */
+  issueTitle: string | null;
+  prTitle: string | null;
   model: string | null;
   iterationNumber: number;
   thinkingLines: string[];
