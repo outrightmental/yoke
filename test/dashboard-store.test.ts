@@ -669,6 +669,72 @@ test("reducer: usage-update keeps the gauge's unconfigured and unavailable state
   });
 });
 
+test("reducer: a failed usage-update that holds the last good numbers keeps them on the gauge (#261)", () => {
+  const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
+  let s = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "ok", fiveHourPercent: 15, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+  }));
+  s = dashboardReducer(s, makeEvent("usage-update", {
+    status: "unavailable",
+    fiveHourPercent: 15,
+    resetsAtMs,
+    fetchedAtMs: 61_000,
+    reason: "Anthropic is overloaded (HTTP 529)",
+    heldFromMs: 1_000,
+  }));
+  assert.deepEqual(s.usage, {
+    status: "unavailable",
+    fiveHourPercent: 15,
+    resetsAtMs,
+    fetchedAtMs: 61_000,
+    reason: "Anthropic is overloaded (HTTP 529)",
+    heldFromMs: 1_000,
+  });
+});
+
+test("reducer: heldFromMs is dropped from readings that hold nothing over", () => {
+  const ok = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "ok", fiveHourPercent: 15, resetsAtMs: null, fetchedAtMs: 1_000, reason: "", heldFromMs: 500,
+  }));
+  assert.ok(ok.usage !== null && !("heldFromMs" in ok.usage));
+
+  const noNumbers = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "unavailable", fiveHourPercent: null, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x", heldFromMs: 500,
+  }));
+  assert.equal(noNumbers.usage?.resetsAtMs, null);
+  assert.ok(noNumbers.usage !== null && !("heldFromMs" in noNumbers.usage));
+
+  const numbersWithoutHold = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "unavailable", fiveHourPercent: 15, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x",
+  }));
+  assert.equal(numbersWithoutHold.usage?.fiveHourPercent, null);
+  assert.equal(numbersWithoutHold.usage?.resetsAtMs, null);
+
+  const unconfigured = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "unconfigured", fiveHourPercent: 15, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x", heldFromMs: 500,
+  }));
+  assert.equal(unconfigured.usage?.fiveHourPercent, null);
+  assert.ok(unconfigured.usage !== null && !("heldFromMs" in unconfigured.usage));
+});
+
+test("DashboardStore.bootstrap() restores held usage numbers from the replayed reading", async () => {
+  const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
+  const usageEvent = makeEvent("usage-update", {
+    status: "unavailable",
+    fiveHourPercent: 15,
+    resetsAtMs,
+    fetchedAtMs: 61_000,
+    reason: "Anthropic is overloaded (HTTP 529)",
+    heldFromMs: 1_000,
+  });
+  await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [usageEvent] }, async () => {
+    const store = new DashboardStore();
+    await store.bootstrap();
+    assert.equal(store.getState().usage?.fiveHourPercent, 15);
+    assert.equal(store.getState().usage?.heldFromMs, 1_000);
+  });
+});
+
 test("reducer: a malformed usage-update degrades to unavailable rather than a bogus number", () => {
   const unknownStatus = dashboardReducer(initialState(), makeEvent("usage-update", {
     status: "bogus",

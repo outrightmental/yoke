@@ -34,11 +34,21 @@ export function usageLimitUntilMs(hold: WorkHold | null): number | null {
   return hold !== null && hold.kind === 'claude-usage-limit' ? hold.untilMs : null;
 }
 
+/** The percent `usage` has to show: a live one, or the last good one held over
+ *  a failed read. Null when it has none. */
+function percentToShow(usage: AccountUsage): number | null {
+  return usage.status === 'ok' || (usage.status === 'unavailable' && usage.heldFromMs !== undefined)
+    ? usage.fiveHourPercent
+    : null;
+}
+
 /** A reading's own words, for the tooltip of a gauge that is showing something else. */
 function readingNote(usage: AccountUsage | null, nowMs: number): string {
   if (usage === null) return '';
-  if (usage.status === 'ok' && usage.fiveHourPercent !== null && nowMs - usage.fetchedAtMs <= USAGE_STALE_AFTER_MS) {
-    return ` · Anthropic last reported ${Math.round(usage.fiveHourPercent)}% of the 5-hour window used`;
+  const percent = percentToShow(usage);
+  if (percent !== null && nowMs - usage.fetchedAtMs <= USAGE_STALE_AFTER_MS) {
+    const asOf = usage.heldFromMs !== undefined ? ` at ${formatClockTime(usage.heldFromMs)}` : '';
+    return ` · Anthropic last reported ${Math.round(percent)}% of the 5-hour window used${asOf}`;
   }
   return usage.reason ? ` · usage reading: ${usage.reason}` : '';
 }
@@ -47,6 +57,9 @@ function readingNote(usage: AccountUsage | null, nowMs: number): string {
  * What the header's Claude usage gauge shows for `usage` at `nowMs`. Never
  * blank: without a trustworthy reading it reads "—" (or "OFF" when there is no
  * token to read with) in the dark `unknown` tone, and the tooltip says why.
+ * A failed read that holds over the last good numbers keeps showing them, so
+ * one bad poll does not blank the gauge; the tooltip says when they were read
+ * and why the latest read failed.
  *
  * `limitUntilMs` is when a Claude usage-limit hold lifts, if one is parking the
  * pool. The CLI has then said in so many words that nothing more can run until
@@ -74,7 +87,8 @@ export function usageGaugeView(
   if (usage.status === 'unconfigured') {
     return noReading('OFF', `Claude usage is off: ${usage.reason || 'log in with `claude`, or set anthropic_usage_token in env.yaml'}`);
   }
-  if (usage.status !== 'ok' || usage.fiveHourPercent === null) {
+  const percentRead = percentToShow(usage);
+  if (percentRead === null) {
     return noReading(NO_VALUE, `Claude usage unavailable: ${usage.reason || 'no reading'}`);
   }
   const ageMs = nowMs - usage.fetchedAtMs;
@@ -85,17 +99,21 @@ export function usageGaugeView(
     return noReading(NO_VALUE, 'Claude usage: the 5-hour window has reset — waiting for the next reading');
   }
 
-  const percent = Math.min(100, Math.max(0, usage.fiveHourPercent));
+  const percent = Math.min(100, Math.max(0, percentRead));
   const tone: UsageTone =
     percent >= USAGE_CRITICAL_PERCENT ? 'critical' : percent >= USAGE_WARN_PERCENT ? 'warn' : 'ok';
   const resets = usage.resetsAtMs === null
     ? 'no window open yet'
     : `resets ${formatClockTime(usage.resetsAtMs)}`;
+  const used = `${Math.round(percent)}% of the 5-hour window used`;
   return {
     tone,
     percentText: `${Math.round(percent)}%`,
     fillPercent: percent,
     resetText: usage.resetsAtMs === null ? NO_VALUE : formatDuration(usage.resetsAtMs - nowMs),
-    title: `Claude usage: ${Math.round(percent)}% of the 5-hour window used, ${resets}`,
+    title: usage.status !== 'ok' && usage.heldFromMs !== undefined
+      ? `Claude usage: ${used} as of ${formatClockTime(usage.heldFromMs)}, ${resets}` +
+        ` · the latest reading failed: ${usage.reason || 'no reading'}`
+      : `Claude usage: ${used}, ${resets}`,
   };
 }
