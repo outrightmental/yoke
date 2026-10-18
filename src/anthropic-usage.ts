@@ -22,6 +22,10 @@ const ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20";
 /** How often the gauge is refreshed. The endpoint rate-limits per token. */
 export const USAGE_POLL_INTERVAL_MS = 60_000;
 
+/** The length of the rolling usage window. No reading older than this can
+ *  describe the window that is open now. */
+const USAGE_WINDOW_MS = 5 * 60 * 60_000;
+
 /** A request still hanging after this is given up on until the next poll. */
 const USAGE_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -345,8 +349,9 @@ export class AnthropicUsageMonitor {
    * A failed read keeps the last good numbers on the gauge. The endpoint
    * answers the odd poll with a 529 or not at all, and blanking the gauge for
    * that minute made it flicker in and out (#261). The numbers are let go once
-   * the window they describe has reset, or when there is no login left to
-   * read with; the reason still says why this reading failed.
+   * the window they describe has reset — or, when no window was open, once a
+   * whole window's length has passed — or when there is no login left to read
+   * with; the reason still says why this reading failed.
    */
   private holdLastOk(reading: UsageReading): UsageReading {
     if (reading.status === "ok") {
@@ -358,7 +363,7 @@ export class AnthropicUsageMonitor {
       return reading;
     }
     const last = this.lastOk;
-    if (last === null || (last.resetsAtMs !== null && last.resetsAtMs <= reading.fetchedAtMs)) {
+    if (last === null || (last.resetsAtMs ?? last.fetchedAtMs + USAGE_WINDOW_MS) <= reading.fetchedAtMs) {
       return reading;
     }
     return {

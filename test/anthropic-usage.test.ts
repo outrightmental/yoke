@@ -478,6 +478,27 @@ test("AnthropicUsageMonitor lets held numbers go once their window resets", asyn
   assert.ok(!("heldFromMs" in afterReset));
 });
 
+test("AnthropicUsageMonitor holds a reading with no open window for one window's length at most", async () => {
+  const emitter = new EventEmitter();
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() =>
+    n++ === 0 ? jsonResponse({ five_hour: { utilization: 0, resets_at: null } }) : jsonResponse({}, 529));
+  let now = NOW;
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => now });
+
+  await monitor.poll();
+  now = NOW + 5 * 60 * 60_000 - 1;
+  const held = await monitor.poll();
+  assert.equal(held.fiveHourPercent, 0);
+  assert.equal(held.heldFromMs, NOW);
+  // A window may have opened and filled since: 0% is no longer worth showing.
+  now = NOW + 5 * 60 * 60_000;
+  const letGo = await monitor.poll();
+  assert.equal(letGo.status, "unavailable");
+  assert.equal(letGo.fiveHourPercent, null);
+  assert.ok(!("heldFromMs" in letGo));
+});
+
 test("AnthropicUsageMonitor lets held numbers go when the Claude login is gone", async () => {
   const emitter = new EventEmitter();
   let n = 0;
