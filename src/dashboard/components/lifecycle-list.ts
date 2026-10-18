@@ -1,7 +1,7 @@
 import { LitElement, html } from 'lit';
 import type { CylinderState, LifecyclePair } from '../store/types.js';
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
-import { pillActivity } from '../shared/pill-activity.js';
+import { pillActivity, pillKey, type PillActivity } from '../shared/pill-activity.js';
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
@@ -52,6 +52,7 @@ export class LifecycleList extends LitElement {
     repo: { type: String },
     multiProject: { type: Boolean },
     dark: { type: Boolean },
+    frozenActivity: { attribute: false },
   };
 
   pairs: LifecyclePair[] = [];
@@ -63,6 +64,8 @@ export class LifecycleList extends LitElement {
   multiProject = false;
   /** Yoke is shutting down: every pill goes dark (issue #268). */
   dark = false;
+  /** Each pill's activity when the pills went dark, so their icons stay frozen. */
+  frozenActivity: Map<string, PillActivity | null> | null = null;
 
   protected override createRenderRoot() { return this; }
 
@@ -89,15 +92,18 @@ export class LifecycleList extends LitElement {
                   const color = resolvePillColor(issueNum);
                   // Key includes the repo so pills from different projects that
                   // happen to share an issue/PR number don't collide in the DOM.
-                  const ident = pair.issue ? `#${pair.issue.number}` : `pr-${pair.pr?.number ?? '?'}`;
-                  const key = `${pair.repo ?? ''}${ident}`;
+                  const key = pillKey(pair);
+                  // A dark pill shows the activity it had when it went dark.
+                  const activity = this.frozenActivity?.has(key)
+                    ? this.frozenActivity.get(key) ?? null
+                    : pillActivity(pair, this.cylinders);
                   return html`
                     <lifecycle-pill
                       data-key="${key}"
                       .pair=${pair}
                       .color=${color.hex}
                       .colorRgb=${color.rgb}
-                      .activity=${pillActivity(pair, this.cylinders)}
+                      .activity=${activity}
                       .dark=${this.dark}
                       .owner=${this.owner}
                       .repo=${this.repo}
