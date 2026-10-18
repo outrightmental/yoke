@@ -4,6 +4,7 @@ import { dashboardReducer, initialState, DashboardStore } from "../src/dashboard
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
+import { pillActivity, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
 
 interface WireEvent {
   type: string;
@@ -852,4 +853,124 @@ test("workingCylinder: matches by number when either side does not know its proj
     actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 4, repo: "o/a", description: "d",
   }));
   assert.equal(workingCylinder(pillFor(s, 4), s.cylinders)?.index, 1);
+});
+
+// ── what each pill is doing or waiting on (issue #262) ────────────────────────
+
+function prPill(prNumber: number, overrides: Record<string, unknown> = {}, pr: Record<string, unknown> = {}) {
+  return {
+    issue: { number: prNumber - 20, title: `Issue for PR ${prNumber}`, state: "open" },
+    pr: { number: prNumber, title: `PR ${prNumber}`, state: "open", draft: false, checksStatus: "success", ...pr },
+    prPhase: "review",
+    ...overrides,
+  };
+}
+
+function pillForPR(s: DashboardState, prNumber: number) {
+  const pair = s.lastLifecyclePairs.find((p) => p.pr?.number === prNumber);
+  assert.ok(pair, `pill for PR #${prNumber} should exist`);
+  return pair;
+}
+
+test("waitingOnChecks: an open PR whose checks are queued or running is waiting on GitHub Actions", () => {
+  const s = withPills(initialState(), "o/a", [
+    prPill(30, {}, { checksStatus: "pending" }),
+    prPill(31, { prPhase: "active" }, { draft: true, checksStatus: "pending" }),
+    { issue: null, pr: { number: 32, title: "Orphan", state: "open", checksStatus: "pending" }, prPhase: "review" },
+  ]);
+  assert.equal(waitingOnChecks(pillForPR(s, 30)), true, "a ready PR");
+  assert.equal(waitingOnChecks(pillForPR(s, 31)), true, "a draft PR");
+  assert.equal(waitingOnChecks(pillForPR(s, 32)), true, "an issue-less PR");
+});
+
+test("waitingOnChecks: finished, absent or irrelevant checks are not waited on", () => {
+  const s = withPills(initialState(), "o/a", [
+    prPill(30, {}, { checksStatus: "success" }),
+    prPill(31, {}, { checksStatus: "failure" }),
+    prPill(32, {}, { checksStatus: "none" }),
+    prPill(33, {}, { checksStatus: undefined }),
+    prPill(34, { prPhase: "completed" }, { checksStatus: "pending" }),
+    prPill(35, {}, { state: "closed", checksStatus: "pending" }),
+    { issue: { number: 9, title: "Nine", state: "open" }, pr: null, prPhase: "planning" },
+  ]);
+  for (const n of [30, 31, 32, 33]) {
+    assert.equal(waitingOnChecks(pillForPR(s, n)), false, `PR #${n}: checks are not running`);
+  }
+  assert.equal(waitingOnChecks(pillForPR(s, 34)), false, "a merged PR waits on nothing");
+  assert.equal(waitingOnChecks(pillForPR(s, 35)), false, "a closed PR waits on nothing");
+  assert.equal(waitingOnChecks(pillFor(s, 9)), false, "no PR, no checks");
+});
+
+test("pillActivity: each state gets its own activity, and pills in none of them get none", () => {
+  let s = withPills(initialState(), "o/a", [
+    prPill(30),
+    prPill(31, {}, { checksStatus: "pending" }),
+    prPill(32, { disabled: true }),
+    prPill(33, { prPhase: "active" }, { draft: true }),
+    prPill(34, { prPhase: "completed" }),
+    { issue: { number: 1, title: "Planned", state: "open" }, pr: null, prPhase: "planning" },
+    { issue: { number: 2, title: "Untouched", state: "open" }, pr: null, prPhase: "absent" },
+    { issue: { number: 3, title: "Backlog", state: "open" }, pr: null, prPhase: "inactive", projectStatus: "Backlog" },
+    { issue: { number: 4, title: "Blocked", state: "open" }, pr: null, prPhase: "absent", blockedByIssueNumbers: [2] },
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+
+  assert.equal(pillActivity(pillFor(s, 5), s.cylinders), "working");
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "review");
+  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "waiting-ci");
+  assert.equal(pillActivity(pillForPR(s, 32), s.cylinders), "manual");
+  assert.equal(pillActivity(pillForPR(s, 33), s.cylinders), null, "a draft with nothing running");
+  assert.equal(pillActivity(pillForPR(s, 34), s.cylinders), null, "merged");
+  for (const n of [1, 2, 3, 4]) {
+    assert.equal(pillActivity(pillFor(s, n), s.cylinders), null, `issue #${n} has no activity`);
+  }
+});
+
+test("pillActivity: a working cylinder beats every other state", () => {
+  // Checks that ran too long are handed to a cylinder while still pending.
+  let s = withPills(initialState(), "o/a", [
+    prPill(30, {}, { checksStatus: "pending" }),
+    prPill(31, { disabled: true }, { checksStatus: "pending" }),
+    prPill(32),
+  ]);
+  for (const [actionIndex, pullRequestNumber] of [[1, 30], [2, 31], [3, 32]] as const) {
+    s = dashboardReducer(s, makeEvent("action-start", {
+      actionIndex, totalActions: 3, type: "address-failing-checks", pullRequestNumber, repo: "o/a", description: "d",
+    }));
+  }
+  for (const n of [30, 31, 32]) {
+    assert.equal(pillActivity(pillForPR(s, n), s.cylinders), "working", `PR #${n}`);
+  }
+});
+
+test("pillActivity: a manual PR is manual whatever its checks or phase say", () => {
+  const s = withPills(initialState(), "o/a", [
+    prPill(30, { disabled: true }, { checksStatus: "pending" }),
+    prPill(31, { disabled: true, prPhase: "active" }, { draft: true }),
+  ]);
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "manual");
+  assert.equal(pillActivity(pillForPR(s, 31), s.cylinders), "manual");
+});
+
+test("pillActivity: follows a PR through its checks, an engine's action and review", () => {
+  const pill = (checksStatus: string) => withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus })]);
+  let s = pill("pending");
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "waiting-ci", "checks queued after a push");
+
+  s = withPills(s, "o/a", [prPill(30, {}, { checksStatus: "success" })]);
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "review", "checks passed");
+
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 2, totalActions: 3, type: "self-review", pullRequestNumber: 30, repo: "o/a", description: "d",
+  }));
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "working", "an engine picks it up");
+
+  s = withPills(s, "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "working", "its push restarted the checks mid-action");
+
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 2, totalActions: 3, repo: "o/a" }));
+  assert.equal(pillActivity(pillForPR(s, 30), s.cylinders), "waiting-ci", "the engine is done; now it waits on CI");
 });
