@@ -84,7 +84,6 @@ export class LifecycleList extends LitElement {
               : sorted.map((pair) => {
                   const issueNum = pair.issue?.number ?? null;
                   const color = resolvePillColor(issueNum);
-                  const worker = workingCylinder(pair, this.cylinders);
                   // Key includes the repo so pills from different projects that
                   // happen to share an issue/PR number don't collide in the DOM.
                   const ident = pair.issue ? `#${pair.issue.number}` : `pr-${pair.pr?.number ?? '?'}`;
@@ -95,7 +94,7 @@ export class LifecycleList extends LitElement {
                       .pair=${pair}
                       .color=${color.hex}
                       .colorRgb=${color.rgb}
-                      .engineIndex=${worker?.index ?? null}
+                      .working=${workingCylinder(pair, this.cylinders) !== null}
                       .owner=${this.owner}
                       .repo=${this.repo}
                       .multiProject=${this.multiProject}

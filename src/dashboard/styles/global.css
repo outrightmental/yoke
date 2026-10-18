@@ -478,8 +478,8 @@ keep-awake-light { display: contents; }
 .lifecycle-content {
   display: flex;
   flex-direction: column;
-  /* Room for the ring and glow around pills an engine is working (issue #262),
-     so they are neither clipped at the edges nor merged with a neighbour's. */
+  /* Room for the glow around pills an engine is working (issue #262), so it is
+     neither clipped at the edges nor merged with a neighbour's. */
   gap: 10px;
   padding: 8px;
   min-height: 52px;

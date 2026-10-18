@@ -194,7 +194,7 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
   Each pill is colour-coded to its issue's own stable colour — derived from the issue number, so an issue keeps the same colour forever — and the broadcast feed uses that same colour for everything pertaining to the issue.
 
-  Whatever its state, a pill that an engine cylinder is working on *right now* — through its issue or its pull request — is ringed in its colour with a slowly breathing glow, and carries an **⚙ ENGINE n** tag naming the cylinder. The ring goes out as soon as that cylinder's action finishes or fails, or the cylinder goes idle.
+  Whatever its state, a pill that an engine cylinder is working on *right now* — through its issue or its pull request — softly glows in its colour, slowly pulsing. The glow goes out as soon as that cylinder's action finishes or fails, or the cylinder goes idle.
 
 - **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
 
