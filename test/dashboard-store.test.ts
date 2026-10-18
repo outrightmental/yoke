@@ -1115,3 +1115,36 @@ test("frozenPillActivity: a dashboard that only hears app-shutdown freezes the p
   s = dashboardReducer(s, makeEvent("app-shutdown", {}));
   assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
 });
+
+test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen icon", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30, {}, { checksStatus: "pending" }),
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 1, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+
+  const render = (pair: LifecyclePair) => {
+    const pill = new LifecyclePill();
+    Object.assign(pill, { pair, activity: s.frozenPillActivity?.get(pillKey(pair)) ?? null, dark: pillsDark(s) });
+    return flatten(pill.render());
+  };
+
+  const worked = render(pillFor(s, 5));
+  const classes = /class="(lifecycle-pill\b[^"]*)"/.exec(worked)![1]!.split(/\s+/);
+  assert.ok(classes.includes("shutdown"), "dark");
+  assert.ok(!classes.includes("working"), "no working pulse, though an engine was on it");
+  assert.ok(worked.includes("shut down") && !worked.includes("implementing…"), "the planned PR half reads shut down");
+  assert.ok(worked.includes('class="meteor"'), "the meteor stays, frozen");
+
+  const waiting = render(pillForPR(s, 30));
+  assert.ok(waiting.includes("lifecycle-pill shutdown has-status"), "dark, with its icon");
+  assert.ok(waiting.includes('class="hourglass"'), "the hourglass stays, frozen");
+
+  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
+  assert.match(css, /\.lifecycle-pill\.shutdown \{ opacity: 0\.5; \}/, "the shut-down cylinder row's opacity");
+  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: #ff6600; \}/, "and its orange accent");
+  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-status \* \{ animation-play-state: paused; \}/, "icons freeze in place");
+});
