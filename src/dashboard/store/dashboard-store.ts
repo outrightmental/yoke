@@ -1,7 +1,7 @@
 import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
 import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage } from './types.js';
 import { formatClockTime, formatDuration } from '../shared/format.js';
-import { freezePillActivity } from '../shared/pill-activity.js';
+import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -122,7 +122,10 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'shutdown-requested': return addToStream(freezePills({ ...state, shutdownRequested: true }), '⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
     case 'app-shutdown':       return addToStream(freezePills({ ...state, appShutdown: true }), '⏹ Yoke shutdown complete', -1, 'warning');
     case 'snapshot-update':    return applySnapshotUpdate(state, event.data);
-    case 'lifecycle-update':   return applyLifecycleUpdate(state, event.data);
+    case 'lifecycle-update': {
+      const next = applyLifecycleUpdate(state, event.data);
+      return pillsDark(next) ? freezePills(next) : next;
+    }
     case 'phase-update':       return addToStream(state, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
     case 'log-message':        return addToStream(state, (event.data['message'] as string) ?? '', -1, (event.data['level'] as string) ?? 'info', (event.data['repo'] as string) || '');
     case 'workflow-approval':  return applyWorkflowApproval(state, event.data);
@@ -319,10 +322,13 @@ function applyEngineIdle(state: DashboardState, data: Record<string, unknown>): 
 }
 
 /** The pills go dark at shutdown (issue #268): freeze each one's activity the
- *  first time, so its status icon stays as it was while the engines drain. */
+ *  first time it is seen dark, so its status icon stays as it was while the
+ *  engines drain — including a pill whose first lifecycle update comes later. */
 function freezePills(state: DashboardState): DashboardState {
-  if (state.frozenPillActivity) return state;
-  return { ...state, frozenPillActivity: freezePillActivity(state.lastLifecyclePairs, state.cylinders) };
+  return {
+    ...state,
+    frozenPillActivity: freezePillActivity(state.lastLifecyclePairs, state.cylinders, state.frozenPillActivity),
+  };
 }
 
 function applyEngineShutdown(state: DashboardState, data: Record<string, unknown>): DashboardState {

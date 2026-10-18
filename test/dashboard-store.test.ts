@@ -1110,6 +1110,22 @@ test("frozenPillActivity: a dark pill's status icon stays frozen as it was while
   assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 31))), "working");
 });
 
+test("frozenPillActivity: a pill first seen after the pills went dark is frozen as it appears", () => {
+  let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
+  s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
+  // Another project's first lifecycle update (or a reconnecting dashboard's
+  // replay) arrives only after the shutdown request.
+  s = withPills(s, "o/b", [prPill(40, {}, { checksStatus: "pending" })]);
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 40))), "waiting-ci");
+
+  // Its checks then pass, but it keeps the icon it went dark with, and the
+  // pill frozen before it is left as it was.
+  s = withPills(s, "o/b", [prPill(40)]);
+  s = withPills(s, "o/a", [prPill(30)]);
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 40))), "waiting-ci");
+  assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
+});
+
 test("frozenPillActivity: a dashboard that only hears app-shutdown freezes the pills then", () => {
   let s = withPills(initialState(), "o/a", [prPill(30, {}, { checksStatus: "pending" })]);
   s = dashboardReducer(s, makeEvent("app-shutdown", {}));

@@ -66,11 +66,19 @@ export function pillKey(pair: LifecyclePair): string {
  * Every pill's activity at the moment the pills go dark, by pill key, so a dark
  * pill's status icon stays frozen as it was (issue #268) rather than changing
  * or disappearing as the in-flight work drains — the meteor of a pill whose
- * engine then finishes its last action stays, stopped where it stood.
+ * engine then finishes its last action stays, stopped where it stood. Pills
+ * already in `frozen` keep the activity they were frozen with; a pill first
+ * seen after the pills went dark is frozen as it is when it appears.
  */
 export function freezePillActivity(
   pairs: readonly LifecyclePair[],
   cylinders: readonly CylinderState[],
+  frozen: ReadonlyMap<string, PillActivity | null> | null = null,
 ): Map<string, PillActivity | null> {
-  return new Map(pairs.map((pair) => [pillKey(pair), pillActivity(pair, cylinders)]));
+  const next = new Map(frozen ?? []);
+  for (const pair of pairs) {
+    const key = pillKey(pair);
+    if (!next.has(key)) next.set(key, pillActivity(pair, cylinders));
+  }
+  return next;
 }
