@@ -1,7 +1,7 @@
 import { LitElement, html } from 'lit';
 import type { CylinderState, LifecyclePair } from '../store/types.js';
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
-import { workingCylinder } from '../shared/working-cylinder.js';
+import { pillActivity } from '../shared/pill-activity.js';
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
@@ -94,7 +94,7 @@ export class LifecycleList extends LitElement {
                       .pair=${pair}
                       .color=${color.hex}
                       .colorRgb=${color.rgb}
-                      .working=${workingCylinder(pair, this.cylinders) !== null}
+                      .activity=${pillActivity(pair, this.cylinders)}
                       .owner=${this.owner}
                       .repo=${this.repo}
                       .multiProject=${this.multiProject}
