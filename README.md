@@ -198,11 +198,14 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
   At its far right, a pill also shows an animated icon saying what it is doing or waiting on, if anything:
   - *spinning meteor* (the same as an engine cylinder's) — an engine is working on it
+  - *orange stop sign* (still) — shut down: see below
   - *waving person* — its PR is labelled `manual`, so yoke leaves it to you
   - *hourglass* — its PR's GitHub Actions checks are queued or running, which is why no engine is working on it
   - *blinking eye* — its PR is ready for review
 
   When more than one applies, the first in that list wins. Pills in none of these states show no icon.
+
+  During a graceful shutdown, a pill goes dark with the cylinder that was working it: when that engine finishes its in-flight action and shuts down, the pill dims like the shut-down cylinder row, stops pulsing — a planned implementation reads *shut down* instead of *implementing…* — and shows the stop sign. Nothing will update it again, so whatever it showed last is no longer live. Pills that no engine was working keep their state while the other engines finish, and every pill goes dark once Yoke's shutdown is complete.
 
 - **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
 
