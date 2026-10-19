@@ -1814,6 +1814,27 @@ export function formatLocalTime(epochMs: number): string {
   });
 }
 
+/**
+ * A wall-clock time as it was rendered into a line of text, with the instant it
+ * stands for. The server renders times in its own zone, which is right for the
+ * terminal and the log file but not for a dashboard viewed from anywhere else,
+ * so text bound for the dashboard carries these alongside it and the browser
+ * renders each time again in the viewer's zone (issue #272).
+ */
+export interface ClockTimeRef {
+  /** The time exactly as it appears in the text. */
+  text: string;
+  /** Epoch millis it stands for. */
+  atMs: number;
+}
+
+/** The `ClockTimeRef` of each instant, as `formatLocalTime` renders it. Absent instants are skipped. */
+export function clockTimeRefs(...instants: ReadonlyArray<number | null | undefined>): ClockTimeRef[] {
+  return instants
+    .filter((ms): ms is number => typeof ms === "number" && Number.isFinite(ms))
+    .map((atMs) => ({ text: formatLocalTime(atMs), atMs }));
+}
+
 function buildPushRecoveryBackupBranchName(branch: string): string {
   const sanitizedBranch = branch
     .replace(/[^a-zA-Z0-9/_-]+/g, "-")

@@ -1,8 +1,10 @@
 import {
+  clockTimeRefs,
   formatLocalTime,
   formatWaitRemaining,
   readClaudeCredentials,
   type ClaudeAuthResult,
+  type ClockTimeRef,
 } from "./claude-agent.js";
 import type { EventEmitter } from "./event-emitter.js";
 
@@ -60,6 +62,12 @@ export interface UsageReading {
    * not blank the gauge: the epoch millis those numbers were read.
    */
   heldFromMs?: number;
+  /**
+   * The wall-clock times `reason` names, as the server rendered them, so the
+   * Dashboard can show them in the viewer's time zone instead. Absent when the
+   * reason names none.
+   */
+  clockTimes?: ClockTimeRef[];
 }
 
 /**
@@ -115,8 +123,16 @@ function readingWithoutNumbers(
   status: Exclude<UsageStatus, "ok">,
   reason: string,
   nowMs: number,
+  clockTimes: ClockTimeRef[] = [],
 ): UsageReading {
-  return { status, fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: nowMs, reason };
+  return {
+    status,
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: nowMs,
+    reason,
+    ...(clockTimes.length > 0 ? { clockTimes } : {}),
+  };
 }
 
 /** Read the account's 5-hour window once. Never throws: a failure is a reading too. */
@@ -184,7 +200,9 @@ const NO_CLAUDE_LOGIN_REASON =
 export async function readClaudeLoginToken(
   nowMs: number,
   readCredentials: ClaudeCredentialsReader = readClaudeCredentials,
-): Promise<{ token: string } | { status: Exclude<UsageStatus, "ok">; reason: string }> {
+): Promise<
+  { token: string } | { status: Exclude<UsageStatus, "ok">; reason: string; clockTimes?: ClockTimeRef[] }
+> {
   const read = await readCredentials();
   if ("valid" in read) {
     return read.reason === "credentials not found"
@@ -210,6 +228,7 @@ export async function readClaudeLoginToken(
     return {
       status: "unavailable",
       reason: `the Claude CLI login expired at ${formatLocalTime(expiresAt)} — claude renews it the next time it runs`,
+      clockTimes: clockTimeRefs(expiresAt),
     };
   }
   return { token };
@@ -384,7 +403,7 @@ export class AnthropicUsageMonitor {
     } catch {
       login = { status: "unavailable", reason: "could not read the Claude CLI login" };
     }
-    if (!("token" in login)) return readingWithoutNumbers(login.status, login.reason, this.clock());
+    if (!("token" in login)) return readingWithoutNumbers(login.status, login.reason, this.clock(), login.clockTimes);
     return fetchAnthropicUsage(login.token, { ...this.fetchOptions, tokenLabel: CLAUDE_LOGIN_LABEL });
   }
 

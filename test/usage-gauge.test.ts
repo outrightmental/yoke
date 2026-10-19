@@ -8,6 +8,7 @@ import {
 } from "../src/dashboard/shared/usage-gauge.js";
 import type { AccountUsage } from "../src/dashboard/store/types.js";
 import { YokeHeader } from "../src/dashboard/components/yoke-header.js";
+import { formatClockTime } from "../src/dashboard/shared/format.js";
 
 const NOW = Date.parse("2026-10-12T14:30:00Z");
 const MINUTE = 60_000;
@@ -49,6 +50,18 @@ function renderHeader(props: Partial<YokeHeader> = {}): string {
   const header = new YokeHeader();
   Object.assign(header, { owner: "o", repo: "r" }, props);
   return flatten(header.render()).replace(/\s+/g, " ");
+}
+
+/** Run `fn` as a browser whose time zone is `timeZone`: Node renders local times in process.env.TZ. */
+function asViewerIn<T>(timeZone: string, fn: () => T): T {
+  const saved = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
 }
 
 // ── usageGaugeView ───────────────────────────────────────────────────────────
@@ -161,6 +174,30 @@ test("usageGaugeView: a failed read that holds the last good numbers keeps showi
     /^Claude usage: 15% of the 5-hour window used as of .+, resets .+ · the latest reading failed: Anthropic is overloaded \(HTTP 529\)$/,
   );
   assert.equal(usageGaugeView(heldReading(92), NOW).tone, "critical");
+});
+
+test("usageGaugeView: every time in the tooltip reads in the viewer's time zone (#272)", () => {
+  const reading = okReading(37);
+  const held = heldReading(15);
+  const limitUntilMs = NOW + 1 * HOUR + 41 * MINUTE;
+  for (const zone of ["America/New_York", "Asia/Tokyo"]) {
+    const at = (ms: number) => formatClockTime(ms, zone);
+    asViewerIn(zone, () => {
+      assert.equal(usageGaugeView(reading, NOW).title, `Claude usage: 37% of the 5-hour window used, resets ${at(reading.resetsAtMs!)}`, zone);
+      assert.equal(
+        usageGaugeView(held, NOW).title,
+        `Claude usage: 15% of the 5-hour window used as of ${at(held.heldFromMs!)}, resets ${at(held.resetsAtMs!)}` +
+          " · the latest reading failed: Anthropic is overloaded (HTTP 529)",
+        zone,
+      );
+      assert.equal(
+        usageGaugeView(held, NOW, limitUntilMs).title,
+        `Claude usage limit reached — work resumes ${at(limitUntilMs)}` +
+          ` · Anthropic last reported 15% of the 5-hour window used at ${at(held.heldFromMs!)}`,
+        zone,
+      );
+    });
+  }
 });
 
 test("usageGaugeView: held numbers still go dark once readings stop arriving or the window resets", () => {

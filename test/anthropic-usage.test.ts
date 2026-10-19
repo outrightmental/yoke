@@ -304,6 +304,19 @@ test("AnthropicUsageMonitor reports an expired Claude login without asking Anthr
   );
 });
 
+test("AnthropicUsageMonitor sends the time an expired login's reason names, so the Dashboard can show it in the viewer's zone", async () => {
+  const emitter = new EventEmitter();
+  const events = collectUsageEvents(emitter);
+  const expiresAt = NOW - 1;
+  const { readCredentials } = fakeCredentials(claudeCredentials(TOKEN, expiresAt));
+  const monitor = new AnthropicUsageMonitor({ token: undefined, emitter, clock: () => NOW, readCredentials });
+
+  const reading = await monitor.poll();
+  const expired = { text: formatLocalTime(expiresAt), atMs: expiresAt };
+  assert.deepEqual(reading.clockTimes, [expired]);
+  assert.deepEqual(events[0]!.data["clockTimes"], [expired], "the usage-update carries it to the gauge");
+});
+
 test("AnthropicUsageMonitor names the Claude login, not anthropic_usage_token, when Anthropic rejects it", async () => {
   const emitter = new EventEmitter();
   const { fetchImpl } = fakeFetch(() => jsonResponse({ error: { message: `bad ${TOKEN}` } }, 401));

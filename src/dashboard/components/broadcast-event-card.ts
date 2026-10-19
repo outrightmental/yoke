@@ -3,6 +3,7 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import type { BroadcastEventData } from '../store/types.js';
 import { linkifyTextHtml } from '../shared/linkify.js';
 import { NEUTRAL_COLOR } from '../shared/issue-colors.js';
+import { formatTimeOfDay } from '../shared/format.js';
 
 /**
  * Monochrome glyph per action type (issue #236): the feed distinguishes types
@@ -209,7 +210,7 @@ export class BroadcastEventCard extends LitElement {
             ` : ''}
             ${this.multiProject && ev.repo ? html`<span class="broadcast-event-project">${ev.repo}</span>` : ''}
           </div>
-          <span class="broadcast-event-time">${ev.time}</span>
+          <span class="broadcast-event-time">${formatTimeOfDay(ev.atMs)}</span>
         </div>
         <div class="broadcast-event-flow">
           <div class="broadcast-event-row before-row">

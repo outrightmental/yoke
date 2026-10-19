@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import type { EventLine } from '../store/types.js';
+import { formatLogTime } from '../shared/format.js';
 
 export class EventStream extends LitElement {
   static override styles = css`
@@ -82,7 +83,7 @@ export class EventStream extends LitElement {
         ${this.events.map(line => html`
           <div class="event-line">
             <span class="event-dot" style="${line.color ? `color:${line.color};text-shadow:0 0 5px ${line.color}` : ''}">●</span>
-            <span class="event-time">${line.time}</span>
+            <span class="event-time">${formatLogTime(line.atMs)}</span>
             ${this.multiProject && line.repo ? html`<span class="event-repo">${line.repo}</span>` : ''}
             <span class="event-content" style="${this._contentStyle(line)}">${line.text}</span>
           </div>

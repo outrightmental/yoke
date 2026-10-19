@@ -62,6 +62,18 @@ export interface AccountUsage {
   heldFromMs?: number;
 }
 
+/**
+ * A wall-clock time the server rendered into a line of text, in its own zone,
+ * with the instant it stands for — so the dashboard can render it again in the
+ * viewer's (mirrors `ClockTimeRef` in src/claude-agent.ts).
+ */
+export interface ClockTimeRef {
+  /** The time exactly as the server rendered it into the text. */
+  text: string;
+  /** Epoch millis it stands for. */
+  atMs: number;
+}
+
 export interface IssueCard {
   number: number;
   title: string;
@@ -106,7 +118,8 @@ export interface BroadcastEventData {
   runId?: string;
   /** "owner/repo" this feed item belongs to (shown as a chip in multi-project mode). */
   repo?: string;
-  time: string;
+  /** Epoch millis of the event, rendered in the viewer's time zone. */
+  atMs: number;
   /** Stable color of the issue this event pertains to, or the neutral gray
    *  when the event has no associated issue. */
   color: string;
@@ -116,7 +129,8 @@ export interface EventLine {
   text: string;
   cylinderIdx: number;
   level: string;
-  time: string;
+  /** Epoch millis of the event, rendered in the viewer's time zone. */
+  atMs: number;
   color: string | null;
   /** "owner/repo" this log line came from, when it originates from a project. */
   repo?: string;

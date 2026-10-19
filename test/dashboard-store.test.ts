@@ -7,6 +7,7 @@ import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
 import { pillActivity, pillKey, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
 import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
+import { formatClockTime } from "../src/dashboard/shared/format.js";
 
 interface WireEvent {
   type: string;
@@ -1188,4 +1189,106 @@ test("reducer: engine-idle clears the worked titles", () => {
   assert.equal(s.cylinders[0]?.issueTitle, "t");
   s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "nothing to do this cycle" }));
   assert.equal(s.cylinders[0]?.issueTitle, null);
+});
+
+// ── times in the viewer's time zone (issue #272) ────────────────────────────────
+
+/** Run `fn` as a browser whose time zone is `timeZone`: Node renders local times in process.env.TZ. */
+function asViewerIn<T>(timeZone: string, fn: () => T): T {
+  const saved = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+}
+
+function eventAt(atMs: number, type: string, data: Record<string, unknown> = {}): WireEvent {
+  return { type, timestamp: new Date(atMs).toISOString(), data };
+}
+
+test("reducer: an event-stream line keeps its event's own instant, not when the browser saw it", () => {
+  // A replayed cached event, or one that arrives late, is stamped with when it
+  // happened; the line is drawn from that instant in the viewer's zone.
+  const atMs = Date.parse("2026-10-18T22:45:07Z");
+  let s = dashboardReducer(initialState(), eventAt(atMs, "log-message", { level: "info", message: "hello" }));
+  s = dashboardReducer(s, eventAt(atMs + 1_000, "action-start", { actionIndex: 1, totalActions: 1, type: "t", issueNumber: 7, description: "d" }));
+  s = dashboardReducer(s, eventAt(atMs + 2_000, "shutdown-requested"));
+  assert.deepEqual(s.eventStream.map((line) => line.atMs), [atMs, atMs + 1_000, atMs + 2_000]);
+});
+
+test("reducer: a line whose event has no usable timestamp is stamped when it arrives", () => {
+  const before = Date.now();
+  const s = dashboardReducer(initialState(), { type: "log-message", timestamp: "", data: { message: "hello" } });
+  const atMs = s.eventStream[0]!.atMs;
+  assert.ok(atMs >= before && atMs <= Date.now());
+});
+
+test("reducer: broadcast cards keep their event's own instant", () => {
+  const atMs = Date.parse("2026-10-18T22:45:07Z");
+  let s = dashboardReducer(initialState(), eventAt(atMs, "broadcast-commit", { hash: "abc1234", stateAfter: "advanced" }));
+  s = dashboardReducer(s, eventAt(atMs + 1_000, "workflow-approval", { runName: "CI", runId: "9" }));
+  assert.deepEqual(s.broadcastQueue.map((card) => card.atMs), [atMs, atMs + 1_000]);
+});
+
+test("reducer: a server log line keeps the server's rendering of any time it names", () => {
+  // Issue #272: log text stays as the server wrote it, even when it carries clockTimes.
+  const untilMs = Date.parse("2026-10-18T22:45:00Z");
+  const served = formatClockTime(untilMs, "America/New_York");
+  const message = `⏸ waiting 2h until ${served} for Claude usage limit`;
+  const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("log-message", {
+    level: "info", message, clockTimes: [{ text: served, atMs: untilMs }],
+  })));
+  assert.equal(s.eventStream[0]?.text, message);
+});
+
+test("reducer: a usage reason with no usable clockTimes keeps the server's text", () => {
+  const reason = "the Claude CLI login expired at Oct 18, 6:45 PM — claude renews it the next time it runs";
+  for (const clockTimes of [undefined, "Oct 18, 6:45 PM", [null, { text: "Oct 18, 6:45 PM" }, { text: "Oct 18, 6:45 PM", atMs: Number.NaN }]]) {
+    const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("usage-update", {
+      status: "unavailable", fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: 1_000, reason,
+      ...(clockTimes !== undefined ? { clockTimes } : {}),
+    })));
+    assert.equal(s.usage?.reason, reason);
+  }
+});
+
+test("reducer: the work-hold line names the deadline in the viewer's zone", () => {
+  const untilMs = Date.now() + 2 * 60 * 60 * 1000;
+  const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("work-hold", {
+    kind: "claude-usage-limit", reason: "Claude usage limit", untilMs,
+  })));
+  assert.match(s.eventStream[0]?.text ?? "", new RegExp(` until ${formatClockTime(untilMs, "Asia/Tokyo")} for Claude usage limit$`));
+});
+
+test("reducer: a usage reason that names a time shows it in the viewer's zone", () => {
+  const expiredAtMs = Date.parse("2026-10-18T22:45:00Z");
+  const served = formatClockTime(expiredAtMs, "America/New_York");
+  const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "unavailable",
+    fiveHourPercent: null,
+    resetsAtMs: null,
+    fetchedAtMs: 1_000,
+    reason: `the Claude CLI login expired at ${served} — claude renews it the next time it runs`,
+    clockTimes: [{ text: served, atMs: expiredAtMs }],
+  })));
+  assert.equal(
+    s.usage?.reason,
+    `the Claude CLI login expired at ${formatClockTime(expiredAtMs, "Asia/Tokyo")} — claude renews it the next time it runs`,
+  );
+});
+
+test("DashboardStore.bootstrap() stamps replayed events with when they happened", async () => {
+  const atMs = Date.parse("2026-10-18T22:45:07Z");
+  await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [eventAt(atMs, "phase-update", { phase: "planning" })] }, async () => {
+    const store = new DashboardStore();
+    try {
+      await store.bootstrap();
+      assert.equal(store.getState().eventStream[0]?.atMs, atMs);
+    } finally {
+      store.disconnect();
+    }
+  });
 });
