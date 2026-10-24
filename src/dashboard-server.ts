@@ -1,5 +1,6 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import open from "open";
@@ -126,12 +127,20 @@ async function serveMedia(
  * any site it visits open a socket to localhost, but always names that site in
  * the Origin header, so only a same-origin page — or a client that is not a
  * browser and sends no Origin at all — may ask yoke to merge a PR.
+ *
+ * Same-origin alone is not enough: a site whose domain name is made to
+ * resolve to 127.0.0.1 (DNS rebinding) is same-origin with itself. So the page
+ * must also have been loaded by a name no other site can point here — an IP
+ * address, `localhost`, or the host the dashboard listens on.
  */
-function isSameOriginRequest(req: http.IncomingMessage): boolean {
+function isSameOriginRequest(req: http.IncomingMessage, serverHost: string): boolean {
   const origin = req.headers.origin;
   if (origin === undefined) return true;
   try {
-    return new URL(origin).host === req.headers.host;
+    const originUrl = new URL(origin);
+    if (originUrl.host !== req.headers.host) return false;
+    const hostname = originUrl.hostname.replace(/^\[(.*)\]$/, "$1");
+    return hostname === "localhost" || hostname === serverHost || net.isIP(hostname) !== 0;
   } catch {
     return false;
   }
@@ -286,7 +295,7 @@ export class DashboardServer {
       ws.send(JSON.stringify(event));
     }
 
-    const sameOrigin = isSameOriginRequest(req);
+    const sameOrigin = isSameOriginRequest(req, this.host);
     ws.on("message", (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString()) as {

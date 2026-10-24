@@ -633,6 +633,7 @@ async function approvalsHeard(
   config: { projects?: string[]; multiProject?: boolean },
   messages: unknown[],
   origin?: string,
+  host?: string,
 ): Promise<Array<Record<string, unknown>>> {
   const emitter = new EventEmitter();
   const heard: Array<Record<string, unknown>> = [];
@@ -652,7 +653,10 @@ async function approvalsHeard(
   t.after(() => server.close());
 
   for (const message of messages) {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, origin !== undefined ? { origin } : {});
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, {
+      ...(origin !== undefined && { origin }),
+      ...(host !== undefined && { headers: { host } }),
+    });
     await new Promise<void>((resolve) => ws.once("open", resolve));
     ws.send(typeof message === "string" ? message : JSON.stringify(message));
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -706,6 +710,26 @@ test("DashboardServer takes Approve clicks only from its own page, never another
     `http://127.0.0.1:${TEST_PORT + 28}`,
   );
   assert.deepEqual(own, [{ repo: "o/a", pullRequestNumber: 7 }], "the dashboard's own page can");
+
+  const byName = await approvalsHeard(
+    t,
+    TEST_PORT + 29,
+    { projects: ["o/a"] },
+    [message],
+    `http://localhost:${TEST_PORT + 29}`,
+    `localhost:${TEST_PORT + 29}`,
+  );
+  assert.deepEqual(byName, [{ repo: "o/a", pullRequestNumber: 7 }], "opened as localhost");
+
+  const rebound = await approvalsHeard(
+    t,
+    TEST_PORT + 30,
+    { projects: ["o/a"] },
+    [message],
+    `http://evil.example:${TEST_PORT + 30}`,
+    `evil.example:${TEST_PORT + 30}`,
+  );
+  assert.deepEqual(rebound, [], "a site whose name was made to resolve to this machine cannot");
 });
 
 test("DashboardServer broadcasts css-reload when bundle.css changes on disk", async (t) => {
