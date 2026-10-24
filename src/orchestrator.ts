@@ -295,7 +295,11 @@ function getRelevantSessions(
   return agentSessions
     .filter(
       (session) =>
-        (session.issueNumber !== undefined && issueNumberSet.has(session.issueNumber)) ||
+        // An approval (#274) covers only the PR it was given to, never the
+        // issue's other PRs.
+        (session.phase === "approval"
+          ? session.pullRequestNumber === pullRequestNumber
+          : session.issueNumber !== undefined && issueNumberSet.has(session.issueNumber)) ||
         session.pullRequestNumber === pullRequestNumber,
     )
     .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt));

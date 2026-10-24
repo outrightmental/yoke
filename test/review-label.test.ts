@@ -686,3 +686,25 @@ test("commentOnApproval says so on the PR, and yoke never reads its own comment 
   ]);
   assert.deepEqual(fakes.recordedCommentIds, [9001, 9001]);
 });
+
+test("buildPlan merges only the PR that was approved, not the issue's other parked PRs", () => {
+  const snapshot = parkedSnapshot({
+    approved: true,
+    sessions: [
+      createSession({
+        id: "s5",
+        issueNumber: 1,
+        pullRequestNumber: 11,
+        phase: "request-review",
+        updatedAt: "2024-01-02T12:00:00.000Z",
+      }),
+    ],
+  });
+  snapshot.pullRequests.push(
+    createPullRequest({ number: 11, linkedIssueNumbers: [1], labels: [REVIEW_LABEL], body: "Closes #1" }),
+  );
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [SQUASH_MERGE_10]);
+  assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "approved");
+  assert.equal(reviewApprovalState(snapshot.pullRequests[1]!, snapshot), "awaiting-approval");
+});
