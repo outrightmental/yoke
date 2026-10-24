@@ -2,6 +2,7 @@ import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
 import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef } from './types.js';
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
+import { approveRequestMessage, type ApproveTarget } from '../shared/pill-approval.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -161,6 +162,9 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'work-hold':         return applyWorkHold(state, event.data, atMs);
     case 'work-hold-cleared': return applyWorkHoldCleared(state, atMs);
     case 'usage-update':      return applyUsageUpdate(state, event.data);
+    // An Approve click relayed to the engine pool, which logs the request and
+    // its outcome itself; the pill learns of the approval from its lifecycle.
+    case 'pull-request-approve': return state;
     case 'broadcast-github-activity':
     case 'broadcast-commit':
     case 'broadcast-pr-update':
@@ -658,6 +662,14 @@ export class DashboardStore {
     } catch (err) {
       console.error('[DashboardStore] bootstrap failed:', err);
     }
+  }
+
+  /**
+   * Ask yoke to approve a review-gated PR and squash-merge it (#274). Returns
+   * false when there is no live connection to send the request on.
+   */
+  approvePullRequest(target: ApproveTarget): boolean {
+    return this._wsClient?.send(approveRequestMessage(target)) ?? false;
   }
 
   connectLive(wsUrl?: string): void {

@@ -73,6 +73,18 @@ export class WsClient {
     });
   }
 
+  /**
+   * Send a message to the server as JSON. Returns false, sending nothing, when
+   * the socket is not open — a click made while reconnecting is not queued up
+   * to fire later, when it may no longer mean the same thing.
+   */
+  send(message: Record<string, unknown>): boolean {
+    const ws = this._ws;
+    if (ws === null || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(message));
+    return true;
+  }
+
   close(): void {
     this._intentionallyClosed = true;
     if (this._reconnectTimer !== null) {

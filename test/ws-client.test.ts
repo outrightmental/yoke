@@ -147,3 +147,55 @@ test("DashboardStore: connection becomes 'disconnected' when WebSocket server cl
 
   assert.equal(store.getState().connection, "disconnected", "store connection should be 'disconnected' after server closes");
 });
+
+test("WsClient.send: delivers a message as JSON once open, and sends nothing before", async (t) => {
+  const port = BASE_PORT + 5;
+  const wss = new WebSocketServer({ host: "127.0.0.1", port });
+  const received: unknown[] = [];
+  wss.on("connection", (ws) => ws.on("message", (data: Buffer) => received.push(JSON.parse(data.toString()))));
+  const client = new WsClient(`ws://127.0.0.1:${port}`, () => {});
+  t.after(() => { client.close(); wss.close(); });
+
+  assert.equal(client.send({ type: "early" }), false, "no socket yet");
+  client.connect();
+  assert.equal(client.send({ type: "early" }), false, "still connecting: not queued for later");
+  await waitMs(150);
+
+  assert.equal(client.send({ type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: 10 }), true);
+  await waitMs(100);
+  assert.deepEqual(received, [{ type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: 10 }]);
+});
+
+test("DashboardStore.approvePullRequest: an Approve click reaches the engine pool (#274)", async (t) => {
+  const port = BASE_PORT + 6;
+  const { DashboardServer } = await import("../src/dashboard-server.js");
+  const { EventEmitter } = await import("../src/event-emitter.js");
+  const emitter = new EventEmitter();
+  const heard: unknown[] = [];
+  emitter.subscribe((event) => {
+    if (event.type === "pull-request-approve") heard.push(event.data);
+  });
+  const server = new DashboardServer({
+    port,
+    host: "127.0.0.1",
+    owner: "",
+    repo: "",
+    multiProject: true,
+    projects: ["o/a", "o/b"],
+    eventEmitter: emitter,
+  });
+  await server.initialize();
+  await server.start();
+
+  const { DashboardStore } = await import("../src/dashboard/store/dashboard-store.js");
+  const store = new DashboardStore();
+  t.after(() => { store.disconnect(); server.close(); });
+
+  assert.equal(store.approvePullRequest({ repo: "o/b", pullRequestNumber: 10 }), false, "not connected yet");
+  store.connectLive(`ws://127.0.0.1:${port}/api/ws`);
+  await waitMs(300);
+
+  assert.equal(store.approvePullRequest({ repo: "o/b", pullRequestNumber: 10 }), true);
+  await waitMs(100);
+  assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }]);
+});

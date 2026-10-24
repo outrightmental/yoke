@@ -1,6 +1,17 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import type { LifecyclePair } from '../store/types.js';
 import type { PillActivity } from '../shared/pill-activity.js';
+import { approveControl, type ApproveControl, type ApproveTarget } from '../shared/pill-approval.js';
+
+/** How long an armed Approve button waits for the confirming second click. */
+const APPROVE_CONFIRM_MS = 4000;
+/** How long a sent approval holds the button before it can be pressed again,
+ *  should yoke turn it down (the event log says why). */
+const APPROVE_SENT_MS = 20000;
+
+function approveKey(target: ApproveTarget): string {
+  return `${target.repo}#${target.pullRequestNumber}`;
+}
 
 /** The status icon and its tooltip for each pill activity (issue #262). */
 const STATUS_ICONS: Record<PillActivity, { title: string; icon: TemplateResult }> = {
@@ -361,6 +372,57 @@ export class LifecyclePill extends LitElement {
       15%, 45%      { transform: rotate(-25deg); }
       30%           { transform: rotate(10deg); }
     }
+
+    /* The Approve button on a PR parked by the review label (#274), in the
+       engine cylinder's Cancel-button style but green. Like the status icon it
+       sits over the PR half, just left of the icon, with the room for it kept
+       inside the PR half's row — so both halves stay the same width and the
+       seams of all pills line up. It is the same width in every step, so
+       arming and sending it never moves anything. */
+    .lifecycle-pill.has-approve .pill-pr-half .pill-row { padding-right: 64px; }
+    .lifecycle-pill.has-approve.has-status .pill-pr-half .pill-row { padding-right: 88px; }
+
+    .pill-approve {
+      position: absolute;
+      right: 14px;
+      top: 50%;
+      width: 60px;
+      margin-top: -9px;
+      box-sizing: border-box;
+      background: transparent;
+      border: 1px solid rgba(0, 255, 136, 0.45);
+      color: rgba(0, 255, 136, 0.85);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 9px;
+      font-weight: 600;
+      line-height: 16px;
+      letter-spacing: 0.5px;
+      padding: 0;
+      text-align: center;
+      text-transform: uppercase;
+      white-space: nowrap;
+      cursor: pointer;
+      border-radius: 2px;
+      transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+
+    .lifecycle-pill.has-status .pill-approve { right: 38px; }
+
+    .pill-approve:hover:not(:disabled),
+    .pill-approve.confirm {
+      background: rgba(0, 255, 136, 0.15);
+      border-color: #00ff88;
+      color: #00ff88;
+    }
+
+    .pill-approve.confirm { box-shadow: 0 0 8px rgba(0, 255, 136, 0.45); }
+
+    .pill-approve:disabled { cursor: not-allowed; }
+
+    .pill-approve:disabled:not(.sent) {
+      border-color: rgba(255, 255, 255, 0.2);
+      color: rgba(255, 255, 255, 0.35);
+    }
   `;
 
   static override properties = {
@@ -372,6 +434,7 @@ export class LifecyclePill extends LitElement {
     multiProject: { type: Boolean },
     activity: { type: String },
     dark: { type: Boolean },
+    _approve: { state: true },
   };
 
   pair: LifecyclePair | null = null;
@@ -384,6 +447,59 @@ export class LifecyclePill extends LitElement {
   owner = '';
   repo = '';
   multiProject = false;
+  /** The Approve click in progress, if any: armed awaiting the confirming
+   *  second click, or sent. Keyed by PR, because the list reuses pill elements
+   *  as pills move, so it never carries over to a different PR. */
+  private _approve: { key: string; step: 'confirm' | 'sent' } | null = null;
+  private _approveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this._setApprove(null);
+  }
+
+  /** Move the Approve click on to `next`, falling back to idle after `ms`. */
+  private _setApprove(next: { key: string; step: 'confirm' | 'sent' } | null, ms = 0) {
+    if (this._approveTimer !== null) clearTimeout(this._approveTimer);
+    this._approveTimer = next !== null ? setTimeout(() => this._setApprove(null), ms) : null;
+    this._approve = next;
+  }
+
+  /** First click arms the button; only a second click within a few seconds
+   *  approves — the dashboard often hangs on a wall within reach of passers-by. */
+  private _onApproveClick(event: Event, control: ApproveControl) {
+    event.stopPropagation();
+    const key = approveKey(control.target);
+    if (control.disabled || (this._approve?.key === key && this._approve.step === 'sent')) return;
+    if (this._approve?.key !== key) {
+      this._setApprove({ key, step: 'confirm' }, APPROVE_CONFIRM_MS);
+      return;
+    }
+    this._setApprove({ key, step: 'sent' }, APPROVE_SENT_MS);
+    this.dispatchEvent(new CustomEvent<ApproveTarget>('pill-approve', {
+      detail: control.target,
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private _approveButton(control: ApproveControl | null) {
+    if (!control) return '';
+    const step = this._approve?.key === approveKey(control.target) ? this._approve.step : null;
+    const prNumber = control.target.pullRequestNumber;
+    const [label, title] =
+      step === 'sent' ? ['Sending', `Approval of PR #${prNumber} sent to yoke`]
+      : step === 'confirm' ? ['Confirm', `Click again to approve and squash-merge PR #${prNumber}`]
+      : ['Approve', control.title];
+    return html`<button
+      class="pill-approve${step ? ` ${step}` : ''}"
+      type="button"
+      title="${title}"
+      aria-label="${title}"
+      ?disabled=${control.disabled || step === 'sent'}
+      @click=${(event: Event) => this._onApproveClick(event, control)}
+    >${label}</button>`;
+  }
 
   /** GitHub base URL for this pill: the pair's own repo, else the global one. */
   private _baseUrl(): string {
@@ -436,7 +552,7 @@ export class LifecyclePill extends LitElement {
     const badges: string[] = [];
     if (pair.disabled) badges.push('MANUAL');
     if (pr.draft) badges.push('DRAFT');
-    if (pair.prPhase === 'review') badges.push('READY');
+    if (pair.prPhase === 'review') badges.push(pair.approval === 'approved' ? 'APPROVED' : 'READY');
     if (pair.prPhase === 'completed') badges.push('MERGED');
     const checksIcon = pr.checksStatus === 'success' ? '✓' : pr.checksStatus === 'failure' ? '✗' : pr.checksStatus === 'pending' ? '…' : '';
     if (checksIcon) badges.push(checksIcon);
@@ -469,13 +585,15 @@ export class LifecyclePill extends LitElement {
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
     const stateClass = this.dark ? ' shutdown' : this.activity === 'working' ? ' working' : '';
-    const pillClass = `lifecycle-pill${stateClass}${this.activity ? ' has-status' : ''}`;
+    const approve = approveControl(pair, this.activity, this.dark);
+    const pillClass = `lifecycle-pill${stateClass}${this.activity ? ' has-status' : ''}${approve ? ' has-approve' : ''}`;
 
     if (!pair.issue) {
       return html`
         <div class="${pillClass}" style="${style}">
           <div class="pill-issue-half empty">${projectChip}</div>
           ${this._prHalf()}
+          ${this._approveButton(approve)}
           ${this._statusIcon()}
         </div>`;
     }
@@ -496,6 +614,7 @@ export class LifecyclePill extends LitElement {
           </div>
         </div>
         ${this._prHalf()}
+        ${this._approveButton(approve)}
         ${this._statusIcon()}
       </div>`;
   }

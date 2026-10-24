@@ -9,7 +9,8 @@ import { workingCylinder } from './working-cylinder.js';
  * - `manual`: its PR is labelled "manual", so yoke leaves it to a human.
  * - `waiting-ci`: its PR's checks are queued or running. Yoke never advances
  *   a PR past pending checks, so that is why no engine is working it.
- * - `review`: its PR is ready for review.
+ * - `review`: its PR is ready for review — and not yet approved for merge on
+ *   the dashboard (#274), when it is no longer waiting on a reviewer.
  */
 export type PillActivity = 'working' | 'manual' | 'waiting-ci' | 'review';
 
@@ -37,7 +38,7 @@ export function pillActivity(
   if (workingCylinder(pair, cylinders)) return 'working';
   if (pair.disabled) return 'manual';
   if (waitingOnChecks(pair)) return 'waiting-ci';
-  if (pair.prPhase === 'review') return 'review';
+  if (pair.prPhase === 'review' && pair.approval !== 'approved') return 'review';
   return null;
 }
 

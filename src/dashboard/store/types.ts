@@ -101,6 +101,10 @@ export interface LifecyclePair {
   projectStatus?: string;
   /** "owner/repo" this pair belongs to (set by the store from the update's scope). */
   repo?: string;
+  /** Set while a review-gated PR waits on a human (#274): `awaiting-approval`
+   *  while it is parked (the pill offers Approve), `approved` once approved
+   *  and its squash-merge is pending. */
+  approval?: 'awaiting-approval' | 'approved';
 }
 
 export interface BroadcastEventData {
