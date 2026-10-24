@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildPlan, REVIEW_LABEL } from "../src/orchestrator.js";
-import { executeAction } from "../src/actions.js";
+import { buildPlan, REVIEW_LABEL, reviewApprovalState } from "../src/orchestrator.js";
+import { approvePullRequest, commentOnApproval, executeAction } from "../src/actions.js";
 import type {
   ActionClaudeAgentClient,
   ActionGitHubClient,
@@ -403,4 +403,308 @@ test("executeAction request-review with no reviewers marks ready without request
     sessions.some((s) => s.phase === "request-review" && s.pullRequestNumber === 10),
     "expected a request-review session to be recorded",
   );
+});
+
+// ─── approval on the dashboard: carry on with the squash-merge (#274) ────────
+
+/**
+ * PR #10 on review-labelled issue #1, parked after `request-review` — or, with
+ * `approved`, approved on the dashboard since.
+ */
+function parkedSnapshot(overrides: {
+  pullRequest?: Partial<PullRequest>;
+  issueLabels?: string[];
+  approved?: boolean;
+  sessions?: AgentSession[];
+} = {}): RepositorySnapshot {
+  const agentSessions = [
+    createSession({
+      id: "s1",
+      issueNumber: 1,
+      pullRequestNumber: 10,
+      phase: "request-review",
+      updatedAt: "2024-01-02T00:00:00.000Z",
+    }),
+    ...(overrides.approved
+      ? [
+          createSession({
+            id: "s2",
+            issueNumber: 1,
+            pullRequestNumber: 10,
+            phase: "approval",
+            updatedAt: "2024-01-03T00:00:00.000Z",
+          }),
+        ]
+      : []),
+    ...(overrides.sessions ?? []),
+  ];
+  return {
+    issues: [createIssue({ number: 1, labels: overrides.issueLabels ?? [REVIEW_LABEL] })],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [1],
+        labels: [REVIEW_LABEL],
+        title: "Add the thing",
+        body: "Closes #1",
+        ...overrides.pullRequest,
+      }),
+    ],
+    agentSessions,
+  };
+}
+
+const SQUASH_MERGE_10 = {
+  type: "squash-merge",
+  issueNumber: 1,
+  pullRequestNumber: 10,
+  pullRequestTitle: "Add the thing",
+  pullRequestHeadRefName: "branch-10",
+  closingIssueNumbers: [1],
+  pullRequestBody: "Closes #1",
+};
+
+test("buildPlan squash-merges a review-gated PR once it is approved", () => {
+  const plan = buildPlan(parkedSnapshot({ approved: true }), 3);
+
+  assert.deepEqual(plan.actions, [SQUASH_MERGE_10]);
+});
+
+test("buildPlan merges an approved PR even if its review label is removed since", () => {
+  const snapshot = parkedSnapshot({ approved: true, issueLabels: [], pullRequest: { labels: [] } });
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [SQUASH_MERGE_10]);
+});
+
+test("buildPlan holds an approved PR's merge while its checks run, without spending a cylinder", () => {
+  const snapshot = parkedSnapshot({ approved: true, pullRequest: { checksStatus: "pending" } });
+  snapshot.issues.push(createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z" }));
+
+  const plan = buildPlan(snapshot, 1);
+
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 2 }]);
+});
+
+test("buildPlan never merges an approved PR over failing checks: it fixes them first", () => {
+  const plan = buildPlan(parkedSnapshot({ approved: true, pullRequest: { checksStatus: "failure" } }), 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "address-failing-checks", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha-10" },
+  ]);
+});
+
+test("buildPlan resolves an approved PR's merge conflicts before anything else", () => {
+  const plan = buildPlan(parkedSnapshot({ approved: true, pullRequest: { hasMergeConflicts: true } }), 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "resolve-conflicts", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha-10" },
+  ]);
+});
+
+test("buildPlan re-reviews an approved PR converted back to draft or commented on, instead of merging", () => {
+  for (const pullRequest of [{ draft: true }, { hasNewCommentsSinceLastRead: true }]) {
+    const plan = buildPlan(parkedSnapshot({ approved: true, pullRequest }), 3);
+
+    assert.deepEqual(
+      plan.actions,
+      [{ type: "self-review", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha-10" }],
+      JSON.stringify(pullRequest),
+    );
+  }
+});
+
+test("buildPlan treats work done after an approval as new: the PR comes back for approval", () => {
+  // Approved, then yoke fixed its failing checks and re-reviewed it clean.
+  const snapshot = parkedSnapshot({
+    approved: true,
+    sessions: [
+      createSession({
+        id: "s3",
+        issueNumber: 1,
+        pullRequestNumber: 10,
+        phase: "address-failing-checks",
+        updatedAt: "2024-01-04T00:00:00.000Z",
+      }),
+      createSession({
+        id: "s4",
+        issueNumber: 1,
+        pullRequestNumber: 10,
+        phase: "self-review",
+        updatedAt: "2024-01-05T00:00:00.000Z",
+        result: { madeChanges: false, pullRequestHeadSha: "sha-10" },
+      }),
+    ],
+  });
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [
+    { type: "request-review", issueNumber: 1, pullRequestNumber: 10, reviewers: [] },
+  ]);
+});
+
+test("reviewApprovalState: a review-gated PR parked after request-review awaits approval", () => {
+  for (const snapshot of [
+    parkedSnapshot(),
+    parkedSnapshot({ issueLabels: [] }),
+    parkedSnapshot({ pullRequest: { labels: [] } }),
+    parkedSnapshot({ pullRequest: { checksStatus: "pending" } }),
+    parkedSnapshot({ pullRequest: { checksStatus: "failure" } }),
+  ]) {
+    assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "awaiting-approval");
+  }
+});
+
+test("reviewApprovalState: an approved PR reads approved until its merge", () => {
+  const snapshot = parkedSnapshot({ approved: true });
+
+  assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "approved");
+});
+
+test("reviewApprovalState: nothing is awaited from a PR yoke would act on, or that no label holds back", () => {
+  const cases: Array<[string, RepositorySnapshot, boolean?]> = [
+    ["no review label anywhere", parkedSnapshot({ issueLabels: [], pullRequest: { labels: [] } })],
+    ["converted back to draft", parkedSnapshot({ pullRequest: { draft: true } })],
+    ["new comments since the review request", parkedSnapshot({ pullRequest: { hasNewCommentsSinceLastRead: true } })],
+    ["merge conflicts to resolve", parkedSnapshot({ pullRequest: { hasMergeConflicts: true } })],
+    ["labelled manual", parkedSnapshot({ pullRequest: { labels: [REVIEW_LABEL, "manual"] } })],
+    ["closed", parkedSnapshot({ pullRequest: { state: "closed" } })],
+    ["project mode, where every PR waits on GitHub", parkedSnapshot(), true],
+    ["still being self-reviewed", cleanSelfReviewSnapshot({ issueLabels: [REVIEW_LABEL] })],
+    [
+      "an engine on it",
+      parkedSnapshot({
+        sessions: [
+          createSession({
+            id: "s9",
+            issueNumber: 1,
+            pullRequestNumber: 10,
+            phase: "implementation",
+            status: "in_progress",
+            updatedAt: "2024-01-09T00:00:00.000Z",
+          }),
+        ],
+      }),
+    ],
+  ];
+  for (const [description, snapshot, projectMode] of cases) {
+    assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot, projectMode), undefined, description);
+  }
+});
+
+// ─── approvePullRequest: recording the approval ───────────────────────────────
+
+function approvalFakes() {
+  const sessions: AgentSession[] = [];
+  const comments: Array<{ pullRequestNumber: number; body: string }> = [];
+  const recordedCommentIds: number[] = [];
+  const gitHubClient = {
+    postComment: async (pullRequestNumber: number, body: string) => {
+      comments.push({ pullRequestNumber, body });
+      return 9001;
+    },
+  };
+  const sessionStore: ActionSessionStore = {
+    createSession: async (input) => {
+      sessions.push(
+        createSession({
+          id: `approval-${sessions.length}`,
+          issueNumber: input.issueNumber,
+          phase: input.phase,
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.pullRequestNumber !== undefined ? { pullRequestNumber: input.pullRequestNumber } : {}),
+          updatedAt: "2024-01-03T00:00:00.000Z",
+        }),
+      );
+    },
+    recordPostedCommentId: async (_pullRequestNumber, commentId) => {
+      recordedCommentIds.push(commentId);
+    },
+  };
+  return { gitHubClient, sessionStore, sessions, comments, recordedCommentIds };
+}
+
+test("approvePullRequest records the approval, and the planner then merges", async () => {
+  const fakes = approvalFakes();
+  const snapshot = parkedSnapshot();
+
+  const result = await approvePullRequest(fakes.sessionStore, snapshot, 10);
+
+  assert.deepEqual(result, { approved: true, checksPending: false });
+  assert.equal(fakes.sessions.length, 1);
+  assert.equal(fakes.sessions[0]!.phase, "approval");
+  assert.equal(fakes.sessions[0]!.status, "completed");
+  assert.equal(fakes.sessions[0]!.pullRequestNumber, 10);
+  assert.equal(fakes.sessions[0]!.issueNumber, 1);
+
+  snapshot.agentSessions.push(...fakes.sessions);
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [SQUASH_MERGE_10]);
+});
+
+test("approvePullRequest approves while checks run, for a merge once they pass", async () => {
+  const fakes = approvalFakes();
+
+  const result = await approvePullRequest(
+    fakes.sessionStore,
+    parkedSnapshot({ pullRequest: { checksStatus: "pending" } }),
+    10,
+  );
+
+  assert.deepEqual(result, { approved: true, checksPending: true });
+  assert.equal(fakes.sessions[0]?.phase, "approval");
+});
+
+test("approvePullRequest turns down a PR that is not parked awaiting approval, recording nothing", async () => {
+  const cases: Array<[string, RepositorySnapshot, number, string, { projectModeEnabled?: boolean; dryRun?: boolean }?]> = [
+    ["failing checks", parkedSnapshot({ pullRequest: { checksStatus: "failure" } }), 10, "its checks are failing"],
+    ["no such PR", parkedSnapshot(), 11, "it is not open"],
+    ["closed", parkedSnapshot({ pullRequest: { state: "closed" } }), 10, "it is not open"],
+    ["already approved", parkedSnapshot({ approved: true }), 10, "it is already approved"],
+    ["not review-gated", parkedSnapshot({ issueLabels: [], pullRequest: { labels: [] } }), 10, "it is not waiting on approval"],
+    ["still in self-review", cleanSelfReviewSnapshot({ issueLabels: [REVIEW_LABEL] }), 10, "it is not waiting on approval"],
+    ["project mode", parkedSnapshot(), 10, "it is not waiting on approval", { projectModeEnabled: true }],
+    ["dry run", parkedSnapshot(), 10, "--dry-run records nothing", { dryRun: true }],
+  ];
+  for (const [description, snapshot, pullRequestNumber, reason, options] of cases) {
+    const fakes = approvalFakes();
+    const result = await approvePullRequest(fakes.sessionStore, snapshot, pullRequestNumber, options);
+    assert.deepEqual(result, { approved: false, reason }, description);
+    assert.deepEqual(fakes.sessions, [], `${description}: no approval recorded`);
+  }
+});
+
+test("commentOnApproval says so on the PR, and yoke never reads its own comment back as feedback", async () => {
+  const fakes = approvalFakes();
+
+  await commentOnApproval(fakes.gitHubClient, fakes.sessionStore, 10, false);
+  await commentOnApproval(fakes.gitHubClient, fakes.sessionStore, 11, true);
+
+  assert.deepEqual(fakes.comments, [
+    { pullRequestNumber: 10, body: "Approved on the yoke dashboard. Yoke is squash-merging this PR." },
+    {
+      pullRequestNumber: 11,
+      body: "Approved on the yoke dashboard. Yoke will squash-merge this PR once its checks pass.",
+    },
+  ]);
+  assert.deepEqual(fakes.recordedCommentIds, [9001, 9001]);
+});
+
+test("buildPlan merges only the PR that was approved, not the issue's other parked PRs", () => {
+  const snapshot = parkedSnapshot({
+    approved: true,
+    sessions: [
+      createSession({
+        id: "s5",
+        issueNumber: 1,
+        pullRequestNumber: 11,
+        phase: "request-review",
+        updatedAt: "2024-01-02T12:00:00.000Z",
+      }),
+    ],
+  });
+  snapshot.pullRequests.push(
+    createPullRequest({ number: 11, linkedIssueNumbers: [1], labels: [REVIEW_LABEL], body: "Closes #1" }),
+  );
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [SQUASH_MERGE_10]);
+  assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "approved");
+  assert.equal(reviewApprovalState(snapshot.pullRequests[1]!, snapshot), "awaiting-approval");
 });

@@ -65,6 +65,23 @@ function isManualPullRequest(pullRequest: PullRequest): boolean {
   return pullRequest.labels.includes(MANUAL_LABEL);
 }
 
+/**
+ * Tells whether a PR is review-gated: it advances an open `review`-labelled
+ * issue or carries the label itself (the label is copied onto the PR at
+ * creation so the gate survives even if the issue is closed or relabelled
+ * mid-flight).
+ */
+function reviewGate(issues: readonly Issue[]): (pullRequest: PullRequest) => boolean {
+  const reviewIssueNumbers = new Set(
+    issues
+      .filter((issue) => issue.state === "open" && issue.labels.includes(REVIEW_LABEL))
+      .map((issue) => issue.number),
+  );
+  return (pullRequest) =>
+    pullRequest.labels.includes(REVIEW_LABEL) ||
+    pullRequest.linkedIssueNumbers.some((issueNumber) => reviewIssueNumbers.has(issueNumber));
+}
+
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((left, right) => left - right);
 }
@@ -278,7 +295,11 @@ function getRelevantSessions(
   return agentSessions
     .filter(
       (session) =>
-        (session.issueNumber !== undefined && issueNumberSet.has(session.issueNumber)) ||
+        // An approval (#274) covers only the PR it was given to, never the
+        // issue's other PRs.
+        (session.phase === "approval"
+          ? session.pullRequestNumber === pullRequestNumber
+          : session.issueNumber !== undefined && issueNumberSet.has(session.issueNumber)) ||
         session.pullRequestNumber === pullRequestNumber,
     )
     .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt));
@@ -288,6 +309,59 @@ function getLatestCompletedSession(agentSessions: AgentSession[]): AgentSession 
   return [...agentSessions]
     .filter((session) => session.status === "completed")
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+}
+
+function squashMergeAction(pullRequest: PullRequest) {
+  return {
+    type: "squash-merge" as const,
+    pullRequestNumber: pullRequest.number,
+    pullRequestTitle: pullRequest.title,
+    pullRequestHeadRefName: pullRequest.headRefName,
+    closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+    pullRequestBody: pullRequest.body,
+  };
+}
+
+export type ReviewApproval = "awaiting-approval" | "approved";
+
+/**
+ * Where a PR stands with the human approval the `review` label holds it for
+ * (#274), or undefined when it is not waiting on one:
+ *
+ * - `awaiting-approval`: parked. Yoke requested review after a clean
+ *   self-review and has nothing more to do on it until a human acts; the
+ *   dashboard offers an Approve button.
+ * - `approved`: a human approved it on the dashboard. Yoke squash-merges it on
+ *   an engine as soon as one is free and the merge gate allows.
+ *
+ * Mirrors the parking rules in `planPullRequestAction`: a PR with an engine on
+ * it, a re-queue signal (converted to draft, new comments) or merge conflicts
+ * is not waiting on anyone. Project mode is excluded — there every PR waits
+ * for a human on GitHub, whatever its labels — as are `manual` PRs.
+ */
+export function reviewApprovalState(
+  pullRequest: PullRequest,
+  snapshot: Pick<RepositorySnapshot, "issues" | "agentSessions">,
+  projectModeEnabled = false,
+): ReviewApproval | undefined {
+  if (projectModeEnabled || pullRequest.state !== "open" || isManualPullRequest(pullRequest)) {
+    return undefined;
+  }
+  const sessions = getRelevantSessions(
+    snapshot.agentSessions,
+    pullRequest.linkedIssueNumbers,
+    pullRequest.number,
+  );
+  if (sessions.some(isActiveSession)) return undefined;
+  if (pullRequest.draft || pullRequest.hasNewCommentsSinceLastRead || pullRequest.hasMergeConflicts) {
+    return undefined;
+  }
+  const phase = getLatestCompletedSession(sessions)?.phase;
+  if (phase === "approval") return "approved";
+  if (phase === "request-review" && reviewGate(snapshot.issues)(pullRequest)) {
+    return "awaiting-approval";
+  }
+  return undefined;
 }
 
 function planPullRequestAction(
@@ -370,6 +444,26 @@ function planPullRequestAction(
     return undefined;
   }
 
+  // A human approved this parked PR on the dashboard (#274): carry on with
+  // the squash-merge the review label held back, through the same merge gate
+  // as every other merge. The approval covers the PR as it was approved, so
+  // a PR converted back to draft or commented on since gets another
+  // self-review and comes back for approval, as does one whose failing
+  // checks or conflicts yoke has to fix first. Project mode never merges.
+  if (!projectMode && latestCompletedSession?.phase === "approval") {
+    if (mergeGateAction !== "proceed") {
+      return mergeGateAction;
+    }
+    if (pullRequest.draft || pullRequest.hasNewCommentsSinceLastRead) {
+      return withIssueNumber({
+        type: "self-review",
+        pullRequestNumber: pullRequest.number,
+        pullRequestHeadSha: pullRequest.headSha,
+      });
+    }
+    return withIssueNumber(squashMergeAction(pullRequest));
+  }
+
   // After human review was requested (project mode or a review-gated PR),
   // handle re-queue conditions; otherwise the PR stays parked for the human.
   if ((projectMode || reviewGated) && latestCompletedSession?.phase === "request-review") {
@@ -449,14 +543,7 @@ function planPullRequestAction(
       if (mergeGateAction !== "proceed") {
         return mergeGateAction;
       }
-      return withIssueNumber({
-        type: "squash-merge",
-        pullRequestNumber: pullRequest.number,
-        pullRequestTitle: pullRequest.title,
-        pullRequestHeadRefName: pullRequest.headRefName,
-        closingIssueNumbers: [...pullRequest.closingIssueNumbers],
-        pullRequestBody: pullRequest.body,
-      });
+      return withIssueNumber(squashMergeAction(pullRequest));
     }
 
     // Only one clean pass so far — run another self-review immediately.
@@ -551,15 +638,7 @@ export function buildPlan(
   );
   const isFocusPullRequest = (pullRequest: PullRequest): boolean =>
     pullRequest.linkedIssueNumbers.some((issueNumber) => focusIssueNumbers.has(issueNumber));
-  // A PR is review-gated when it advances a `review`-labelled issue or
-  // carries the label itself (the label is copied onto the PR at creation so
-  // the gate survives even if the issue is closed or relabelled mid-flight).
-  const reviewIssueNumbers = new Set(
-    issues.filter((issue) => issue.labels.includes(REVIEW_LABEL)).map((issue) => issue.number),
-  );
-  const isReviewGatedPullRequest = (pullRequest: PullRequest): boolean =>
-    pullRequest.labels.includes(REVIEW_LABEL) ||
-    pullRequest.linkedIssueNumbers.some((issueNumber) => reviewIssueNumbers.has(issueNumber));
+  const isReviewGatedPullRequest = reviewGate(issues);
   const blockedIssueIndex = buildBlockedIssueIndex(issues);
 
   // Only expose open blockers to the dashboard — a closed issue no longer blocks anything.

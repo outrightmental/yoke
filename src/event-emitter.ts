@@ -31,6 +31,9 @@ export type DashboardEventType =
   | "engine-shutdown"
   | "app-shutdown"
   | "cylinder-cancel"
+  // A human pressed Approve on a review-gated pill (#274): `{ repo,
+  // pullRequestNumber }`. The engine pool records the approval and merges.
+  | "pull-request-approve"
   | "css-reload";
 
 export interface DashboardEvent {

@@ -204,6 +204,15 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
   When more than one applies, the first in that list wins. Pills in none of these states show no icon.
 
+  A pill whose PR is parked by the [`review` label](#the-review-label) — ready, self-reviewed clean, and waiting on a human — has an **Approve** button just left of its icon. Click it, then click **Confirm** within a few seconds (a single click on a wall display does nothing on its own), and Yoke squash-merges that PR the way it would have without the label: as a normal `squash-merge` action on an engine cylinder, which shows in the engine pane, waits out any usage-limit hold, and starts within a few seconds if an engine is free. Some details:
+  - The approval covers that one PR as it stands. The `review` label stays where it is, so the issue's other PRs and any work done on this one later still wait for a human.
+  - It never merges over failing checks: the button is greyed out while they fail. If the checks are still running, it approves a merge that waits for them to pass.
+  - If the PR changes before it merges, it comes back for approval. That covers Yoke fixing checks that fail after you approve, resolving merge conflicts, or re-reviewing after new comments or a return to draft.
+  - Yoke records the approval in its session store and comments on the PR (`Approved on the yoke dashboard…`), so it shows on GitHub too.
+  - Once approved, the pill reads **APPROVED** instead of READY until the merge. Every request and its outcome, including refusals and why, is written to the event log.
+  - Only the Dashboard's own page can approve. A request from a page on any other site is ignored.
+  - There is no Approve button in Project SDLC, where every PR waits for a human on GitHub.
+
   Once a graceful shutdown is requested, every pill goes dark, like the shut-down cylinder rows: it dims, takes on their orange accent at its left edge, and stops pulsing — a planned implementation reads *shut down* instead of *implementing…* — and its status icon, if it had one, freezes in place: it stays the icon the pill had when the shutdown was requested, even as the engines finish their in-flight work. No engine starts new work after the request, and nothing will keep the pills live, so whatever they show is no longer current.
 
 - **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
@@ -342,6 +351,7 @@ unattended.
 - A parked PR does not count against `max_concurrency`.
 - Converting the PR back to draft, or commenting on it, re-queues it: Yoke addresses the feedback, self-reviews, and requests review again.
 - Removing the label from both the issue and the PR returns the PR to the normal auto-merge flow.
+- To merge it without leaving the Dashboard, press **Approve** on its pill (see [Dashboard](#dashboard)): Yoke squash-merges that PR exactly as it would have without the label.
 
 Yoke creates the `review` label in the repository on startup if it does not already exist.
 

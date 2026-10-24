@@ -1886,18 +1886,19 @@ export async function loadSnapshot(
     });
   }
 
-  // For PRs whose latest completed session is `request-review`, check for
-  // new human comments since the last-read timestamp. This drives the
-  // re-queue signal both in project mode and for `review`-labelled work;
-  // in plain auto-merge mode no request-review sessions exist, so the guard
-  // below skips every PR without extra API calls.
+  // For PRs whose latest completed session is `request-review` — or an
+  // `approval` still waiting on its merge — check for new human comments since
+  // the last-read timestamp. This drives the re-queue signal both in project
+  // mode and for `review`-labelled work; in plain auto-merge mode no such
+  // sessions exist, so the guard below skips every PR without extra API calls.
   const openPullRequests = pullRequests.filter((pr) => pr.state === "open");
   const pullRequestsWithNewComments = await Promise.all(
     openPullRequests.map(async (pr) => {
       const prSessions = agentSessions
         .filter((s) => s.pullRequestNumber === pr.number && s.status === "completed")
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-      if (prSessions[0]?.phase !== "request-review") {
+      const latestPhase = prSessions[0]?.phase;
+      if (latestPhase !== "request-review" && latestPhase !== "approval") {
         return pr;
       }
 

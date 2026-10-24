@@ -20,7 +20,11 @@ export function actionResourceKey(action: OrchestratorAction): string {
   if (action.type === "start-implementation") {
     return `issue:${action.issueNumber}`;
   }
-  return `pr:${action.pullRequestNumber}`;
+  return pullRequestResourceKey(action.pullRequestNumber);
+}
+
+function pullRequestResourceKey(pullRequestNumber: number): string {
+  return `pr:${pullRequestNumber}`;
 }
 
 /**
@@ -30,6 +34,11 @@ export function actionResourceKey(action: OrchestratorAction): string {
  */
 export function repoActionKey(repoKey: string, action: OrchestratorAction): string {
   return `${repoKey} ${actionResourceKey(action)}`;
+}
+
+/** The claim key any action on a project's PR holds — see `repoActionKey`. */
+export function pullRequestClaimKey(repoKey: string, pullRequestNumber: number): string {
+  return `${repoKey} ${pullRequestResourceKey(pullRequestNumber)}`;
 }
 
 /** Number of currently-claimed actions belonging to a given project. */
@@ -186,6 +195,29 @@ export function clearToFire(
   if (!shutdownSignal.requested) return true;
   claimedActions.delete(repoActionKey(repoKey, action));
   return false;
+}
+
+/**
+ * Wakes the engines sleeping out their cycle minimum, so they plan again on
+ * their next poll rather than at the end of the wait — for work that appears
+ * between cycles because a human asked for it, like the squash-merge of a PR
+ * approved on the dashboard (#274). Each sleep takes a token when it starts
+ * and ends early once `wake()` has been called since.
+ */
+export class PoolWake {
+  private generation = 0;
+
+  wake(): void {
+    this.generation += 1;
+  }
+
+  token(): number {
+    return this.generation;
+  }
+
+  wokenSince(token: number): boolean {
+    return this.generation !== token;
+  }
 }
 
 /**

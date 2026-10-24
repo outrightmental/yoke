@@ -621,6 +621,117 @@ test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-ca
   assert.equal(cancelMsg?.data.engineIndex, 1, "cylinder-cancel should carry the correct engineIndex");
 });
 
+// ── Approve button (#274) ─────────────────────────────────────────────────────
+
+/**
+ * Start a dashboard on `port`, send each message from its own socket (opened
+ * with `origin`, when given), and return the approvals the engine pool heard.
+ */
+async function approvalsHeard(
+  t: { after: (fn: () => void) => void },
+  port: number,
+  config: { projects?: string[]; multiProject?: boolean },
+  messages: unknown[],
+  origin?: string,
+  host?: string,
+): Promise<Array<Record<string, unknown>>> {
+  const emitter = new EventEmitter();
+  const heard: Array<Record<string, unknown>> = [];
+  emitter.subscribe((event) => {
+    if (event.type === "pull-request-approve") heard.push(event.data);
+  });
+  const server = new DashboardServer({
+    port,
+    host: "127.0.0.1",
+    owner: "",
+    repo: "",
+    eventEmitter: emitter,
+    ...config,
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  for (const message of messages) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, {
+      ...(origin !== undefined && { origin }),
+      ...(host !== undefined && { headers: { host } }),
+    });
+    await new Promise<void>((resolve) => ws.once("open", resolve));
+    ws.send(typeof message === "string" ? message : JSON.stringify(message));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    ws.close();
+  }
+  return heard;
+}
+
+test("DashboardServer relays an Approve click to the engine pool with its repo and PR number", async (t) => {
+  const heard = await approvalsHeard(t, TEST_PORT + 24, { projects: ["o/a", "o/b"], multiProject: true }, [
+    { type: "pull-request-approve-request", repo: "o/b", pullRequestNumber: 10 },
+  ]);
+
+  assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }]);
+});
+
+test("DashboardServer ignores an Approve click that does not name one PR unambiguously", async (t) => {
+  const heard = await approvalsHeard(t, TEST_PORT + 25, { projects: ["o/a", "o/b"], multiProject: true }, [
+    { type: "pull-request-approve-request", repo: "o/c", pullRequestNumber: 10 },
+    { type: "pull-request-approve-request", repo: "", pullRequestNumber: 10 },
+    { type: "pull-request-approve-request", pullRequestNumber: 10 },
+    { type: "pull-request-approve-request", repo: "o/a" },
+    { type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: "10" },
+    { type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: 1.5 },
+    { type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: -3 },
+    "not json",
+  ]);
+
+  assert.deepEqual(heard, []);
+});
+
+test("DashboardServer reads a project-less Approve click as the only project's", async (t) => {
+  const heard = await approvalsHeard(t, TEST_PORT + 26, { projects: ["o/a"] }, [
+    { type: "pull-request-approve-request", repo: "", pullRequestNumber: 7 },
+  ]);
+
+  assert.deepEqual(heard, [{ repo: "o/a", pullRequestNumber: 7 }]);
+});
+
+test("DashboardServer takes Approve clicks only from its own page, never another site's", async (t) => {
+  const message = { type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: 7 };
+
+  const foreign = await approvalsHeard(t, TEST_PORT + 27, { projects: ["o/a"] }, [message], "https://evil.example");
+  assert.deepEqual(foreign, [], "a page on another site cannot merge PRs");
+
+  const own = await approvalsHeard(
+    t,
+    TEST_PORT + 28,
+    { projects: ["o/a"] },
+    [message],
+    `http://127.0.0.1:${TEST_PORT + 28}`,
+  );
+  assert.deepEqual(own, [{ repo: "o/a", pullRequestNumber: 7 }], "the dashboard's own page can");
+
+  const byName = await approvalsHeard(
+    t,
+    TEST_PORT + 29,
+    { projects: ["o/a"] },
+    [message],
+    `http://localhost:${TEST_PORT + 29}`,
+    `localhost:${TEST_PORT + 29}`,
+  );
+  assert.deepEqual(byName, [{ repo: "o/a", pullRequestNumber: 7 }], "opened as localhost");
+
+  const rebound = await approvalsHeard(
+    t,
+    TEST_PORT + 30,
+    { projects: ["o/a"] },
+    [message],
+    `http://evil.example:${TEST_PORT + 30}`,
+    `evil.example:${TEST_PORT + 30}`,
+  );
+  assert.deepEqual(rebound, [], "a site whose name was made to resolve to this machine cannot");
+});
+
 test("DashboardServer broadcasts css-reload when bundle.css changes on disk", async (t) => {
   const bundleDir = path.join(process.cwd(), "dist", "dashboard");
   const cssPath = path.join(bundleDir, "bundle.css");

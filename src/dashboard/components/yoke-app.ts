@@ -3,6 +3,7 @@ import type { DashboardState } from '../store/dashboard-store.js';
 import type { DashboardStore } from '../store/dashboard-store.js';
 import { usageLimitUntilMs } from '../shared/usage-gauge.js';
 import { pillsDark } from '../shared/pill-activity.js';
+import type { ApproveTarget } from '../shared/pill-approval.js';
 import './yoke-header.js';
 import './hold-banner.js';
 import './cylinder-engine.js';
@@ -41,6 +42,12 @@ export class YokeApp extends LitElement {
     super.disconnectedCallback();
     this._unsub?.();
     this._unsub = null;
+  }
+
+  /** A pill's Approve button was clicked and confirmed (#274). Cancelled
+   *  when there is no live connection to send it on, so the pill says so. */
+  private _onPillApprove(event: CustomEvent<ApproveTarget>) {
+    if (!this.store?.approvePullRequest(event.detail)) event.preventDefault();
   }
 
   override render() {
@@ -96,6 +103,7 @@ export class YokeApp extends LitElement {
           .multiProject=${s.multiProject}
           .dark=${pillsDark(s)}
           .frozenActivity=${s.frozenPillActivity}
+          @pill-approve=${this._onPillApprove}
         ></lifecycle-list>
         <broadcast-feed
           .events=${s.broadcastVisible}
