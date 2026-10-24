@@ -1142,6 +1142,26 @@ test("loadSnapshot (project mode) sets hasNewCommentsSinceLastRead when a human 
   assert.equal(pr.hasNewCommentsSinceLastRead, true);
 });
 
+test("loadSnapshot sets hasNewCommentsSinceLastRead on a PR approved on the dashboard but not yet merged (#274)", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  await store.createSession({ issueNumber: 1, pullRequestNumber: 10, phase: "approval", status: "completed" });
+  await store.setLastReadCommentAt(10, "2024-01-01T12:00:00.000Z");
+
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => []);
+  t.mock.method(client, "listOpenPullRequests", async () => [makePr()]);
+  t.mock.method(client, "listPullRequestComments", async () => [
+    { author: "alice", body: "Wait, one more thing", createdAt: "2024-01-01T15:00:00.000Z" },
+  ]);
+
+  const snapshot = await loadSnapshot(client, store);
+
+  assert.equal(snapshot.pullRequests.find((p) => p.number === 10)?.hasNewCommentsSinceLastRead, true);
+});
+
 test("loadSnapshot (project mode) does not set hasNewCommentsSinceLastRead when all comments predate lastReadAt", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "yoke-snapshot-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

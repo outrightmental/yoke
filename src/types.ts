@@ -110,8 +110,8 @@ export interface PullRequest {
   linkedIssueNumbers: number[];
   /**
    * True when there are human PR comments newer than the last comment
-   * yoke processed. Only set (true) in project mode when the latest
-   * completed session for this PR is `request-review`.
+   * yoke processed. Only set (true) when the latest completed session for
+   * this PR is `request-review` or `approval`.
    */
   hasNewCommentsSinceLastRead?: boolean;
 }
@@ -122,7 +122,14 @@ export type AgentSessionPhase =
   | "address-failing-checks"
   | "resolve-conflicts"
   | "squash-merge"
-  | "request-review";
+  | "request-review"
+  /**
+   * A human approved a review-gated PR parked after `request-review`, from the
+   * dashboard's Approve button (#274). Not an action: it is recorded straight
+   * into the store, and tells the planner to carry on with the squash-merge
+   * the `review` label held back.
+   */
+  | "approval";
 
 export type AgentSessionStatus = "in_progress" | "completed" | "failed";
 

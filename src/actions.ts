@@ -1,4 +1,9 @@
-import { buildMergedPullRequestBody, CHECKS_TIMEOUT_MS, REVIEW_LABEL } from "./orchestrator.js";
+import {
+  buildMergedPullRequestBody,
+  CHECKS_TIMEOUT_MS,
+  REVIEW_LABEL,
+  reviewApprovalState,
+} from "./orchestrator.js";
 import type {
   AgentSessionPhase,
   AgentSessionResult,
@@ -6,6 +11,7 @@ import type {
   Issue,
   OrchestratorAction,
   PullRequest,
+  RepositorySnapshot,
 } from "./types.js";
 
 export interface ActionGitHubClient {
@@ -211,7 +217,7 @@ async function fetchHumanComments(
  * own comment.
  */
 async function postAndRecordComment(
-  gitHubClient: ActionGitHubClient,
+  gitHubClient: Pick<ActionGitHubClient, "postComment">,
   sessionStore: ActionSessionStore,
   pullRequestNumber: number,
   body: string,
@@ -228,6 +234,82 @@ async function markCommentsAsRead(
   for (const comment of comments) {
     await gitHubClient.addEyesReaction(comment);
   }
+}
+
+export type ApprovePullRequestResult =
+  | {
+      approved: true;
+      /** The PR's checks are still running: it merges once they pass. */
+      checksPending: boolean;
+    }
+  | { approved: false; reason: string };
+
+/**
+ * Record a human's approval of a review-gated PR from the dashboard's Approve
+ * button (#274). The approval is an `approval` session in the store; the
+ * planner reads it and carries on with the squash-merge the `review` label
+ * held back, on an engine and through the usual merge gate. Nothing is merged
+ * here, and nothing is sent to GitHub — see `commentOnApproval`.
+ *
+ * Refused, with the reason, unless the PR is parked awaiting approval right
+ * now (see `reviewApprovalState`) and its checks are not failing — an
+ * approval never merges over red checks. Pending checks are fine: the merge
+ * waits for them.
+ */
+export async function approvePullRequest(
+  sessionStore: ActionSessionStore,
+  snapshot: RepositorySnapshot,
+  pullRequestNumber: number,
+  options: { projectModeEnabled?: boolean; dryRun?: boolean } = {},
+): Promise<ApprovePullRequestResult> {
+  const pullRequest = snapshot.pullRequests.find(
+    (candidate) => candidate.number === pullRequestNumber && candidate.state === "open",
+  );
+  if (!pullRequest) {
+    return { approved: false, reason: "it is not open" };
+  }
+  const state = reviewApprovalState(pullRequest, snapshot, options.projectModeEnabled ?? false);
+  if (state === "approved") {
+    return { approved: false, reason: "it is already approved" };
+  }
+  if (state !== "awaiting-approval") {
+    return { approved: false, reason: "it is not waiting on approval" };
+  }
+  if (pullRequest.checksStatus === "failure") {
+    return { approved: false, reason: "its checks are failing" };
+  }
+  if (options.dryRun) {
+    return { approved: false, reason: "--dry-run records nothing" };
+  }
+
+  await sessionStore.createSession({
+    issueNumber: pullRequest.linkedIssueNumbers[0],
+    pullRequestNumber,
+    phase: "approval",
+    status: "completed",
+  });
+  return { approved: true, checksPending: pullRequest.checksStatus === "pending" };
+}
+
+/**
+ * Record a dashboard approval on GitHub as well, with a comment on the PR —
+ * GitHub will not let yoke's own token submit an approving review of a PR it
+ * opened. The comment's id is kept so yoke never reads it back as feedback.
+ */
+export async function commentOnApproval(
+  gitHubClient: Pick<ActionGitHubClient, "postComment">,
+  sessionStore: ActionSessionStore,
+  pullRequestNumber: number,
+  checksPending: boolean,
+): Promise<void> {
+  await postAndRecordComment(
+    gitHubClient,
+    sessionStore,
+    pullRequestNumber,
+    checksPending
+      ? "Approved on the yoke dashboard. Yoke will squash-merge this PR once its checks pass."
+      : "Approved on the yoke dashboard. Yoke is squash-merging this PR.",
+  );
 }
 
 export interface ExecuteActionResult {
