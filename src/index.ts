@@ -2,7 +2,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { executeAction, type ExecuteActionResult } from "./actions.js";
+import {
+  approvePullRequest,
+  commentOnApproval,
+  executeAction,
+  type ExecuteActionResult,
+} from "./actions.js";
 import {
   announceWait,
   CLAUDE_QUOTA_WAIT_KEY,
@@ -34,6 +39,8 @@ import {
   clearToFire,
   HoldAnnouncer,
   PlanningMutex,
+  PoolWake,
+  pullRequestClaimKey,
   type ShutdownSignal,
 } from "./scheduler.js";
 import { reconcileSessions } from "./reconcile.js";
@@ -657,6 +664,95 @@ async function runProjectMaintenance(
   );
 }
 
+/**
+ * Approve a review-gated PR from the dashboard's Approve button (#274): record
+ * the approval, show it on the pill, and wake the pool so an engine picks up
+ * the squash-merge now instead of at the end of its cycle wait. The merge
+ * itself is an ordinary action on an engine cylinder — it shows in the engine
+ * pane, waits out a Claude usage-limit hold, and goes through the same merge
+ * gate as every other merge. Every outcome, refusals included, is logged.
+ */
+async function approveFromDashboard(
+  ctx: ProjectContext,
+  pullRequestNumber: number,
+  pool: {
+    planningMutex: PlanningMutex;
+    claimedActions: Set<string>;
+    shutdownSignal: ShutdownSignal;
+    poolWake: PoolWake;
+    emitter: EventEmitter;
+  },
+): Promise<void> {
+  const { config, repoKey } = ctx;
+  const { write, failure } = createLogger(pool.emitter, repoKey);
+  const prLabel = `${repoKey} PR #${pullRequestNumber}`;
+  try {
+    write(`Approve requested on the dashboard: ${prLabel} (${ctx.gitHubClient.pullRequestUrl(pullRequestNumber)})`);
+    if (pool.shutdownSignal.requested) {
+      write(`  ✗ not approved: yoke is shutting down and will start no new work.`);
+      return;
+    }
+    // Judge the PR as GitHub has it now, not as the dashboard last drew it.
+    const snapshot = await loadProjectSnapshot(ctx);
+    // Under the planning mutex, so no engine can claim the PR between the
+    // checks below and the approval being recorded.
+    const result = await pool.planningMutex.withLock(async () => {
+      if (pool.shutdownSignal.requested) {
+        return { approved: false as const, reason: "yoke is shutting down and will start no new work" };
+      }
+      if (pool.claimedActions.has(pullRequestClaimKey(repoKey, pullRequestNumber))) {
+        return { approved: false as const, reason: "an engine is working on it" };
+      }
+      snapshot.agentSessions = await ctx.sessionStore.load();
+      const outcome = await approvePullRequest(ctx.sessionStore, snapshot, pullRequestNumber, {
+        projectModeEnabled: config.projectMode !== undefined,
+        dryRun: config.dryRun,
+      });
+      if (outcome.approved) {
+        snapshot.agentSessions = await ctx.sessionStore.load();
+        ctx.snapshotCache = { snapshot, atMs: Date.now() };
+      }
+      return outcome;
+    });
+    if (!result.approved) {
+      write(`  ✗ not approved: ${result.reason}.`);
+      return;
+    }
+    write(
+      result.checksPending
+        ? `  ✓ approved — it will be squash-merged once its checks pass.`
+        : `  ✓ approved — an engine will squash-merge it next.`,
+    );
+    const plan = buildPlan(snapshot, ctx.cap, config.projectMode, config.focusMode);
+    broadcastLifecycleUpdate(
+      snapshot,
+      claimedImplementationIssueNumbers(pool.claimedActions, repoKey),
+      new Set(),
+      plan.blockedIssueNumbers,
+      config.projectMode !== undefined,
+      config.focusMode,
+      pool.emitter,
+      repoKey,
+    );
+    pool.poolWake.wake();
+    // After the lock, so a slow or rate-limited GitHub never holds up planning.
+    try {
+      await commentOnApproval(ctx.gitHubClient, ctx.sessionStore, pullRequestNumber, result.checksPending);
+    } catch (error) {
+      write(
+        `  could not record the approval in a PR comment: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  } catch (error) {
+    failure(
+      `  ✗ approving ${prLabel} failed: ${
+        error instanceof Error ? (error.stack ?? error.message) : String(error)
+      }`,
+      0,
+    );
+  }
+}
+
 interface PlannedWork {
   ctx: ProjectContext;
   action: OrchestratorAction;
@@ -722,18 +818,25 @@ async function runEngine(
   actionCooldowns: ActionCooldowns,
   shutdownSignal: ShutdownSignal,
   cancelSignal: { requested: boolean },
+  poolWake: PoolWake,
   emitter: EventEmitter,
 ): Promise<void> {
   const { write, blank, section, bullet, note, failure } = createLogger(emitter);
   const isOnceMode = contexts[0]?.config.once ?? false;
   let iterationNumber = 0;
 
-  // Sleep for `waitMs`, waking early on shutdown or cancel. Engine 0 keeps
-  // every project's feed alive while it waits.
+  // Sleep for `waitMs`, waking early on shutdown, cancel or a pool wake. Engine
+  // 0 keeps every project's feed alive while it waits.
   const idleWait = async (waitMs: number): Promise<void> => {
     const pollIntervalMs = 10000;
     const waitStart = Date.now();
-    while (Date.now() - waitStart < waitMs && !shutdownSignal.requested && !cancelSignal.requested) {
+    const wakeToken = poolWake.token();
+    while (
+      Date.now() - waitStart < waitMs &&
+      !shutdownSignal.requested &&
+      !cancelSignal.requested &&
+      !poolWake.wokenSince(wakeToken)
+    ) {
       const timeLeft = waitMs - (Date.now() - waitStart);
       if (timeLeft <= 0) break;
       await delay(Math.min(pollIntervalMs, timeLeft));
@@ -1363,6 +1466,8 @@ async function main(): Promise<void> {
   const actionCooldowns = createActionCooldowns();
   const cancelSignals = Array.from({ length: globalMaxConcurrency }, () => ({ requested: false }));
 
+  const poolWake = new PoolWake();
+
   emitter.subscribe((event) => {
     if (event.type === "cylinder-cancel") {
       const engineIndex = event.data.engineIndex as number;
@@ -1371,6 +1476,22 @@ async function main(): Promise<void> {
         if (signal) signal.requested = true;
       }
     }
+  });
+
+  // The dashboard's Approve button (#274). The dashboard server has already
+  // checked the request names one of these projects.
+  emitter.subscribe((event) => {
+    if (event.type !== "pull-request-approve") return;
+    const ctx = contexts.find((c) => c.repoKey === event.data.repo);
+    const pullRequestNumber = event.data.pullRequestNumber;
+    if (ctx === undefined || typeof pullRequestNumber !== "number") return;
+    void approveFromDashboard(ctx, pullRequestNumber, {
+      planningMutex,
+      claimedActions,
+      shutdownSignal,
+      poolWake,
+      emitter,
+    });
   });
 
   const engines = Array.from({ length: globalMaxConcurrency }, (_, i) =>
@@ -1384,6 +1505,7 @@ async function main(): Promise<void> {
       actionCooldowns,
       shutdownSignal,
       cancelSignals[i]!,
+      poolWake,
       emitter,
     ),
   );

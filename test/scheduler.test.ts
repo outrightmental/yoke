@@ -11,6 +11,8 @@ import {
   HoldAnnouncer,
   PlanningMutex,
   tryClaimFromPlan,
+  PoolWake,
+  pullRequestClaimKey,
 } from "../src/scheduler.js";
 import type { OrchestratorAction } from "../src/types.js";
 
@@ -422,4 +424,31 @@ test("HoldAnnouncer announces again after a hold has been exited", () => {
     true,
     "a fresh hold on the same deadline is a new event once work resumed",
   );
+});
+
+// ─── waking the pool for work a human asked for (#274) ───────────────────────
+
+test("PoolWake: a sleep ends early only for a wake after it began", () => {
+  const wake = new PoolWake();
+  const earlier = wake.token();
+  wake.wake();
+  const later = wake.token();
+
+  assert.equal(wake.wokenSince(earlier), true, "woken since the earlier sleep began");
+  assert.equal(wake.wokenSince(later), false, "a sleep begun after the wake sleeps on");
+  wake.wake();
+  assert.equal(wake.wokenSince(later), true);
+});
+
+test("pullRequestClaimKey matches the claim any action on that PR holds", () => {
+  const claimed = new Set<string>();
+  tryClaimFromPlan(
+    "o/a",
+    3,
+    [{ type: "self-review", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha" }],
+    claimed,
+  );
+
+  assert.equal(claimed.has(pullRequestClaimKey("o/a", 10)), true);
+  assert.equal(claimed.has(pullRequestClaimKey("o/b", 10)), false, "another project's PR #10");
 });

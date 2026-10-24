@@ -18,7 +18,7 @@ import { globalEventEmitter } from "../src/event-emitter.js";
 import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
 import { pillActivity } from "../src/dashboard/shared/pill-activity.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
-import type { PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
+import type { AgentSession, PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
 import type { GitHubRateLimitHold } from "../src/github-rate-limit.js";
 
 function captureNextEvent(eventType: string): Promise<Record<string, unknown>> {
@@ -743,6 +743,63 @@ test("broadcastLifecycleUpdate: pills whose PR checks are running read as waitin
   assert.equal(activityOf(20), "waiting-ci");
   assert.equal(activityOf(21), "review", "its checks have finished");
   assert.equal(activityOf(22), "waiting-ci", "an orphan draft PR");
+});
+
+function reviewSession(id: string, prNumber: number, issueNumber: number | undefined, phase: AgentSession["phase"], updatedAt: string): AgentSession {
+  return { id, issueNumber, pullRequestNumber: prNumber, phase, status: "completed", createdAt: updatedAt, updatedAt };
+}
+
+test("broadcastLifecycleUpdate: a PR parked by the review label awaits approval; an approved one says so (#274)", async () => {
+  const snapshot = {
+    issues: [
+      makeIssue({ number: 10, labels: ["review"] }),
+      makeIssue({ number: 11, labels: ["review"] }),
+      makeIssue({ number: 12 }),
+    ],
+    pullRequests: [
+      makePR({ number: 20, closingIssueNumbers: [10], linkedIssueNumbers: [10] }),
+      makePR({ number: 21, closingIssueNumbers: [11], linkedIssueNumbers: [11] }),
+      // Parked after a review request, but no review label holds it back.
+      makePR({ number: 22, closingIssueNumbers: [12], linkedIssueNumbers: [12] }),
+      // An orphan PR carrying the label itself.
+      makePR({ number: 23, labels: ["review"] }),
+    ],
+    agentSessions: [
+      reviewSession("a", 20, 10, "request-review", "2024-01-01T00:00:00.000Z"),
+      reviewSession("b", 21, 11, "request-review", "2024-01-01T00:00:00.000Z"),
+      reviewSession("c", 21, 11, "approval", "2024-01-02T00:00:00.000Z"),
+      reviewSession("d", 22, 12, "request-review", "2024-01-01T00:00:00.000Z"),
+      reviewSession("e", 23, undefined, "request-review", "2024-01-01T00:00:00.000Z"),
+    ],
+  };
+  const event = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, false, false, globalEventEmitter, "o/a");
+  const pairs = (await event).pairs as Array<{ pr: { number: number } | null; approval?: string }>;
+  const approvalOf = (prNumber: number) => pairs.find((p) => p.pr?.number === prNumber)?.approval;
+
+  assert.equal(approvalOf(20), "awaiting-approval");
+  assert.equal(approvalOf(21), "approved");
+  assert.equal(approvalOf(22), undefined, "not review-gated");
+  assert.equal(approvalOf(23), "awaiting-approval", "an orphan PR labelled review");
+});
+
+test("broadcastLifecycleUpdate: no pill awaits approval in project mode, or once its PR has merged (#274)", async () => {
+  const snapshot = {
+    issues: [makeIssue({ number: 10, labels: ["review"] })],
+    pullRequests: [makePR({ number: 20, closingIssueNumbers: [10], linkedIssueNumbers: [10] })],
+    agentSessions: [reviewSession("a", 20, 10, "request-review", "2024-01-01T00:00:00.000Z")],
+  };
+
+  const projectMode = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, true);
+  const projectPairs = (await projectMode).pairs as Array<{ approval?: string }>;
+  assert.equal(projectPairs[0]!.approval, undefined, "project mode: the human acts on GitHub");
+
+  const merged = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set([10]));
+  const mergedPairs = (await merged).pairs as Array<{ prPhase: string; approval?: string }>;
+  assert.equal(mergedPairs[0]!.prPhase, "completed");
+  assert.equal(mergedPairs[0]!.approval, undefined);
 });
 
 test("broadcastIssueUpdate: emits nothing when the issue is labelled 'manual'", async () => {

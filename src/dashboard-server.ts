@@ -121,6 +121,22 @@ async function serveMedia(
   res.end(req.method === "HEAD" ? undefined : slice);
 }
 
+/**
+ * Whether a WebSocket was opened by the dashboard's own page. A browser lets
+ * any site it visits open a socket to localhost, but always names that site in
+ * the Origin header, so only a same-origin page — or a client that is not a
+ * browser and sends no Origin at all — may ask yoke to merge a PR.
+ */
+function isSameOriginRequest(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
 function jsonResponse(res: http.ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -178,7 +194,7 @@ export class DashboardServer {
       }
     });
 
-    this.wss.on("connection", (ws) => this.handleWebSocketConnection(ws));
+    this.wss.on("connection", (ws, req) => this.handleWebSocketConnection(ws, req));
     this.wss.on("error", (error: Error) => {
       console.error("[Dashboard] WebSocket server error:", error);
     });
@@ -261,7 +277,7 @@ export class DashboardServer {
     jsonResponse(res, 404, { error: "not_found" });
   }
 
-  private handleWebSocketConnection(ws: WebSocket): void {
+  private handleWebSocketConnection(ws: WebSocket, req: http.IncomingMessage): void {
     ws.on("error", (error: Error) => {
       console.error("[Dashboard] WebSocket error:", error);
     });
@@ -270,17 +286,46 @@ export class DashboardServer {
       ws.send(JSON.stringify(event));
     }
 
+    const sameOrigin = isSameOriginRequest(req);
     ws.on("message", (data: Buffer) => {
       try {
-        const message = JSON.parse(data.toString()) as { type: string; engineIndex?: number };
+        const message = JSON.parse(data.toString()) as {
+          type: string;
+          engineIndex?: number;
+          repo?: unknown;
+          pullRequestNumber?: unknown;
+        };
         if (message.type === "cylinder-cancel-request" && typeof message.engineIndex === "number") {
           this.projectEmitter.emit("cylinder-cancel", { engineIndex: message.engineIndex });
+        } else if (message.type === "pull-request-approve-request" && sameOrigin) {
+          const target = this.approvalTarget(message.repo, message.pullRequestNumber);
+          if (target !== undefined) this.projectEmitter.emit("pull-request-approve", target);
         }
       } catch {
         // Ignore malformed messages from clients
       }
     });
 
+  }
+
+  /**
+   * The PR an Approve click names (#274), or undefined when it names none
+   * unambiguously: a positive PR number, in one of this dashboard's projects.
+   * A click from a pill that does not know its project is accepted only when
+   * there is just the one project it could mean.
+   */
+  private approvalTarget(
+    repo: unknown,
+    pullRequestNumber: unknown,
+  ): { repo: string; pullRequestNumber: number } | undefined {
+    if (typeof pullRequestNumber !== "number" || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+      return undefined;
+    }
+    let target = typeof repo === "string" ? repo : "";
+    if (target === "" && this.projects.length === 1) target = this.projects[0]!;
+    if (target === "") return undefined;
+    if (this.projects.length > 0 && !this.projects.includes(target)) return undefined;
+    return { repo: target, pullRequestNumber };
   }
 
   private updateStateCache(event: DashboardEvent): void {

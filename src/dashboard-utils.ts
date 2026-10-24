@@ -1,5 +1,6 @@
 import { globalEventEmitter, type EventEmitter } from "./event-emitter.js";
 import type { GitHubRateLimitHold } from "./github-rate-limit.js";
+import { reviewApprovalState, type ReviewApproval } from "./orchestrator.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
 // Issues labelled "manual" are intentionally hidden from the dashboard; the
@@ -41,6 +42,12 @@ export interface LifecyclePair {
   disabled?: boolean;
   /** Project status label shown on inactive pills (e.g. "Backlog", "Done"). */
   projectStatus?: string;
+  /**
+   * Set while a review-gated PR waits on a human (#274): `awaiting-approval`
+   * while it is parked — the pill offers an Approve button — and `approved`
+   * once a human has approved it and its squash-merge is pending.
+   */
+  approval?: ReviewApproval;
 }
 
 function phaseSortPriority(phase: string, isBlocked: boolean): number {
@@ -70,6 +77,10 @@ export function broadcastLifecycleUpdate(
   const visibleIssues = snapshot.issues.filter(
     (i) => !isManualIssue(i) && (!focusMode || isFocusIssue(i)),
   );
+  const approvalOf = (pr: PullRequest): { approval?: ReviewApproval } => {
+    const approval = reviewApprovalState(pr, snapshot, projectModeEnabled);
+    return approval !== undefined ? { approval } : {};
+  };
 
   // Pair each open PR with its closing issues (falling back to linked issues)
   for (const pr of snapshot.pullRequests) {
@@ -95,6 +106,7 @@ export function broadcastLifecycleUpdate(
           blockedByIssueNumbers: blockedIssueNumbers[issue.number],
         }),
         ...(isManualPullRequest(pr) && { disabled: true }),
+        ...(!completedIssueNumbers.has(issueNumber) && approvalOf(pr)),
       });
     }
   }
@@ -120,6 +132,7 @@ export function broadcastLifecycleUpdate(
       prPhase: pr.draft ? "active" : "review",
       colorIndex: pr.number % 6,
       ...(isManualPullRequest(pr) && { disabled: true }),
+      ...approvalOf(pr),
     });
   }
 
