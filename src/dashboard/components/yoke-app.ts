@@ -44,9 +44,10 @@ export class YokeApp extends LitElement {
     this._unsub = null;
   }
 
-  /** A pill's Approve button was clicked and confirmed (#274). */
+  /** A pill's Approve button was clicked and confirmed (#274). Cancelled
+   *  when there is no live connection to send it on, so the pill says so. */
   private _onPillApprove(event: CustomEvent<ApproveTarget>) {
-    this.store?.approvePullRequest(event.detail);
+    if (!this.store?.approvePullRequest(event.detail)) event.preventDefault();
   }
 
   override render() {

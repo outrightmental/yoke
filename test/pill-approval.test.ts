@@ -178,6 +178,22 @@ test("lifecycle pill: approving takes a confirming second click, then asks yoke 
   }
 });
 
+test("lifecycle pill: a confirmed click that could not be sent goes back to Approve", () => {
+  const { pill, button } = renderPill(parkedPair());
+  // What yoke-app does when there is no live connection to send it on.
+  pill.addEventListener("pill-approve", (event) => event.preventDefault());
+
+  try {
+    click(button);
+    click(renderPill(parkedPair(), {}, pill).button);
+    const after = renderPill(parkedPair(), {}, pill).button;
+    assert.match(flatten(after), />Approve<\/button>/, "not left reading Sending");
+    assert.match(flatten(after), /\?disabled=false/, "and can be pressed again");
+  } finally {
+    pill.disconnectedCallback();
+  }
+});
+
 test("lifecycle pill: an armed click never carries over to another PR the element is reused for", () => {
   const sent: unknown[] = [];
   const { pill, button } = renderPill(parkedPair());

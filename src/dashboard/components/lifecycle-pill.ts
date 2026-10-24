@@ -475,12 +475,15 @@ export class LifecyclePill extends LitElement {
       this._setApprove({ key, step: 'confirm' }, APPROVE_CONFIRM_MS);
       return;
     }
-    this._setApprove({ key, step: 'sent' }, APPROVE_SENT_MS);
-    this.dispatchEvent(new CustomEvent<ApproveTarget>('pill-approve', {
+    // The app cancels the event when it could not send the request (no live
+    // connection): the button goes back to idle rather than read as sent.
+    const sent = this.dispatchEvent(new CustomEvent<ApproveTarget>('pill-approve', {
       detail: control.target,
       bubbles: true,
       composed: true,
+      cancelable: true,
     }));
+    this._setApprove(sent ? { key, step: 'sent' } : null, APPROVE_SENT_MS);
   }
 
   private _approveButton(control: ApproveControl | null) {
