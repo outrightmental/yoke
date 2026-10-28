@@ -364,6 +364,20 @@ export function reviewApprovalState(
   return undefined;
 }
 
+/**
+ * Whether a dashboard approval (#274) is the latest word on a PR: its most
+ * recent completed session is the `approval`, so the work yoke does on it
+ * next carries out that approval. An engine claimed on such a PR is merging it
+ * because of the approval, not doing something else to it (#276).
+ */
+export function latestSessionIsApproval(
+  pullRequest: Pick<PullRequest, "number" | "linkedIssueNumbers">,
+  agentSessions: AgentSession[],
+): boolean {
+  const sessions = getRelevantSessions(agentSessions, pullRequest.linkedIssueNumbers, pullRequest.number);
+  return getLatestCompletedSession(sessions)?.phase === "approval";
+}
+
 function planPullRequestAction(
   pullRequest: PullRequest,
   issueNumbers: readonly number[],
