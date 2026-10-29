@@ -130,6 +130,9 @@ export interface PullRequestApprovalStatus {
   checksPending?: boolean;
   /** For `approved`: an earlier approval stands. */
   alreadyApproved?: boolean;
+  /** The server's stamp on the event, which tells a replay of it (on a
+   *  reconnect) from a new answer. */
+  emittedAt: string;
   /** Epoch millis, by this browser's clock, the event arrived. Compared only
    *  with this browser's own times, so the server's clock never matters. */
   receivedAtMs: number;

@@ -1307,12 +1307,14 @@ test("reducer: pull-request-approval fills and updates each PR's approval, keyed
   s = dashboardReducer(s, approvalEvent("o/a", 11, "waiting"));
   s = dashboardReducer(s, approvalEvent("o/b", 10, "refused", { reason: "its checks are failing" }));
   t.mock.timers.tick(5_000);
-  s = dashboardReducer(s, approvalEvent("o/a", 10, "approved", { checksPending: true, alreadyApproved: false }));
+  const approved = approvalEvent("o/a", 10, "approved", { checksPending: true, alreadyApproved: false });
+  s = dashboardReducer(s, approved);
 
   assert.deepEqual([...s.approvals.keys()].sort(), ["o/a#10", "o/a#11", "o/b#10"]);
   assert.deepEqual(s.approvals.get("o/a#10"), {
     repo: "o/a", pullRequestNumber: 10, requestedAt: "2026-10-28T23:21:15.000Z",
-    state: "approved", checksPending: true, alreadyApproved: false, receivedAtMs: 1_005_000,
+    state: "approved", checksPending: true, alreadyApproved: false,
+    emittedAt: approved.timestamp, receivedAtMs: 1_005_000,
   });
   assert.equal(s.approvals.get("o/a#11")?.state, "waiting");
   assert.equal(s.approvals.get("o/b#10")?.reason, "its checks are failing", "another project's PR #10 is its own");
@@ -1327,6 +1329,17 @@ test("reducer: every arrival counts afresh, so a re-sent state answers a second 
   s = dashboardReducer(s, approvalEvent("o/a", 10, "waiting"));
 
   assert.equal(s.approvals.get("o/a#10")?.receivedAtMs, 1_020_000);
+});
+
+test("reducer: the same event replayed on a reconnect is not a new answer, so a refusal never comes back", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const refused = approvalEvent("o/a", 10, "refused", { reason: "its checks are failing" });
+  const before = dashboardReducer(initialState(), refused);
+  t.mock.timers.tick(30_000);
+  const after = dashboardReducer(before, refused);
+
+  assert.equal(after, before);
+  assert.equal(after.approvals.get("o/a#10")?.receivedAtMs, 1_000_000, "it keeps the time it first arrived");
 });
 
 test("reducer: pull-request-approve, the relayed click itself, is still ignored", () => {
@@ -1358,6 +1371,25 @@ test("reducer: stale outcomes are dropped, approvals under way never", (t) => {
   s = dashboardReducer(s, approvalEvent("o/a", 14, "loading"));
 
   assert.deepEqual([...s.approvals.keys()].sort(), ["o/a#12", "o/a#13", "o/a#14"]);
+});
+
+test("DashboardStore.bootstrap() on a reconnect keeps when each approval status first arrived", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const refused = approvalEvent("o/a", 10, "refused", { reason: "its checks are failing" });
+  await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [refused] }, async () => {
+    const store = new DashboardStore();
+    try {
+      store.applyEvent(refused);
+      t.mock.timers.tick(59_000);
+      await store.bootstrap();
+      assert.equal(store.getState().approvals.get("o/a#10")?.receivedAtMs, 1_000_000, "the replay is an old answer");
+      t.mock.timers.tick(1_000);
+      await store.bootstrap();
+      assert.equal(store.getState().approvals.has("o/a#10"), false, "so it goes stale on time, and never comes back");
+    } finally {
+      store.disconnect();
+    }
+  });
 });
 
 test("DashboardStore.bootstrap() restores an approval under way from the replayed cache", async () => {

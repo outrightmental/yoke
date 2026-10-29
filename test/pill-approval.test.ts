@@ -244,7 +244,8 @@ function approvalStatus(
   receivedAtMs: number,
   extra: Partial<PullRequestApprovalStatus> = {},
 ): PullRequestApprovalStatus {
-  return { repo: "o/a", pullRequestNumber: 10, requestedAt: "2026-10-28T23:21:15.000Z", state, receivedAtMs, ...extra };
+  return { repo: "o/a", pullRequestNumber: 10, requestedAt: "2026-10-28T23:21:15.000Z", state,
+    emittedAt: new Date(receivedAtMs).toISOString(), receivedAtMs, ...extra };
 }
 
 function sentAt(atMs: number, step: ApproveClick["step"] = "sent"): ApproveClick {

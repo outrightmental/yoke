@@ -166,7 +166,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     // An Approve click relayed to the engine pool, which answers it with
     // `pull-request-approval` events (#276).
     case 'pull-request-approve': return state;
-    case 'pull-request-approval': return applyPullRequestApproval(state, event.data);
+    case 'pull-request-approval': return applyPullRequestApproval(state, event.data, event.timestamp);
     case 'broadcast-github-activity':
     case 'broadcast-commit':
     case 'broadcast-pr-update':
@@ -556,9 +556,12 @@ const APPROVAL_STATES: readonly PullRequestApprovalState[] = ['loading', 'waitin
  * Yoke's latest word on a PR's dashboard approval (#276) replaces the last.
  * The time it arrived is what the pill compares its own click with, so its
  * Sending gives way only to an answer that came after the click. Outcomes too
- * old to show are dropped on the way, so a stale refusal never comes back.
+ * old to show are dropped on the way, so a stale refusal never comes back —
+ * nor does one the server replays when the socket reconnects: the same event
+ * again (same server stamp) is not a new answer, and keeps the time it first
+ * arrived.
  */
-function applyPullRequestApproval(state: DashboardState, data: Record<string, unknown>): DashboardState {
+function applyPullRequestApproval(state: DashboardState, data: Record<string, unknown>, emittedAt: string): DashboardState {
   const pullRequestNumber = data['pullRequestNumber'];
   const approvalState = data['state'];
   if (typeof pullRequestNumber !== 'number' || !APPROVAL_STATES.includes(approvalState as PullRequestApprovalState)) {
@@ -566,6 +569,7 @@ function applyPullRequestApproval(state: DashboardState, data: Record<string, un
   }
   const receivedAtMs = Date.now();
   const repo = typeof data['repo'] === 'string' ? data['repo'] : '';
+  const key = approveKey({ repo, pullRequestNumber });
   const status: PullRequestApprovalStatus = {
     repo,
     pullRequestNumber,
@@ -574,14 +578,42 @@ function applyPullRequestApproval(state: DashboardState, data: Record<string, un
     ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
     ...(typeof data['checksPending'] === 'boolean' ? { checksPending: data['checksPending'] } : {}),
     ...(typeof data['alreadyApproved'] === 'boolean' ? { alreadyApproved: data['alreadyApproved'] } : {}),
+    emittedAt,
     receivedAtMs,
   };
+  const previous = state.approvals.get(key);
+  if (previous !== undefined && sameApprovalEvent(previous, status)) return state;
   const approvals = new Map<string, PullRequestApprovalStatus>();
   for (const [key, existing] of state.approvals) {
     if (!approvalStatusExpired(existing, receivedAtMs)) approvals.set(key, existing);
   }
-  approvals.set(approveKey({ repo, pullRequestNumber }), status);
+  approvals.set(key, status);
   return { ...state, approvals };
+}
+
+/**
+ * After a reconnect's bootstrap rebuilt the state from the server's replay,
+ * the approval statuses this page already had keep the time they first
+ * arrived (#276): to the pill they are old answers, not new ones.
+ */
+function keepArrivalTimes(
+  approvals: Map<string, PullRequestApprovalStatus>,
+  previous: Map<string, PullRequestApprovalStatus>,
+): Map<string, PullRequestApprovalStatus> {
+  const nowMs = Date.now();
+  const kept = new Map<string, PullRequestApprovalStatus>();
+  for (const [key, status] of approvals) {
+    const earlier = previous.get(key);
+    const merged = earlier !== undefined && sameApprovalEvent(earlier, status) ? earlier : status;
+    if (!approvalStatusExpired(merged, nowMs)) kept.set(key, merged);
+  }
+  return kept;
+}
+
+/** Whether two statuses come from the one `pull-request-approval` event. */
+function sameApprovalEvent(a: PullRequestApprovalStatus, b: PullRequestApprovalStatus): boolean {
+  return a.emittedAt === b.emittedAt && a.requestedAt === b.requestedAt && a.state === b.state &&
+    a.reason === b.reason && a.checksPending === b.checksPending && a.alreadyApproved === b.alreadyApproved;
 }
 
 function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
@@ -694,6 +726,7 @@ export class DashboardStore {
       for (const event of (data.cachedEvents ?? [])) {
         state = dashboardReducer(state, event);
       }
+      state = { ...state, approvals: keepArrivalTimes(state.approvals, this._state.approvals) };
       this._setState(state);
     } catch (err) {
       console.error('[DashboardStore] bootstrap failed:', err);
