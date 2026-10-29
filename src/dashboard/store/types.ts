@@ -107,6 +107,34 @@ export interface LifecyclePair {
   approval?: 'awaiting-approval' | 'approved';
 }
 
+/** Where one dashboard approval stands (#276); see `PullRequestApprovalStatus`. */
+export type PullRequestApprovalState = 'loading' | 'waiting' | 'approved' | 'refused' | 'failed';
+
+/**
+ * Where one dashboard approval of one PR stands (#276), as the latest
+ * `pull-request-approval` event for it said (mirrors `PullRequestApproval` in
+ * src/dashboard-approval.ts), with the time it arrived here.
+ */
+export interface PullRequestApprovalStatus {
+  /** "owner/repo". */
+  repo: string;
+  pullRequestNumber: number;
+  /** ISO time the server received the request that started this attempt. */
+  requestedAt: string;
+  /** `loading`: reading the PR from GitHub; `waiting`: waiting for a free
+   *  planner; then how it ended. */
+  state: PullRequestApprovalState;
+  /** For `refused` and `failed`: why, in the log line's words. */
+  reason?: string;
+  /** For `approved`: the merge waits for the PR's checks. */
+  checksPending?: boolean;
+  /** For `approved`: an earlier approval stands. */
+  alreadyApproved?: boolean;
+  /** Epoch millis, by this browser's clock, the event arrived. Compared only
+   *  with this browser's own times, so the server's clock never matters. */
+  receivedAtMs: number;
+}
+
 export interface BroadcastEventData {
   id: string;
   category: string;
@@ -169,6 +197,9 @@ export interface DashboardState {
   hold: WorkHold | null;
   /** Latest Claude account usage reading, or null until the first arrives. */
   usage: AccountUsage | null;
+  /** Each PR's latest dashboard approval (#276), keyed like the pill's
+   *  `approveKey` ("owner/repo#n"). Outcomes drop out once they are stale. */
+  approvals: Map<string, PullRequestApprovalStatus>;
   /** True when more than one project shares this dashboard. */
   multiProject: boolean;
   owner: string;

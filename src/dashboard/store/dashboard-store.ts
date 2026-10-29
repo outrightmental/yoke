@@ -1,8 +1,8 @@
 import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef } from './types.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, PullRequestApprovalState, PullRequestApprovalStatus } from './types.js';
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
-import { approveRequestMessage, type ApproveTarget } from '../shared/pill-approval.js';
+import { approvalStatusExpired, approveKey, approveRequestMessage, type ApproveTarget } from '../shared/pill-approval.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -125,6 +125,7 @@ export function initialState(): DashboardState {
     frozenPillActivity: null,
     hold: null,
     usage: null,
+    approvals: new Map(),
     multiProject: false,
     owner: '',
     repo: '',
@@ -162,9 +163,10 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'work-hold':         return applyWorkHold(state, event.data, atMs);
     case 'work-hold-cleared': return applyWorkHoldCleared(state, atMs);
     case 'usage-update':      return applyUsageUpdate(state, event.data);
-    // An Approve click relayed to the engine pool, which logs the request and
-    // its outcome itself; the pill learns of the approval from its lifecycle.
+    // An Approve click relayed to the engine pool, which answers it with
+    // `pull-request-approval` events (#276).
     case 'pull-request-approve': return state;
+    case 'pull-request-approval': return applyPullRequestApproval(state, event.data);
     case 'broadcast-github-activity':
     case 'broadcast-commit':
     case 'broadcast-pr-update':
@@ -546,6 +548,40 @@ function applyUsageUpdate(state: DashboardState, data: Record<string, unknown>):
     ...(heldFromMs !== null ? { heldFromMs } : {}),
   };
   return { ...state, usage };
+}
+
+const APPROVAL_STATES: readonly PullRequestApprovalState[] = ['loading', 'waiting', 'approved', 'refused', 'failed'];
+
+/**
+ * Yoke's latest word on a PR's dashboard approval (#276) replaces the last.
+ * The time it arrived is what the pill compares its own click with, so its
+ * Sending gives way only to an answer that came after the click. Outcomes too
+ * old to show are dropped on the way, so a stale refusal never comes back.
+ */
+function applyPullRequestApproval(state: DashboardState, data: Record<string, unknown>): DashboardState {
+  const pullRequestNumber = data['pullRequestNumber'];
+  const approvalState = data['state'];
+  if (typeof pullRequestNumber !== 'number' || !APPROVAL_STATES.includes(approvalState as PullRequestApprovalState)) {
+    return state;
+  }
+  const receivedAtMs = Date.now();
+  const repo = typeof data['repo'] === 'string' ? data['repo'] : '';
+  const status: PullRequestApprovalStatus = {
+    repo,
+    pullRequestNumber,
+    requestedAt: typeof data['requestedAt'] === 'string' ? data['requestedAt'] : '',
+    state: approvalState as PullRequestApprovalState,
+    ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
+    ...(typeof data['checksPending'] === 'boolean' ? { checksPending: data['checksPending'] } : {}),
+    ...(typeof data['alreadyApproved'] === 'boolean' ? { alreadyApproved: data['alreadyApproved'] } : {}),
+    receivedAtMs,
+  };
+  const approvals = new Map<string, PullRequestApprovalStatus>();
+  for (const [key, existing] of state.approvals) {
+    if (!approvalStatusExpired(existing, receivedAtMs)) approvals.set(key, existing);
+  }
+  approvals.set(approveKey({ repo, pullRequestNumber }), status);
+  return { ...state, approvals };
 }
 
 function applyWorkflowApproval(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {

@@ -1292,3 +1292,85 @@ test("DashboardStore.bootstrap() stamps replayed events with when they happened"
     }
   });
 });
+
+// ── dashboard approvals (#276) ────────────────────────────────────────────────
+
+function approvalEvent(repo: string, pullRequestNumber: number, state: string, extra: Record<string, unknown> = {}): WireEvent {
+  return makeEvent("pull-request-approval", {
+    repo, pullRequestNumber, requestedAt: "2026-10-28T23:21:15.000Z", state, ...extra,
+  });
+}
+
+test("reducer: pull-request-approval fills and updates each PR's approval, keyed like the pill", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let s = dashboardReducer(initialState(), approvalEvent("o/a", 10, "loading"));
+  s = dashboardReducer(s, approvalEvent("o/a", 11, "waiting"));
+  s = dashboardReducer(s, approvalEvent("o/b", 10, "refused", { reason: "its checks are failing" }));
+  t.mock.timers.tick(5_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 10, "approved", { checksPending: true, alreadyApproved: false }));
+
+  assert.deepEqual([...s.approvals.keys()].sort(), ["o/a#10", "o/a#11", "o/b#10"]);
+  assert.deepEqual(s.approvals.get("o/a#10"), {
+    repo: "o/a", pullRequestNumber: 10, requestedAt: "2026-10-28T23:21:15.000Z",
+    state: "approved", checksPending: true, alreadyApproved: false, receivedAtMs: 1_005_000,
+  });
+  assert.equal(s.approvals.get("o/a#11")?.state, "waiting");
+  assert.equal(s.approvals.get("o/b#10")?.reason, "its checks are failing", "another project's PR #10 is its own");
+  assert.equal(s.approvals.get("o/a#11")?.receivedAtMs, 1_000_000, "the local time each arrived");
+  assert.equal(s.eventStream.length, 0, "the event log has its own line for each step");
+});
+
+test("reducer: every arrival counts afresh, so a re-sent state answers a second press", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let s = dashboardReducer(initialState(), approvalEvent("o/a", 10, "waiting"));
+  t.mock.timers.tick(20_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 10, "waiting"));
+
+  assert.equal(s.approvals.get("o/a#10")?.receivedAtMs, 1_020_000);
+});
+
+test("reducer: pull-request-approve, the relayed click itself, is still ignored", () => {
+  const before = initialState();
+  const after = dashboardReducer(before, makeEvent("pull-request-approve", { repo: "o/a", pullRequestNumber: 10 }));
+
+  assert.equal(after, before);
+});
+
+test("reducer: a malformed pull-request-approval changes nothing", () => {
+  const before = initialState();
+  for (const data of [
+    { repo: "o/a", state: "waiting" },
+    { repo: "o/a", pullRequestNumber: "10", state: "waiting" },
+    { repo: "o/a", pullRequestNumber: 10, state: "pondering" },
+  ]) {
+    assert.equal(dashboardReducer(before, makeEvent("pull-request-approval", data)), before);
+  }
+});
+
+test("reducer: stale outcomes are dropped, approvals under way never", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let s = dashboardReducer(initialState(), approvalEvent("o/a", 10, "refused", { reason: "it is not open" }));
+  s = dashboardReducer(s, approvalEvent("o/a", 11, "failed", { reason: "GitHub said 502" }));
+  s = dashboardReducer(s, approvalEvent("o/a", 12, "waiting"));
+  t.mock.timers.tick(30_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 13, "approved"));
+  t.mock.timers.tick(31_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 14, "loading"));
+
+  assert.deepEqual([...s.approvals.keys()].sort(), ["o/a#12", "o/a#13", "o/a#14"]);
+});
+
+test("DashboardStore.bootstrap() restores an approval under way from the replayed cache", async () => {
+  await withMockFetch(
+    { ...MOCK_STATE_RESPONSE, cachedEvents: [approvalEvent("o/a", 10, "waiting")] },
+    async () => {
+      const store = new DashboardStore();
+      try {
+        await store.bootstrap();
+        assert.equal(store.getState().approvals.get("o/a#10")?.state, "waiting", "a reloaded page still shows it");
+      } finally {
+        store.disconnect();
+      }
+    },
+  );
+});

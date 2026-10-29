@@ -199,3 +199,93 @@ test("DashboardStore.approvePullRequest: an Approve click reaches the engine poo
   await waitMs(100);
   assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }]);
 });
+
+test("an Approve click travels over a real socket, and the pill gets loading, then the outcome, back (#276)", async (t) => {
+  const port = BASE_PORT + 7;
+  const { DashboardServer } = await import("../src/dashboard-server.js");
+  const { EventEmitter } = await import("../src/event-emitter.js");
+  const { DashboardApprovals } = await import("../src/dashboard-approval.js");
+  const { LifecyclePill } = await import("../src/dashboard/components/lifecycle-pill.js");
+  const { approvalStatusFor } = await import("../src/dashboard/shared/pill-approval.js");
+  const { DashboardStore } = await import("../src/dashboard/store/dashboard-store.js");
+
+  // The engine pool's side, as src/index.ts wires it, reading the PR held open.
+  const emitter = new EventEmitter();
+  const approvals = new DashboardApprovals(emitter);
+  let finishLoading!: () => void;
+  const loaded = new Promise<void>((resolve) => (finishLoading = resolve));
+  let attempts = 0;
+  emitter.subscribe((event) => {
+    if (event.type !== "pull-request-approve") return;
+    void approvals.request(event.data["repo"] as string, event.data["pullRequestNumber"] as number, {
+      url: "https://github.com/o/a/pull/10",
+      log: () => {},
+      logFailure: () => {},
+      shutdownSignal: { requested: false },
+      loadSnapshot: async () => {
+        attempts += 1;
+        await loaded;
+      },
+      withLock: (fn) => fn(),
+      decide: async () => ({ state: "refused", reason: "its checks are failing" }),
+      announce: async () => {},
+    });
+  });
+  const server = new DashboardServer({
+    port, host: "127.0.0.1", owner: "", repo: "", multiProject: true, projects: ["o/a"], eventEmitter: emitter,
+  });
+  await server.initialize();
+  await server.start();
+  const store = new DashboardStore();
+  t.after(() => { store.disconnect(); server.close(); });
+  store.connectLive(`ws://127.0.0.1:${port}/api/ws`);
+  await waitMs(300);
+
+  // The pill, wired to the store the way yoke-app wires it.
+  const pair = {
+    issue: { number: 1, title: "Add the thing", state: "open" },
+    pr: { number: 10, title: "Add the thing", state: "open", draft: false, checksStatus: "success" },
+    prPhase: "review", approval: "awaiting-approval" as const, repo: "o/a",
+  };
+  const pill = new LifecyclePill();
+  pill.addEventListener("pill-approve", (event) => {
+    if (!store.approvePullRequest((event as CustomEvent).detail)) event.preventDefault();
+  });
+  const render = () => {
+    Object.assign(pill, { pair, activity: "review", approvalStatus: approvalStatusFor(store.getState().approvals, pair) });
+    return JSON.stringify(pill.render(), (_key, value: unknown) => (typeof value === "function" ? "fn" : value));
+  };
+  const clickButton = () => {
+    const find = (value: unknown): ((event: Event) => void) | undefined => {
+      if (Array.isArray(value)) return value.map(find).find(Boolean);
+      if (typeof value !== "object" || value === null || !("strings" in value)) return undefined;
+      const template = value as { strings: string[]; values: unknown[] };
+      if (template.strings.join("").includes('class="pill-approve')) {
+        return template.values.find((v) => typeof v === "function") as (event: Event) => void;
+      }
+      return find(template.values);
+    };
+    const handler = find(pill.render());
+    assert.ok(handler, "the pill has an Approve button");
+    handler(new Event("click"));
+  };
+
+  try {
+    render();
+    clickButton(); // arms
+    render();
+    clickButton(); // confirms, and sends
+    await waitMs(150);
+    assert.equal(store.getState().approvals.get("o/a#10")?.state, "loading", "yoke answered at once");
+    assert.match(render(), /Approving/);
+    assert.match(render(), /reading PR #10 from GitHub/);
+
+    finishLoading();
+    await waitMs(150);
+    assert.equal(store.getState().approvals.get("o/a#10")?.state, "refused");
+    assert.match(render(), /not approved: its checks are failing/);
+    assert.equal(attempts, 1);
+  } finally {
+    pill.disconnectedCallback();
+  }
+});

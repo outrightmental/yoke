@@ -1,7 +1,8 @@
 import { LitElement, html } from 'lit';
-import type { CylinderState, LifecyclePair } from '../store/types.js';
+import type { CylinderState, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 import { pillActivity, pillKey, type PillActivity } from '../shared/pill-activity.js';
+import { approvalStatusFor } from '../shared/pill-approval.js';
 import { withWorkedPairs } from '../shared/worked-pairs.js';
 import './lifecycle-pill.js';
 
@@ -54,6 +55,7 @@ export class LifecycleList extends LitElement {
     multiProject: { type: Boolean },
     dark: { type: Boolean },
     frozenActivity: { attribute: false },
+    approvals: { attribute: false },
   };
 
   pairs: LifecyclePair[] = [];
@@ -67,6 +69,8 @@ export class LifecycleList extends LitElement {
   dark = false;
   /** Each pill's activity when the pills went dark, so their icons stay frozen. */
   frozenActivity: Map<string, PillActivity | null> | null = null;
+  /** Each PR's latest dashboard approval status (#276), by `approveKey`. */
+  approvals: Map<string, PullRequestApprovalStatus> = new Map();
 
   protected override createRenderRoot() { return this; }
 
@@ -109,6 +113,7 @@ export class LifecycleList extends LitElement {
                       .color=${color.hex}
                       .colorRgb=${color.rgb}
                       .activity=${activity}
+                      .approvalStatus=${approvalStatusFor(this.approvals, pair)}
                       .dark=${this.dark}
                       .owner=${this.owner}
                       .repo=${this.repo}

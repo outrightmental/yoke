@@ -65,11 +65,6 @@ export function approvalKey(repo: string, pullRequestNumber: number): string {
   return `${repo}#${pullRequestNumber}`;
 }
 
-/** Whether an approval has ended, one way or the other. */
-export function isApprovalOutcome(state: unknown): boolean {
-  return state === "approved" || state === "refused" || state === "failed";
-}
-
 /**
  * Under the planning mutex, so no engine can claim the PR between these checks
  * and the approval being recorded: decide a dashboard approval, recording it
