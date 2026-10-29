@@ -159,6 +159,161 @@ test("PlanningMutex runs one critical section at a time, in arrival order", asyn
   assert.deepEqual(order, ["first:start", "first:end", "second"]);
 });
 
+/**
+ * Queue a critical section named `name` that runs until released. Records the
+ * order sections start in, and fails if two ever run at once.
+ */
+function heldSection(
+  mutex: PlanningMutex,
+  log: { started: string[]; running: number; overlaps: number },
+  name: string,
+  options?: { priority?: boolean },
+): { done: Promise<string>; release: () => void } {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const done = mutex.withLock(async () => {
+    log.running += 1;
+    if (log.running > 1) log.overlaps += 1;
+    log.started.push(name);
+    await released;
+    log.running -= 1;
+    return name;
+  }, options);
+  return { done, release };
+}
+
+/** Let every pending promise callback run. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+}
+
+function sectionLog() {
+  return { started: [] as string[], running: 0, overlaps: 0 };
+}
+
+test("PlanningMutex: a priority waiter queued behind ordinary ones runs right after the holder (#276)", async () => {
+  const mutex = new PlanningMutex();
+  const log = sectionLog();
+  const holder = heldSection(mutex, log, "holder");
+  const engines = [1, 2, 3].map((n) => heldSection(mutex, log, `engine ${n}`));
+  const approval = heldSection(mutex, log, "approval", { priority: true });
+  await settle();
+  assert.deepEqual(log.started, ["holder"], "a priority request never interrupts the section running");
+
+  holder.release();
+  await settle();
+  assert.deepEqual(log.started, ["holder", "approval"], "let in before every engine that queued first");
+
+  approval.release();
+  for (const engine of engines) {
+    await settle();
+    engine.release();
+  }
+  await Promise.all([holder.done, approval.done, ...engines.map((e) => e.done)]);
+  assert.deepEqual(log.started, ["holder", "approval", "engine 1", "engine 2", "engine 3"], "the engines keep their order");
+  assert.equal(log.overlaps, 0);
+});
+
+test("PlanningMutex: priority waiters run first in, first out among themselves", async () => {
+  const mutex = new PlanningMutex();
+  const log = sectionLog();
+  const sections = [
+    heldSection(mutex, log, "holder"),
+    heldSection(mutex, log, "engine"),
+    heldSection(mutex, log, "approval A", { priority: true }),
+    heldSection(mutex, log, "approval B", { priority: true }),
+    heldSection(mutex, log, "approval C", { priority: true }),
+  ];
+  for (let i = 0; i < sections.length; i += 1) {
+    await settle();
+    for (const section of sections) section.release();
+  }
+  await Promise.all(sections.map((s) => s.done));
+  assert.deepEqual(log.started, ["holder", "approval A", "approval B", "approval C", "engine"]);
+  assert.equal(log.overlaps, 0);
+});
+
+test("PlanningMutex: ordinary waiters keep their arrival order around priority ones", async () => {
+  const mutex = new PlanningMutex();
+  const log = sectionLog();
+  const sections = [
+    heldSection(mutex, log, "holder"),
+    heldSection(mutex, log, "engine 1"),
+    heldSection(mutex, log, "approval", { priority: true }),
+    heldSection(mutex, log, "engine 2"),
+    heldSection(mutex, log, "engine 3"),
+  ];
+  for (let i = 0; i < sections.length; i += 1) {
+    await settle();
+    for (const section of sections) section.release();
+  }
+  await Promise.all(sections.map((s) => s.done));
+  assert.deepEqual(log.started, ["holder", "approval", "engine 1", "engine 2", "engine 3"]);
+  assert.equal(log.overlaps, 0);
+});
+
+test("PlanningMutex: a priority request on a free lock runs at once", async () => {
+  const mutex = new PlanningMutex();
+  const log = sectionLog();
+  const approval = heldSection(mutex, log, "approval", { priority: true });
+  await Promise.resolve();
+  assert.deepEqual(log.started, ["approval"]);
+
+  const engine = heldSection(mutex, log, "engine");
+  await settle();
+  assert.deepEqual(log.started, ["approval"], "and holds it like any other section");
+  approval.release();
+  await settle();
+  engine.release();
+  assert.deepEqual(await Promise.all([approval.done, engine.done]), ["approval", "engine"]);
+  assert.equal(log.overlaps, 0);
+});
+
+test("PlanningMutex: a priority request never runs alongside the holder", async () => {
+  const mutex = new PlanningMutex();
+  const log = sectionLog();
+  const holder = heldSection(mutex, log, "holder");
+  const approval = heldSection(mutex, log, "approval", { priority: true });
+  for (let i = 0; i < 5; i += 1) await settle();
+  assert.deepEqual(log.started, ["holder"]);
+  assert.equal(log.running, 1);
+
+  holder.release();
+  await settle();
+  approval.release();
+  await Promise.all([holder.done, approval.done]);
+  assert.equal(log.overlaps, 0);
+});
+
+test("PlanningMutex: free again after a mix of both kinds, with no lost wake-up and no double hold", async () => {
+  const mutex = new PlanningMutex();
+  const log = sectionLog();
+  const sections: Array<{ done: Promise<string>; release: () => void }> = [];
+  // Waiters of both kinds arrive while sections are running, in both queues.
+  for (let i = 0; i < 12; i += 1) {
+    sections.push(heldSection(mutex, log, `s${i}`, { priority: i % 3 === 0 }));
+    if (i % 4 === 3) {
+      await settle();
+      const running = sections[Number(log.started.at(-1)!.slice(1))]!;
+      running.release();
+    }
+  }
+  for (let i = 0; i < sections.length; i += 1) {
+    await settle();
+    for (const section of sections) section.release();
+  }
+  await Promise.all(sections.map((s) => s.done));
+  assert.equal(log.started.length, 12, "every waiter ran: no lost wake-up");
+  assert.equal(new Set(log.started).size, 12, "each exactly once");
+  assert.equal(log.overlaps, 0, "never two at once");
+
+  // A section that throws still hands the lock on.
+  await assert.rejects(mutex.withLock(async () => { throw new Error("boom"); }, { priority: true }), /boom/);
+  let ran = false;
+  await mutex.withLock(async () => { ran = true; });
+  assert.ok(ran, "the lock is free once everyone is done");
+});
+
 // ── shutdown gating ──────────────────────────────────────────────────────────
 
 interface TestProject {

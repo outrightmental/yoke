@@ -34,6 +34,9 @@ export type DashboardEventType =
   // A human pressed Approve on a review-gated pill (#274): `{ repo,
   // pullRequestNumber }`. The engine pool records the approval and merges.
   | "pull-request-approve"
+  // Where one dashboard approval of one PR stands (#276), from the moment it is
+  // received until it ends: see `PullRequestApproval` in src/dashboard-approval.ts.
+  | "pull-request-approval"
   | "css-reload";
 
 export interface DashboardEvent {

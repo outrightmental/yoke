@@ -1,10 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { approveControl, approveRequestMessage } from "../src/dashboard/shared/pill-approval.js";
+import {
+  APPROVAL_OUTCOME_SHOW_MS,
+  APPROVE_ACK_MS,
+  APPROVE_BUTTON_LABELS,
+  APPROVE_CONFIRM_MS,
+  approvalStatusFor,
+  approvalView,
+  approveControl,
+  approveRequestMessage,
+  type ApproveClick,
+} from "../src/dashboard/shared/pill-approval.js";
 import { pillActivity } from "../src/dashboard/shared/pill-activity.js";
 import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
-import type { LifecyclePair } from "../src/dashboard/store/types.js";
+import type { LifecyclePair, PullRequestApprovalStatus } from "../src/dashboard/store/types.js";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -178,7 +188,7 @@ test("lifecycle pill: approving takes a confirming second click, then asks yoke 
   }
 });
 
-test("lifecycle pill: a confirmed click that could not be sent goes back to Approve", () => {
+test("lifecycle pill: a confirmed click that could not be sent goes back to Approve, saying why", () => {
   const { pill, button } = renderPill(parkedPair());
   // What yoke-app does when there is no live connection to send it on.
   pill.addEventListener("pill-approve", (event) => event.preventDefault());
@@ -186,9 +196,10 @@ test("lifecycle pill: a confirmed click that could not be sent goes back to Appr
   try {
     click(button);
     click(renderPill(parkedPair(), {}, pill).button);
-    const after = renderPill(parkedPair(), {}, pill).button;
+    const { html, button: after } = renderPill(parkedPair(), {}, pill);
     assert.match(flatten(after), />Approve<\/button>/, "not left reading Sending");
     assert.match(flatten(after), /\?disabled=false/, "and can be pressed again");
+    assert.match(html, statusLine("not sent — the dashboard is not connected to yoke"));
   } finally {
     pill.disconnectedCallback();
   }
@@ -221,4 +232,287 @@ test("lifecycle pill: the button keeps both halves the same width, so the seams 
   assert.match(css, /\.lifecycle-pill\.has-approve \.pill-pr-half \.pill-row \{ padding-right: 64px; \}/);
   assert.match(css, /\.lifecycle-pill\.has-approve\.has-status \.pill-pr-half \.pill-row \{ padding-right: 88px; \}/);
   assert.ok(!/has-approve \.pill-pr-half \{/.test(css), "the PR half itself is never resized");
+});
+
+// ── what became of the approval (#276) ───────────────────────────────────────
+
+const NOW = Date.parse("2026-10-28T23:21:15.000Z");
+const TARGET = { repo: "o/a", pullRequestNumber: 10 };
+
+function approvalStatus(
+  state: PullRequestApprovalStatus["state"],
+  receivedAtMs: number,
+  extra: Partial<PullRequestApprovalStatus> = {},
+): PullRequestApprovalStatus {
+  return { repo: "o/a", pullRequestNumber: 10, requestedAt: "2026-10-28T23:21:15.000Z", state,
+    emittedAt: new Date(receivedAtMs).toISOString(), receivedAtMs, ...extra };
+}
+
+function sentAt(atMs: number, step: ApproveClick["step"] = "sent"): ApproveClick {
+  return { key: "o/a#10", step, atMs };
+}
+
+/** The view of PR #10's approval, parked awaiting it unless `control` says otherwise. */
+function view(
+  status: PullRequestApprovalStatus | null,
+  click: ApproveClick | null,
+  nowMs: number,
+  control = approveControl(parkedPair(), "review", false),
+) {
+  return approvalView({ target: TARGET, control, status, click, nowMs });
+}
+
+/** Matches the pill's approval line: visible text in its live region. */
+function statusLine(text: string): RegExp {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`role="status"\\s+aria-live="polite"\\s*> · ${escaped}</span>`);
+}
+
+test("approvalView: a sent click reads Sending until yoke's first answer after it", () => {
+  const v = view(null, sentAt(NOW), NOW + 3_000);
+
+  assert.deepEqual(v.button, { step: "sending", label: "Sending", disabled: true, title: "Approval of PR #10 sent to yoke" });
+  assert.deepEqual(v.line, { text: "approval sent to yoke…", tone: "progress" });
+  assert.equal(v.refreshAtMs, NOW + APPROVE_ACK_MS, "and looks again when the answer is due");
+});
+
+test("approvalView: an answer from before the click is not an answer to it", () => {
+  const earlier = approvalStatus("refused", NOW - 1, { reason: "its checks are failing" });
+
+  assert.equal(view(earlier, sentAt(NOW), NOW + 1_000).button?.label, "Sending");
+});
+
+test("approvalView: while yoke works on the approval it reads Approving, with no time limit", () => {
+  const loading = view(approvalStatus("loading", NOW + 50), sentAt(NOW), NOW + 1_000);
+  assert.deepEqual(loading.button, { step: "approving", label: "Approving", disabled: true, title: "Yoke is approving PR #10" });
+  assert.deepEqual(loading.line, { text: "approving — reading PR #10 from GitHub…", tone: "progress" });
+  assert.equal(loading.refreshAtMs, null, "no fallback timer");
+
+  const waiting = view(approvalStatus("waiting", NOW + 50), sentAt(NOW), NOW + 10 * 60_000);
+  assert.equal(waiting.button?.label, "Approving", "ten minutes on, still Approving");
+  assert.equal(waiting.line?.text, "approving — waiting for a free planner…");
+});
+
+test("approvalView: an approval this pill did not send shows too", () => {
+  // Another dashboard's, or one in flight when this page loaded.
+  const v = view(approvalStatus("waiting", NOW), null, NOW + 5_000);
+
+  assert.equal(v.button?.label, "Approving");
+  assert.equal(v.button?.disabled, true);
+  assert.equal(v.line?.text, "approving — waiting for a free planner…");
+});
+
+test("approvalView: approved drops the button and reads APPROVED until the lifecycle shows it", () => {
+  const approved = approvalStatus("approved", NOW + 2_000, { checksPending: false });
+
+  const v = view(approved, sentAt(NOW), NOW + 3_000);
+  assert.equal(v.button, null);
+  assert.equal(v.approved, true);
+  assert.deepEqual(v.line, { text: "approved — an engine will squash-merge it", tone: "approved" });
+
+  const pending = view(approvalStatus("approved", NOW + 2_000, { checksPending: true }), sentAt(NOW), NOW + 3_000);
+  assert.equal(pending.line?.text, "approved — an engine will squash-merge it once its checks pass");
+
+  const shown = view(approved, sentAt(NOW), NOW + 3_000, approveControl(parkedPair({ approval: "approved" }), null, false));
+  assert.equal(shown.line, null, "once the lifecycle shows the approval, APPROVED says it all");
+  assert.equal(shown.approved, true);
+});
+
+test("approvalView: a refusal shows its reason, and Approve can be pressed again", () => {
+  const refused = approvalStatus("refused", NOW + 2_000, { reason: "its checks are failing" });
+  const v = view(refused, sentAt(NOW), NOW + 3_000);
+
+  assert.deepEqual(v.button, { step: "idle", label: "Approve", disabled: false, title: "Approve PR #10: yoke squash-merges it" });
+  assert.deepEqual(v.line, { text: "not approved: its checks are failing", tone: "problem" });
+  assert.equal(v.refreshAtMs, NOW + 2_000 + APPROVAL_OUTCOME_SHOW_MS);
+
+  assert.equal(view(refused, sentAt(NOW), NOW + 2_000 + APPROVAL_OUTCOME_SHOW_MS).line, null, "for a minute");
+  assert.equal(view(refused, sentAt(NOW + 4_000, "confirm"), NOW + 5_000).line, null, "or until the next press");
+  assert.equal(view(refused, sentAt(NOW + 4_000, "confirm"), NOW + 5_000).button?.label, "Confirm");
+});
+
+test("approvalView: a failure shows its first line, and Approve can be pressed again", () => {
+  const v = view(approvalStatus("failed", NOW + 2_000, { reason: "GitHub said 502" }), sentAt(NOW), NOW + 3_000);
+
+  assert.equal(v.button?.label, "Approve");
+  assert.equal(v.button?.disabled, false);
+  assert.deepEqual(v.line, { text: "approval failed: GitHub said 502", tone: "problem" });
+});
+
+test("approvalView: no answer within APPROVE_ACK_MS says so, and a late answer still counts", () => {
+  const v = view(null, sentAt(NOW), NOW + APPROVE_ACK_MS);
+  assert.equal(v.button?.label, "Approve");
+  assert.equal(v.button?.disabled, false);
+  assert.deepEqual(v.line, { text: "no answer from yoke — check the connection and the event log", tone: "problem" });
+
+  const late = view(approvalStatus("waiting", NOW + APPROVE_ACK_MS + 2_000), sentAt(NOW), NOW + APPROVE_ACK_MS + 3_000);
+  assert.equal(late.button?.label, "Approving");
+});
+
+test("approvalView: a click that could not be sent says the dashboard is not connected", () => {
+  const v = view(null, sentAt(NOW, "unsent"), NOW + 1_000);
+
+  assert.equal(v.button?.label, "Approve");
+  assert.equal(v.line?.text, "not sent — the dashboard is not connected to yoke");
+  assert.equal(view(null, sentAt(NOW, "unsent"), NOW + APPROVAL_OUTCOME_SHOW_MS).line, null);
+});
+
+test("approvalView: the first click arms the button for APPROVE_CONFIRM_MS", () => {
+  const armed = view(null, sentAt(NOW, "confirm"), NOW + 1_000);
+  assert.equal(armed.button?.label, "Confirm");
+  assert.equal(armed.line, null);
+  assert.equal(armed.refreshAtMs, NOW + APPROVE_CONFIRM_MS);
+  assert.equal(view(null, sentAt(NOW, "confirm"), NOW + APPROVE_CONFIRM_MS).button?.label, "Approve");
+});
+
+test("approvalView: another PR's status or click never shows on this one", () => {
+  const other = { ...approvalStatus("refused", NOW, { reason: "it is not open" }), pullRequestNumber: 11 };
+  const otherProject = { ...approvalStatus("waiting", NOW), repo: "o/b" };
+
+  assert.equal(view(other, null, NOW + 1_000).line, null);
+  assert.equal(view(otherProject, null, NOW + 1_000).line, null);
+  assert.equal(view(null, { key: "o/a#11", step: "sent", atMs: NOW }, NOW + 1_000).button?.label, "Approve");
+});
+
+test("approvalStatusFor finds a pill's PR by project and number", () => {
+  const approvals = new Map<string, PullRequestApprovalStatus>([
+    ["o/a#10", approvalStatus("waiting", NOW)],
+    ["o/b#10", { ...approvalStatus("refused", NOW), repo: "o/b" }],
+  ]);
+
+  assert.equal(approvalStatusFor(approvals, parkedPair())?.state, "waiting");
+  assert.equal(approvalStatusFor(approvals, parkedPair({ repo: "o/b" }))?.state, "refused");
+  assert.equal(approvalStatusFor(approvals, parkedPair({}, { number: 11 })), null);
+  assert.equal(approvalStatusFor(approvals, parkedPair({ pr: null, prPhase: "absent" })), null);
+});
+
+// ── the pill following yoke's answer ─────────────────────────────────────────
+
+/** Arm and confirm the pill's Approve button, as a person would. */
+function confirmApprove(pill: LifecyclePill, pair = parkedPair()): void {
+  click(renderPill(pair, {}, pill).button);
+  click(renderPill(pair, {}, pill).button);
+}
+
+test("lifecycle pill: after the confirming click it follows yoke's answer, not a timer", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: NOW });
+  const pill = new LifecyclePill();
+  try {
+    confirmApprove(pill);
+    let rendered = renderPill(parkedPair(), {}, pill);
+    assert.match(flatten(rendered.button), />Sending<\/button>/);
+    assert.match(rendered.html, statusLine("approval sent to yoke…"));
+
+    t.mock.timers.tick(2_000);
+    rendered = renderPill(parkedPair(), { approvalStatus: approvalStatus("loading", Date.now()) }, pill);
+    assert.match(flatten(rendered.button), />Approving<\/button>/);
+    assert.match(flatten(rendered.button), /\?disabled=true/);
+    assert.match(rendered.html, statusLine("approving — reading PR #10 from GitHub…"));
+
+    t.mock.timers.tick(40_000);
+    rendered = renderPill(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now() - 39_000) }, pill);
+    assert.match(flatten(rendered.button), />Approving<\/button>/, "no 20 s fallback");
+    assert.match(rendered.html, statusLine("approving — waiting for a free planner…"));
+
+    rendered = renderPill(parkedPair(), {
+      approvalStatus: approvalStatus("refused", Date.now(), { reason: "its checks are failing" }),
+    }, pill);
+    assert.match(flatten(rendered.button), />Approve<\/button>/);
+    assert.match(flatten(rendered.button), /\?disabled=false/);
+    assert.match(rendered.html, statusLine("not approved: its checks are failing"), "visible without hovering");
+    assert.match(rendered.html, /title="PR · not approved: its checks are failing"/, "and in full in the tooltip");
+  } finally {
+    pill.disconnectedCallback();
+  }
+});
+
+test("lifecycle pill: no answer within APPROVE_ACK_MS shows the no-answer line", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: NOW });
+  const pill = new LifecyclePill();
+  pill.addEventListener("pill-approve", () => {});
+  try {
+    confirmApprove(pill);
+    t.mock.timers.tick(APPROVE_ACK_MS);
+    const { html, button } = renderPill(parkedPair(), {}, pill);
+    assert.match(flatten(button), />Approve<\/button>/);
+    assert.match(flatten(button), /\?disabled=false/);
+    assert.match(html, statusLine("no answer from yoke — check the connection and the event log"));
+  } finally {
+    pill.disconnectedCallback();
+  }
+});
+
+test("lifecycle pill: a recorded approval drops the button and reads APPROVED", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: NOW });
+  const pill = new LifecyclePill();
+  try {
+    confirmApprove(pill);
+    t.mock.timers.tick(1_000);
+    const { html, button } = renderPill(parkedPair(), {
+      approvalStatus: approvalStatus("approved", Date.now(), { checksPending: false }),
+    }, pill);
+    assert.equal(button, undefined);
+    assert.ok(!html.includes("has-approve"), "the row takes back the button's room");
+    assert.match(html, /APPROVED/);
+    assert.ok(!html.includes(">READY<"));
+    assert.match(html, statusLine("approved — an engine will squash-merge it"));
+  } finally {
+    pill.disconnectedCallback();
+  }
+});
+
+test("lifecycle pill: another dashboard's approval shows as Approving here", () => {
+  const { html, button } = renderPill(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now()) });
+
+  assert.match(flatten(button), />Approving<\/button>/);
+  assert.match(html, statusLine("approving — waiting for a free planner…"));
+});
+
+test("lifecycle pill: a reused element never shows another PR's status", () => {
+  const pill = new LifecyclePill();
+  renderPill(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now()) }, pill);
+  const other = parkedPair({ issue: { number: 2, title: "Other", state: "open" } }, { number: 11 });
+  // Even should PR #10's status still be set on it.
+  const { html, button } = renderPill(other, {}, pill);
+
+  assert.match(flatten(button), />Approve<\/button>/);
+  assert.ok(!html.includes("approving —"));
+  pill.disconnectedCallback();
+});
+
+test("lifecycle pill: the approval line is a live region on the PR half's label, even when empty", () => {
+  const { html } = renderPill(parkedPair());
+
+  assert.match(html, /<div class="pill-label" title="">PR<span\s+class="pill-approval-line"\s+role="status"\s+aria-live="polite"\s*><\/span><\/div>/);
+});
+
+test("lifecycle pill: the approval line changes neither the pill's nor the PR half's width", () => {
+  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
+
+  const label = /\.pill-pr-half \.pill-label \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  assert.match(label, /overflow: hidden;/, "a long line is cut short…");
+  assert.match(label, /text-overflow: ellipsis;/, "…with an ellipsis");
+  assert.match(/\.pill-label \{([^}]*)\}/.exec(css)?.[1] ?? "", /white-space: nowrap;/, "on one line");
+  const half = /\.pill-pr-half \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  assert.match(half, /flex: 1;/);
+  assert.match(half, /min-width: 0;/, "the half never grows to fit its text");
+  assert.match(half, /overflow: hidden;/);
+  assert.match(css, /\.lifecycle-pill\.has-status \.pill-pr-half \.pill-label \{ padding-right: 24px; \}/);
+  assert.match(css, /\.lifecycle-pill\.has-approve \.pill-pr-half \.pill-label \{ padding-right: 64px; \}/);
+  assert.match(css, /\.lifecycle-pill\.has-approve\.has-status \.pill-pr-half \.pill-label \{ padding-right: 88px; \}/);
+  assert.ok(!/\.pill-approval-line \{[^}]*(width|padding|margin)/.test(css), "the line itself takes no room of its own");
+});
+
+test("lifecycle pill: every Approve button label fits the fixed 60 px button", () => {
+  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
+  const rule = /\.pill-approve \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const px = (property: string) => Number(new RegExp(`${property}: ([\\d.]+)px;`).exec(rule)?.[1]);
+
+  assert.match(rule, /font-family: 'IBM Plex Mono', monospace;/, "a monospace face: every glyph is 0.6em wide");
+  assert.match(rule, /padding: 0;/);
+  const room = px("width") - 2 * Number(/border: ([\d.]+)px/.exec(rule)?.[1]);
+  const perGlyph = 0.6 * px("font-size") + px("letter-spacing");
+  for (const label of Object.values(APPROVE_BUTTON_LABELS)) {
+    assert.ok(label.length * perGlyph <= room, `${label} (${(label.length * perGlyph).toFixed(1)} px) fits in ${room} px`);
+  }
 });

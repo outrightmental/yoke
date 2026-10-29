@@ -118,21 +118,34 @@ export interface ShutdownSignal {
   readonly requested: boolean;
 }
 
-/** Serialises planning across all engines to prevent double-booking. */
+/**
+ * Serialises planning across all engines to prevent double-booking.
+ *
+ * Waiters are let in first in, first out, except that a `priority` waiter goes
+ * ahead of every ordinary one. That is for a human waiting on the dashboard
+ * (#276): with every engine idle, their planning passes queue back to back for
+ * the lock, and an approval queued behind all of them waited minutes. A
+ * priority waiter still never interrupts the section that is running; it is
+ * let in as soon as that one releases the lock. The lock is handed straight to
+ * the next waiter, whichever queue it is in, so it is never free while anyone
+ * waits and never held twice.
+ */
 export class PlanningMutex {
   private locked = false;
   private waiting: Array<() => void> = [];
+  private priorityWaiting: Array<() => void> = [];
 
-  async withLock<T>(fn: () => Promise<T>): Promise<T> {
+  async withLock<T>(fn: () => Promise<T>, options: { priority?: boolean } = {}): Promise<T> {
     if (this.locked) {
-      await new Promise<void>((resolve) => this.waiting.push(resolve));
+      const queue = options.priority ? this.priorityWaiting : this.waiting;
+      await new Promise<void>((resolve) => queue.push(resolve));
     } else {
       this.locked = true;
     }
     try {
       return await fn();
     } finally {
-      const next = this.waiting.shift();
+      const next = this.priorityWaiting.shift() ?? this.waiting.shift();
       if (next) {
         next();
       } else {

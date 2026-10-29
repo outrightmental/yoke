@@ -103,6 +103,7 @@ export class YokeApp extends LitElement {
           .multiProject=${s.multiProject}
           .dark=${pillsDark(s)}
           .frozenActivity=${s.frozenPillActivity}
+          .approvals=${s.approvals}
           @pill-approve=${this._onPillApprove}
         ></lifecycle-list>
         <broadcast-feed

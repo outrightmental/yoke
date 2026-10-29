@@ -244,6 +244,9 @@ export type ApprovePullRequestResult =
     }
   | { approved: false; reason: string };
 
+/** Why `approvePullRequest` records nothing for a PR an earlier approval covers. */
+export const ALREADY_APPROVED_REASON = "it is already approved";
+
 /**
  * Record a human's approval of a review-gated PR from the dashboard's Approve
  * button (#274). The approval is an `approval` session in the store; the
@@ -270,7 +273,7 @@ export async function approvePullRequest(
   }
   const state = reviewApprovalState(pullRequest, snapshot, options.projectModeEnabled ?? false);
   if (state === "approved") {
-    return { approved: false, reason: "it is already approved" };
+    return { approved: false, reason: ALREADY_APPROVED_REASON };
   }
   if (state !== "awaiting-approval") {
     return { approved: false, reason: "it is not waiting on approval" };
