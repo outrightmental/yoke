@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import open from "open";
 import { globalEventEmitter, EventEmitter, type DashboardEvent } from "./event-emitter.js";
+import { APPROVAL_OUTCOME_SHOW_MS, isApprovalOutcome } from "./dashboard/shared/pill-approval.js";
 
 /**
  * Per-client cap on buffered (un-flushed) WebSocket data. A backgrounded or
@@ -273,7 +274,7 @@ export class DashboardServer {
         maxConcurrency: this.maxConcurrency,
         multiProject: this.multiProject,
         projects: this.projects,
-        cachedEvents: Array.from(this.cachedEvents.values()),
+        cachedEvents: this.replayableEvents(),
       });
       return;
     }
@@ -291,7 +292,7 @@ export class DashboardServer {
       console.error("[Dashboard] WebSocket error:", error);
     });
 
-    for (const event of this.cachedEvents.values()) {
+    for (const event of this.replayableEvents()) {
       ws.send(JSON.stringify(event));
     }
 
@@ -375,6 +376,31 @@ export class DashboardServer {
       this.cachedEvents.set(type, event);
     } else if (type === "shutdown-requested" || type === "app-shutdown") {
       this.cachedEvents.set(type, event);
+    } else if (type === "pull-request-approval") {
+      // Each PR's latest approval status (#276), so a page opened or reloaded
+      // while an approval is under way still shows it, and one opened just
+      // after it ended still says how.
+      this.pruneApprovalOutcomes();
+      this.cachedEvents.set(`pull-request-approval:${String(data["repo"])}#${String(data["pullRequestNumber"])}`, event);
+    }
+  }
+
+  /** The cached events a newly connected page is brought up to date with. */
+  private replayableEvents(): DashboardEvent[] {
+    this.pruneApprovalOutcomes();
+    return Array.from(this.cachedEvents.values());
+  }
+
+  /**
+   * Drop every approval outcome older than the pill shows one for. An
+   * approval still under way is always kept: it ends with an outcome, which
+   * replaces it. Pruned whenever the cache is replayed or a new approval
+   * status arrives, so it never grows without bound over a long run.
+   */
+  private pruneApprovalOutcomes(nowMs = Date.now()): void {
+    for (const [key, event] of this.cachedEvents) {
+      if (event.type !== "pull-request-approval" || !isApprovalOutcome(event.data["state"])) continue;
+      if (nowMs - Date.parse(event.timestamp) >= APPROVAL_OUTCOME_SHOW_MS) this.cachedEvents.delete(key);
     }
   }
 

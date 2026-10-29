@@ -732,6 +732,140 @@ test("DashboardServer takes Approve clicks only from its own page, never another
   assert.deepEqual(rebound, [], "a site whose name was made to resolve to this machine cannot");
 });
 
+// ── What became of an approval (#276) ─────────────────────────────────────────
+
+/**
+ * An emitter the test can publish events through with a timestamp of its own
+ * choosing, so an approval outcome can be made older than the pill shows one.
+ */
+function stampedEmitter() {
+  const emitter = new EventEmitter();
+  const listeners = new Set<(event: DashboardEvent) => void>();
+  emitter.subscribe = (listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const publish = (type: DashboardEvent["type"], data: Record<string, unknown>, atMs = Date.now()) => {
+    for (const listener of listeners) listener({ type, timestamp: new Date(atMs).toISOString(), data });
+  };
+  emitter.emit = (type, data) => publish(type, data);
+  return { emitter, publish };
+}
+
+function approval(repo: string, pullRequestNumber: number, state: string, extra: Record<string, unknown> = {}) {
+  return { repo, pullRequestNumber, requestedAt: "2026-10-28T23:21:15.000Z", state, ...extra };
+}
+
+async function startServer(t: { after: (fn: () => void) => void }, port: number, eventEmitter: EventEmitter) {
+  const server = new DashboardServer({
+    port,
+    host: "127.0.0.1",
+    owner: "",
+    repo: "",
+    multiProject: true,
+    projects: ["o/a", "o/b"],
+    eventEmitter,
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+  return server;
+}
+
+async function cachedApprovals(port: number): Promise<Array<Record<string, unknown>>> {
+  const res = await httpGet(`http://127.0.0.1:${port}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  return data.cachedEvents.filter((e) => e.type === "pull-request-approval").map((e) => e.data);
+}
+
+test("DashboardServer broadcasts each approval status to every open page", async (t) => {
+  const emitter = new EventEmitter();
+  await startServer(t, TEST_PORT + 31, emitter);
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 31}/api/ws`);
+  const messagesPromise = collectWsMessages(ws, 100);
+  await new Promise<void>((resolve) => ws.once("open", resolve));
+  emitter.emit("pull-request-approval", approval("o/a", 10, "loading"));
+  emitter.emit("pull-request-approval", approval("o/a", 10, "waiting"));
+  const messages = await messagesPromise;
+  ws.close();
+
+  const states = messages.filter((m) => m.type === "pull-request-approval").map((m) => m.data["state"]);
+  assert.deepEqual(states, ["loading", "waiting"]);
+});
+
+test("DashboardServer replays an approval under way to a page that connects later", async (t) => {
+  const emitter = new EventEmitter();
+  await startServer(t, TEST_PORT + 32, emitter);
+
+  emitter.emit("pull-request-approval", approval("o/a", 10, "loading"));
+  emitter.emit("pull-request-approval", approval("o/a", 10, "waiting"));
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 32}/api/ws`);
+  const messages = await collectWsMessages(ws, 100);
+  ws.close();
+  const replayed = messages.filter((m) => m.type === "pull-request-approval");
+  assert.equal(replayed.length, 1, "only the PR's latest status");
+  assert.equal(replayed[0]?.data["state"], "waiting");
+
+  assert.deepEqual(await cachedApprovals(TEST_PORT + 32), [approval("o/a", 10, "waiting")], "and to a reloaded page");
+});
+
+test("DashboardServer replays a recent outcome, but prunes one older than the pill shows", async (t) => {
+  const { emitter, publish } = stampedEmitter();
+  await startServer(t, TEST_PORT + 33, emitter);
+  const now = Date.now();
+
+  publish("pull-request-approval", approval("o/a", 10, "refused", { reason: "its checks are failing" }), now - 5_000);
+  publish("pull-request-approval", approval("o/a", 11, "approved", { checksPending: false }), now - 61_000);
+  publish("pull-request-approval", approval("o/a", 12, "failed", { reason: "GitHub said 502" }), now - 61_000);
+  // Still under way, however long ago it started: it ends with an outcome.
+  publish("pull-request-approval", approval("o/a", 13, "waiting"), now - 10 * 60_000);
+
+  const cached = await cachedApprovals(TEST_PORT + 33);
+  assert.deepEqual(
+    cached.map((d) => `${String(d["pullRequestNumber"])}:${String(d["state"])}`).sort(),
+    ["10:refused", "13:waiting"],
+  );
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 33}/api/ws`);
+  const messages = await collectWsMessages(ws, 100);
+  ws.close();
+  const replayed = messages.filter((m) => m.type === "pull-request-approval").map((m) => m.data["pullRequestNumber"]);
+  assert.deepEqual(replayed.sort(), [10, 13], "nor to a socket");
+});
+
+test("DashboardServer prunes stale outcomes whenever a new approval status arrives", async (t) => {
+  const { emitter, publish } = stampedEmitter();
+  const server = await startServer(t, TEST_PORT + 34, emitter);
+  const now = Date.now();
+  const cache = (server as unknown as { cachedEvents: Map<string, DashboardEvent> }).cachedEvents;
+
+  for (let n = 1; n <= 50; n += 1) {
+    publish("pull-request-approval", approval("o/a", n, "refused", { reason: "it is not open" }), now - 120_000);
+  }
+  publish("pull-request-approval", approval("o/a", 99, "loading"), now);
+
+  const approvalKeys = [...cache.keys()].filter((key) => key.startsWith("pull-request-approval:"));
+  assert.deepEqual(approvalKeys, ["pull-request-approval:o/a#99"], "the cache does not grow over a long run");
+});
+
+test("DashboardServer keeps approvals of different PRs and projects apart", async (t) => {
+  const emitter = new EventEmitter();
+  await startServer(t, TEST_PORT + 35, emitter);
+
+  emitter.emit("pull-request-approval", approval("o/a", 10, "waiting"));
+  emitter.emit("pull-request-approval", approval("o/a", 11, "loading"));
+  emitter.emit("pull-request-approval", approval("o/b", 10, "refused", { reason: "it is not open" }));
+  emitter.emit("pull-request-approval", approval("o/a", 10, "approved", { checksPending: true }));
+
+  const cached = await cachedApprovals(TEST_PORT + 35);
+  assert.deepEqual(
+    cached.map((d) => `${String(d["repo"])}#${String(d["pullRequestNumber"])}:${String(d["state"])}`).sort(),
+    ["o/a#10:approved", "o/a#11:loading", "o/b#10:refused"],
+  );
+});
+
 test("DashboardServer broadcasts css-reload when bundle.css changes on disk", async (t) => {
   const bundleDir = path.join(process.cwd(), "dist", "dashboard");
   const cssPath = path.join(bundleDir, "bundle.css");
