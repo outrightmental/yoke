@@ -1,9 +1,10 @@
 import { LitElement, html } from 'lit';
-import type { CylinderState, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
+import type { ApprovalPress, CylinderState, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 import { pillActivity, pillKey, type PillActivity } from '../shared/pill-activity.js';
-import { approvalStatusFor } from '../shared/pill-approval.js';
+import { approvalPressFor, approvalStatusFor } from '../shared/pill-approval.js';
 import { withWorkedPairs } from '../shared/worked-pairs.js';
+import { workingCylinder } from '../shared/working-cylinder.js';
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
@@ -56,6 +57,8 @@ export class LifecycleList extends LitElement {
     dark: { type: Boolean },
     frozenActivity: { attribute: false },
     approvals: { attribute: false },
+    approvalPresses: { attribute: false },
+    connected: { type: Boolean },
   };
 
   pairs: LifecyclePair[] = [];
@@ -71,6 +74,10 @@ export class LifecycleList extends LitElement {
   frozenActivity: Map<string, PillActivity | null> | null = null;
   /** Each PR's latest dashboard approval status (#276), by `approveKey`. */
   approvals: Map<string, PullRequestApprovalStatus> = new Map();
+  /** This dashboard's own Approve presses (#278), by `approveKey`. */
+  approvalPresses: Map<string, ApprovalPress> = new Map();
+  /** The dashboard has a live connection to yoke. */
+  connected = true;
 
   protected override createRenderRoot() { return this; }
 
@@ -114,6 +121,9 @@ export class LifecycleList extends LitElement {
                       .colorRgb=${color.rgb}
                       .activity=${activity}
                       .approvalStatus=${approvalStatusFor(this.approvals, pair)}
+                      .approvalPress=${approvalPressFor(this.approvalPresses, pair)}
+                      .workingAction=${workingCylinder(pair, this.cylinders)?.actionType ?? null}
+                      .connected=${this.connected}
                       .dark=${this.dark}
                       .owner=${this.owner}
                       .repo=${this.repo}

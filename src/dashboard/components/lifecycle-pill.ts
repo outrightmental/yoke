@@ -1,13 +1,10 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
-import type { LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
+import type { ApprovalPress, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
 import type { PillActivity } from '../shared/pill-activity.js';
 import {
   approvalView,
-  approveControl,
-  approveKey,
   pairApproveTarget,
   type ApprovalView,
-  type ApproveClick,
   type ApproveTarget,
 } from '../shared/pill-approval.js';
 
@@ -401,9 +398,9 @@ export class LifecyclePill extends LitElement {
        sits over the PR half, just left of the icon, with the room for it kept
        inside the PR half's row — so both halves stay the same width and the
        seams of all pills line up. It is the same width in every step —
-       Approve, Confirm, Sending, Approving — so arming, sending and following
-       yoke's answer never move anything; anything longer goes on the PR
-       half's label line (#276). */
+       Approve, Queued, Merging, Working, Merged, Retry — so pressing it and
+       following the approval never move anything; anything longer goes on the
+       PR half's label line (#276). */
     .lifecycle-pill.has-approve .pill-pr-half .pill-row { padding-right: 64px; }
     .lifecycle-pill.has-approve.has-status .pill-pr-half .pill-row { padding-right: 88px; }
 
@@ -433,28 +430,66 @@ export class LifecyclePill extends LitElement {
 
     .lifecycle-pill.has-status .pill-approve { right: 38px; }
 
-    .pill-approve:hover:not(:disabled),
-    .pill-approve.confirm {
+    .pill-approve.idle:hover:not(:disabled) {
       background: rgba(0, 255, 136, 0.15);
       border-color: #00ff88;
       color: #00ff88;
     }
 
-    .pill-approve.confirm { box-shadow: 0 0 8px rgba(0, 255, 136, 0.45); }
-
     .pill-approve:disabled { cursor: not-allowed; }
 
-    /* Greyed out only when it cannot be pressed (failing checks): while
-       yoke has the approval in hand it stays green, Approving pulsing. */
-    .pill-approve:disabled:not(.sending):not(.approving) {
+    /* Greyed out only when it cannot be pressed (failing checks): once
+       pressed it stays lit, whatever the approval is waiting on (#278). */
+    .pill-approve:is(.idle, .retry):disabled {
       border-color: rgba(255, 255, 255, 0.2);
       color: rgba(255, 255, 255, 0.35);
     }
 
-    .pill-approve.approving { animation: approvingPulse 1.8s ease-in-out infinite; }
+    /* Pressed, and waiting for an engine to carry it out: lit at once, and
+       breathing slowly for as long as it waits. */
+    .pill-approve.queued {
+      background: rgba(0, 255, 136, 0.12);
+      border-color: #00ff88;
+      color: #00ff88;
+      cursor: default;
+      animation: approvalQueued 2.4s ease-in-out infinite;
+    }
 
-    @keyframes approvingPulse {
-      0%, 100% { opacity: 0.6; }
+    /* An engine is carrying it out. */
+    .pill-approve:is(.merging, .working) {
+      background: rgba(0, 255, 136, 0.28);
+      border-color: #00ff88;
+      color: #00ff88;
+      cursor: default;
+      box-shadow: 0 0 8px rgba(0, 255, 136, 0.45);
+      animation: approvalCarriedOut 1s ease-in-out infinite;
+    }
+
+    .pill-approve.merged {
+      background: rgba(0, 255, 136, 0.4);
+      border-color: #00ff88;
+      color: #ffffff;
+      cursor: default;
+    }
+
+    /* The press did not go through: the line says why. */
+    .pill-approve.retry:not(:disabled) {
+      border-color: rgba(255, 130, 110, 0.7);
+      color: rgba(255, 130, 110, 1);
+    }
+
+    .pill-approve.retry:hover:not(:disabled) {
+      background: rgba(255, 130, 110, 0.15);
+      border-color: rgba(255, 130, 110, 1);
+    }
+
+    @keyframes approvalQueued {
+      0%, 100% { opacity: 0.7; }
+      50%       { opacity: 1; }
+    }
+
+    @keyframes approvalCarriedOut {
+      0%, 100% { opacity: 0.75; }
       50%       { opacity: 1; }
     }
   `;
@@ -469,7 +504,9 @@ export class LifecyclePill extends LitElement {
     activity: { type: String },
     dark: { type: Boolean },
     approvalStatus: { attribute: false },
-    _approveClick: { state: true },
+    approvalPress: { attribute: false },
+    workingAction: { attribute: false },
+    connected: { type: Boolean },
   };
 
   pair: LifecyclePair | null = null;
@@ -485,24 +522,26 @@ export class LifecyclePill extends LitElement {
   /** Yoke's latest word on a dashboard approval of this pill's PR (#276), if
    *  any: this page's own, another dashboard's, or one replayed on load. */
   approvalStatus: PullRequestApprovalStatus | null = null;
-  /** This pill's latest Approve click, if any. Keyed by PR, because the list
-   *  reuses pill elements as pills move, so it never carries over to a
-   *  different PR. */
-  private _approveClick: ApproveClick | null = null;
+  /** This dashboard's press of this pill's Approve button (#278), if any.
+   *  The store keeps it, not the element — the list reuses pill elements as
+   *  pills move — so it follows the PR wherever its pill is drawn. */
+  approvalPress: ApprovalPress | null = null;
+  /** The type of the action an engine is running on this pill, if any. */
+  workingAction: string | null = null;
+  /** The dashboard has a live connection to yoke. */
+  connected = true;
   /** Re-renders the pill when its approval view next changes on its own. */
   private _approveTimer: ReturnType<typeof setTimeout> | null = null;
   private _approveRefreshAtMs: number | null = null;
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this._approveClick = null;
     this._clearApproveTimer();
   }
 
   override updated() {
     // After every render: wake again when the view changes with nothing new
-    // arriving — the confirm window lapsing, no answer coming, an outcome
-    // going stale.
+    // arriving — no answer coming, an outcome going stale.
     this._clearApproveTimer();
     const refreshAtMs = this._approveRefreshAtMs;
     if (refreshAtMs !== null && this.isConnected) {
@@ -518,45 +557,39 @@ export class LifecyclePill extends LitElement {
   /** What this pill shows of its PR's approval right now. */
   private _approvalView(pair: LifecyclePair): ApprovalView {
     return approvalView({
-      target: pairApproveTarget(pair),
-      control: approveControl(pair, this.activity, this.dark),
+      pair,
+      activity: this.activity,
+      workingAction: this.workingAction,
+      dark: this.dark,
       status: this.approvalStatus,
-      click: this._approveClick,
+      press: this.approvalPress,
+      connected: this.connected,
       nowMs: Date.now(),
     });
   }
 
-  /** First click arms the button; only a second click within a few seconds
-   *  approves — the dashboard often hangs on a wall within reach of passers-by.
-   *  After that the pill follows yoke's answer. */
+  /** One press approves (#278): if it was pressed, it was meant. The app
+   *  sends it to yoke and records the press, which comes back to the pill as
+   *  `approvalPress`, so it reads Queued at once and follows the approval from
+   *  there. Only Approve and Retry can be pressed. */
   private _onApproveClick(event: Event, target: ApproveTarget) {
     event.stopPropagation();
     const pair = this.pair;
     if (!pair) return;
     const button = this._approvalView(pair).button;
     if (!button || button.disabled) return;
-    const key = approveKey(target);
-    if (button.step !== 'confirm') {
-      this._approveClick = { key, step: 'confirm', atMs: Date.now() };
-      return;
-    }
-    // The app cancels the event when it could not send the request (no live
-    // connection): the pill says so rather than read as sent.
-    const sent = this.dispatchEvent(new CustomEvent<ApproveTarget>('pill-approve', {
+    this.dispatchEvent(new CustomEvent<ApproveTarget>('pill-approve', {
       detail: target,
       bubbles: true,
       composed: true,
-      cancelable: true,
     }));
-    this._approveClick = { key, step: sent ? 'sent' : 'unsent', atMs: Date.now() };
   }
 
   private _approveButton(view: ApprovalView, target: ApproveTarget | null) {
     const button = view.button;
     if (!button || !target) return '';
-    const stepClass = button.step === 'idle' ? '' : ` ${button.step}`;
     return html`<button
-      class="pill-approve${stepClass}"
+      class="pill-approve ${button.step}"
       type="button"
       title="${button.title}"
       aria-label="${button.title}"

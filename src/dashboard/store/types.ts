@@ -138,6 +138,24 @@ export interface PullRequestApprovalStatus {
   receivedAtMs: number;
 }
 
+/**
+ * A press of a pill's Approve button on this dashboard (#278). The store keeps
+ * it per PR rather than the pill element keeping it: the lifecycle list reuses
+ * elements as pills move, and a reconnect rebuilds the state, and neither may
+ * make a press look as if it never happened.
+ */
+export interface ApprovalPress {
+  /** "owner/repo"; empty only when the pill did not know its project. */
+  repo: string;
+  pullRequestNumber: number;
+  /** Epoch millis of the press, by this browser's clock. */
+  atMs: number;
+  /** False when there was no live connection to send it on. */
+  sent: boolean;
+  /** An engine has since squash-merged the PR. */
+  merged?: boolean;
+}
+
 export interface BroadcastEventData {
   id: string;
   category: string;
@@ -203,6 +221,10 @@ export interface DashboardState {
   /** Each PR's latest dashboard approval (#276), keyed like the pill's
    *  `approveKey` ("owner/repo#n"). Outcomes drop out once they are stale. */
   approvals: Map<string, PullRequestApprovalStatus>;
+  /** This dashboard's own Approve presses (#278), keyed like `approvals`. A
+   *  press stays until its PR leaves the lifecycle, and keeps the answer to
+   *  it in `approvals` from going stale. */
+  approvalPresses: Map<string, ApprovalPress>;
   /** True when more than one project shares this dashboard. */
   multiProject: boolean;
   owner: string;

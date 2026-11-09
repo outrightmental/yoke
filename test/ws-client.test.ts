@@ -200,13 +200,13 @@ test("DashboardStore.approvePullRequest: an Approve click reaches the engine poo
   assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }]);
 });
 
-test("an Approve click travels over a real socket, and the pill gets loading, then the outcome, back (#276)", async (t) => {
+test("one Approve press travels over a real socket: Queued at once, then loading, then the outcome, back (#276, #278)", async (t) => {
   const port = BASE_PORT + 7;
   const { DashboardServer } = await import("../src/dashboard-server.js");
   const { EventEmitter } = await import("../src/event-emitter.js");
   const { DashboardApprovals } = await import("../src/dashboard-approval.js");
   const { LifecyclePill } = await import("../src/dashboard/components/lifecycle-pill.js");
-  const { approvalStatusFor } = await import("../src/dashboard/shared/pill-approval.js");
+  const { approvalPressFor, approvalStatusFor } = await import("../src/dashboard/shared/pill-approval.js");
   const { DashboardStore } = await import("../src/dashboard/store/dashboard-store.js");
 
   // The engine pool's side, as src/index.ts wires it, reading the PR held open.
@@ -249,10 +249,17 @@ test("an Approve click travels over a real socket, and the pill gets loading, th
   };
   const pill = new LifecyclePill();
   pill.addEventListener("pill-approve", (event) => {
-    if (!store.approvePullRequest((event as CustomEvent).detail)) event.preventDefault();
+    store.approvePullRequest((event as CustomEvent).detail);
   });
   const render = () => {
-    Object.assign(pill, { pair, activity: "review", approvalStatus: approvalStatusFor(store.getState().approvals, pair) });
+    const state = store.getState();
+    Object.assign(pill, {
+      pair,
+      activity: "review",
+      approvalStatus: approvalStatusFor(state.approvals, pair),
+      approvalPress: approvalPressFor(state.approvalPresses, pair),
+      connected: state.connection === "connected",
+    });
     return JSON.stringify(pill.render(), (_key, value: unknown) => (typeof value === "function" ? "fn" : value));
   };
   const clickButton = () => {
@@ -272,17 +279,18 @@ test("an Approve click travels over a real socket, and the pill gets loading, th
 
   try {
     render();
-    clickButton(); // arms
-    render();
-    clickButton(); // confirms, and sends
+    clickButton(); // one press sends it
+    assert.match(render(), /Queued/, "Queued the instant it is pressed, before yoke has answered");
+    assert.match(render(), /queued — sent to yoke/);
     await waitMs(150);
     assert.equal(store.getState().approvals.get("o/a#10")?.state, "loading", "yoke answered at once");
-    assert.match(render(), /Approving/);
+    assert.match(render(), /Queued/);
     assert.match(render(), /reading PR #10 from GitHub/);
 
     finishLoading();
     await waitMs(150);
     assert.equal(store.getState().approvals.get("o/a#10")?.state, "refused");
+    assert.match(render(), /Retry/, "never back to Approve as if it was not pressed");
     assert.match(render(), /not approved: its checks are failing/);
     assert.equal(attempts, 1);
   } finally {

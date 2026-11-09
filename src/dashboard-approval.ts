@@ -171,7 +171,7 @@ export class DashboardApprovals {
     return this.inFlight.get(approvalKey(repo, pullRequestNumber));
   }
 
-  /** Handle one confirmed press of Approve. Resolves when its attempt ends; never rejects. */
+  /** Handle one press of Approve. Resolves when its attempt ends; never rejects. */
   request<Snapshot>(repo: string, pullRequestNumber: number, steps: ApprovalSteps<Snapshot>): Promise<void> {
     const key = approvalKey(repo, pullRequestNumber);
     const label = `${repo} PR #${pullRequestNumber}`;

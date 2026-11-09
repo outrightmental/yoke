@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dashboardReducer, initialState, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
+import { dashboardReducer, initialState, recordApprovalPress, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
@@ -1386,6 +1386,102 @@ test("DashboardStore.bootstrap() on a reconnect keeps when each approval status 
       t.mock.timers.tick(1_000);
       await store.bootstrap();
       assert.equal(store.getState().approvals.has("o/a#10"), false, "so it goes stale on time, and never comes back");
+    } finally {
+      store.disconnect();
+    }
+  });
+});
+
+// ── this dashboard's own Approve presses (#278) ───────────────────────────────
+
+const PRESSED = { repo: "o/a", pullRequestNumber: 10 };
+
+function lifecycleEvent(repo: string, prNumbers: number[]): WireEvent {
+  return makeEvent("lifecycle-update", {
+    repo,
+    pairs: prNumbers.map((n) => ({
+      issue: { number: n - 9, title: "t", state: "open" },
+      pr: { number: n, title: "t", state: "open", draft: false, checksStatus: "success" },
+      prPhase: "review",
+      approval: "awaiting-approval",
+    })),
+  });
+}
+
+test("recordApprovalPress keeps one press per PR, keyed like the pill, the latest winning", () => {
+  let s = recordApprovalPress(initialState(), PRESSED, false, 1_000);
+  s = recordApprovalPress(s, { repo: "o/b", pullRequestNumber: 10 }, true, 2_000);
+  s = recordApprovalPress(s, PRESSED, true, 3_000);
+
+  assert.deepEqual([...s.approvalPresses.keys()].sort(), ["o/a#10", "o/b#10"]);
+  assert.deepEqual(s.approvalPresses.get("o/a#10"), { repo: "o/a", pullRequestNumber: 10, atMs: 3_000, sent: true });
+});
+
+test("reducer: an engine's completed squash-merge of a pressed PR marks the press merged", () => {
+  let s = recordApprovalPress(initialState(), PRESSED, true, 1_000);
+  s = recordApprovalPress(s, { repo: "o/b", pullRequestNumber: 10 }, true, 1_000);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, repo: "o/a", type: "squash-merge", issueNumber: 1, pullRequestNumber: 10, description: "d",
+  }));
+  assert.equal(s.approvalPresses.get("o/a#10")?.merged, undefined, "not while it runs");
+
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  assert.equal(s.approvalPresses.get("o/a#10")?.merged, true);
+  assert.equal(s.approvalPresses.get("o/b#10")?.merged, undefined, "another project's PR #10 is its own");
+});
+
+test("reducer: an engine's other actions on a pressed PR, or a failed merge, mark nothing", () => {
+  let s = recordApprovalPress(initialState(), PRESSED, true, 1_000);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, repo: "o/a", type: "address-failing-checks", pullRequestNumber: 10, description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 3, repo: "o/a" }));
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 2, totalActions: 3, repo: "o/a", type: "squash-merge", pullRequestNumber: 10, description: "d",
+  }));
+  s = dashboardReducer(s, makeEvent("action-error", { actionIndex: 2, totalActions: 3, repo: "o/a", error: "GitHub said 405" }));
+
+  assert.equal(s.approvalPresses.get("o/a#10")?.merged, undefined);
+});
+
+test("reducer: a press is dropped once its project's lifecycle no longer lists the PR", () => {
+  let s = recordApprovalPress(initialState(), PRESSED, true, 1_000);
+  s = recordApprovalPress(s, { repo: "o/b", pullRequestNumber: 12 }, true, 1_000);
+  s = dashboardReducer(s, lifecycleEvent("o/a", [10, 11]));
+  assert.ok(s.approvalPresses.has("o/a#10"), "kept while its pill is there");
+
+  s = dashboardReducer(s, lifecycleEvent("o/a", [11]));
+  assert.deepEqual([...s.approvalPresses.keys()], ["o/b#12"], "another project's press is its own lifecycle's to drop");
+});
+
+test("reducer: the answer to a press never goes stale, while other outcomes do", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let s = recordApprovalPress(initialState(), PRESSED, true, 1_000_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 10, "refused", { reason: "its checks are failing" }));
+  s = dashboardReducer(s, approvalEvent("o/a", 11, "refused", { reason: "it is not open" }));
+  t.mock.timers.tick(10 * 60_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 12, "loading"));
+
+  assert.deepEqual([...s.approvals.keys()].sort(), ["o/a#10", "o/a#12"]);
+  assert.equal(s.approvals.get("o/a#10")?.reason, "its checks are failing");
+});
+
+test("DashboardStore.bootstrap() on a reconnect keeps the dashboard's presses and the answers to them", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const refused = approvalEvent("o/a", 10, "refused", { reason: "its checks are failing" });
+  // The server replays the lifecycle, but no longer the outcome: it is too old.
+  await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [lifecycleEvent("o/a", [10])] }, async () => {
+    const store = new DashboardStore();
+    try {
+      assert.equal(store.approvePullRequest(PRESSED), false);
+      store.applyEvent(refused);
+      t.mock.timers.tick(10 * 60_000);
+      await store.bootstrap();
+
+      const state = store.getState();
+      assert.deepEqual(state.approvalPresses.get("o/a#10"), { ...PRESSED, atMs: 1_000_000, sent: false });
+      assert.equal(state.approvals.get("o/a#10")?.reason, "its checks are failing", "the pill still says how it ended");
+      assert.equal(state.approvals.get("o/a#10")?.receivedAtMs, 1_000_000);
     } finally {
       store.disconnect();
     }
