@@ -398,7 +398,7 @@ export class LifecyclePill extends LitElement {
        sits over the PR half, just left of the icon, with the room for it kept
        inside the PR half's row — so both halves stay the same width and the
        seams of all pills line up. It is the same width in every step —
-       Approve, Queued, Merging, Working, Merged, Retry — so pressing it and
+       Approve, Queued, Approving, Merged, Retry — so pressing it and
        following the approval never move anything; anything longer goes on the
        PR half's label line (#276). */
     .lifecycle-pill.has-approve .pill-pr-half .pill-row { padding-right: 64px; }
@@ -456,7 +456,7 @@ export class LifecyclePill extends LitElement {
     }
 
     /* An engine is carrying it out. */
-    .pill-approve:is(.merging, .working) {
+    .pill-approve.approving {
       background: rgba(0, 255, 136, 0.28);
       border-color: #00ff88;
       color: #00ff88;
@@ -472,7 +472,7 @@ export class LifecyclePill extends LitElement {
       cursor: default;
     }
 
-    /* The press did not go through: the line says why. */
+    /* Yoke refused the press, or it failed: the line says why. */
     .pill-approve.retry:not(:disabled) {
       border-color: rgba(255, 130, 110, 0.7);
       color: rgba(255, 130, 110, 1);

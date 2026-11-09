@@ -150,8 +150,11 @@ export interface ApprovalPress {
   pullRequestNumber: number;
   /** Epoch millis of the press, by this browser's clock. */
   atMs: number;
-  /** False when there was no live connection to send it on. */
+  /** False while it waits for a live connection to send it on. */
   sent: boolean;
+  /** Epoch millis it was last sent, when that was after the press: sent
+   *  again on reconnecting, because yoke had not answered it. */
+  sentAtMs?: number;
   /** An engine has since squash-merged the PR. */
   merged?: boolean;
 }

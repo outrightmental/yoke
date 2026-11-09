@@ -194,10 +194,12 @@ test("DashboardStore.approvePullRequest: an Approve click reaches the engine poo
   assert.equal(store.approvePullRequest({ repo: "o/b", pullRequestNumber: 10 }), false, "not connected yet");
   store.connectLive(`ws://127.0.0.1:${port}/api/ws`);
   await waitMs(300);
+  assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }], "sent once the connection opens (#278)");
+  assert.equal(store.getState().approvalPresses.get("o/b#10")?.sent, true);
 
-  assert.equal(store.approvePullRequest({ repo: "o/b", pullRequestNumber: 10 }), true);
+  assert.equal(store.approvePullRequest({ repo: "o/a", pullRequestNumber: 7 }), true);
   await waitMs(100);
-  assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }]);
+  assert.deepEqual(heard, [{ repo: "o/b", pullRequestNumber: 10 }, { repo: "o/a", pullRequestNumber: 7 }]);
 });
 
 test("one Approve press travels over a real socket: Queued at once, then loading, then the outcome, back (#276, #278)", async (t) => {

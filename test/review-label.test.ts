@@ -513,7 +513,7 @@ test("buildPlan re-reviews an approved PR converted back to draft or commented o
   }
 });
 
-test("buildPlan treats work done after an approval as new: the PR comes back for approval", () => {
+test("buildPlan carries an approval through the work done after it: the PR merges, never back for approval (#278)", () => {
   // Approved, then yoke fixed its failing checks and re-reviewed it clean.
   const snapshot = parkedSnapshot({
     approved: true,
@@ -536,9 +536,72 @@ test("buildPlan treats work done after an approval as new: the PR comes back for
     ],
   });
 
-  assert.deepEqual(buildPlan(snapshot, 3).actions, [
-    { type: "request-review", issueNumber: 1, pullRequestNumber: 10, reviewers: [] },
-  ]);
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [SQUASH_MERGE_10]);
+  assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "approved");
+});
+
+test("buildPlan gets an approved PR's fixes checked and re-reviewed before it merges (#278)", () => {
+  const fixed = (phase: AgentSession["phase"], pullRequest: Partial<PullRequest> = {}) =>
+    parkedSnapshot({
+      approved: true,
+      pullRequest,
+      sessions: [
+        createSession({ id: "s3", issueNumber: 1, pullRequestNumber: 10, phase, updatedAt: "2024-01-04T00:00:00.000Z" }),
+      ],
+    });
+  const selfReview = { type: "self-review", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha-10" };
+
+  assert.deepEqual(buildPlan(fixed("resolve-conflicts"), 3).actions, [selfReview], "after resolving conflicts");
+  assert.deepEqual(buildPlan(fixed("address-failing-checks"), 3).actions, [selfReview], "after fixing checks");
+  assert.deepEqual(
+    buildPlan(fixed("address-failing-checks", { checksStatus: "failure" }), 3).actions,
+    [{ type: "address-failing-checks", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha-10" }],
+    "never over failing checks",
+  );
+
+  const madeChanges = parkedSnapshot({
+    approved: true,
+    sessions: [
+      createSession({
+        id: "s3", issueNumber: 1, pullRequestNumber: 10, phase: "self-review", updatedAt: "2024-01-04T00:00:00.000Z",
+        result: { madeChanges: true, pullRequestHeadSha: "sha-10" },
+      }),
+    ],
+  });
+  assert.deepEqual(buildPlan(madeChanges, 3).actions, [selfReview], "a self-review that changed it gets another");
+});
+
+test("buildPlan merges an approved PR parked by a review request made after the approval (#278)", () => {
+  const snapshot = parkedSnapshot({
+    approved: true,
+    sessions: [
+      createSession({
+        id: "s3", issueNumber: 1, pullRequestNumber: 10, phase: "request-review", updatedAt: "2024-01-05T00:00:00.000Z",
+      }),
+    ],
+  });
+
+  assert.deepEqual(buildPlan(snapshot, 3).actions, [SQUASH_MERGE_10]);
+  assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "approved");
+});
+
+test("reviewApprovalState: an approved PR stays approved while yoke works on it (#278)", () => {
+  for (const snapshot of [
+    parkedSnapshot({ approved: true, pullRequest: { draft: true } }),
+    parkedSnapshot({ approved: true, pullRequest: { hasMergeConflicts: true } }),
+    parkedSnapshot({ approved: true, pullRequest: { hasNewCommentsSinceLastRead: true } }),
+    parkedSnapshot({
+      approved: true,
+      sessions: [
+        createSession({
+          id: "s9", issueNumber: 1, pullRequestNumber: 10, phase: "resolve-conflicts", status: "in_progress",
+          updatedAt: "2024-01-09T00:00:00.000Z",
+        }),
+      ],
+    }),
+  ]) {
+    assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "approved");
+  }
 });
 
 test("reviewApprovalState: a review-gated PR parked after request-review awaits approval", () => {

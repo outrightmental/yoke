@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dashboardReducer, initialState, recordApprovalPress, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
+import {
+  dashboardReducer,
+  initialState,
+  markApprovalPressesSent,
+  recordApprovalPress,
+  unansweredApprovalPresses,
+  DashboardStore,
+} from "../src/dashboard/store/dashboard-store.js";
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
@@ -1464,6 +1471,31 @@ test("reducer: the answer to a press never goes stale, while other outcomes do",
 
   assert.deepEqual([...s.approvals.keys()].sort(), ["o/a#10", "o/a#12"]);
   assert.equal(s.approvals.get("o/a#10")?.reason, "its checks are failing");
+});
+
+test("unansweredApprovalPresses: the presses to send again on reconnecting are the ones yoke has not answered (#278)", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let s = recordApprovalPress(initialState(), PRESSED, false, 1_000_000);
+  s = recordApprovalPress(s, { repo: "o/a", pullRequestNumber: 11 }, true, 1_000_000);
+  s = recordApprovalPress(s, { repo: "o/a", pullRequestNumber: 12 }, true, 1_000_000);
+  s = recordApprovalPress(s, { repo: "o/b", pullRequestNumber: 10 }, true, 1_000_000);
+  s = { ...s, approvalPresses: new Map(s.approvalPresses).set("o/b#10", { ...s.approvalPresses.get("o/b#10")!, merged: true }) };
+  t.mock.timers.tick(1_000);
+  s = dashboardReducer(s, approvalEvent("o/a", 12, "waiting"));
+
+  const unanswered = unansweredApprovalPresses(s);
+  assert.deepEqual(unanswered.map((press) => press.pullRequestNumber).sort(), [10, 11],
+    "not sent, and sent with no answer; not the answered one, nor the merged one");
+
+  // An answer from before the press is no answer to it.
+  let early = dashboardReducer(initialState(), approvalEvent("o/a", 10, "refused", { reason: "r" }));
+  t.mock.timers.tick(1_000);
+  early = recordApprovalPress(early, PRESSED, true, Date.now());
+  assert.equal(unansweredApprovalPresses(early).length, 1);
+
+  const sent = markApprovalPressesSent(s, unanswered, 2_000_000);
+  assert.deepEqual(sent.approvalPresses.get("o/a#10"), { ...PRESSED, atMs: 1_000_000, sent: true, sentAtMs: 2_000_000 });
+  assert.equal(sent.approvalPresses.get("o/a#12")?.sentAtMs, undefined, "the answered one is left alone");
 });
 
 test("DashboardStore.bootstrap() on a reconnect keeps the dashboard's presses and the answers to them", async (t) => {

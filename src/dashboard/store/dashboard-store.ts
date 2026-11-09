@@ -634,6 +634,39 @@ export function recordApprovalPress(
   return { ...state, approvalPresses };
 }
 
+/**
+ * The presses of this dashboard's that yoke has not answered (#278): made
+ * while the connection was down, or sent and lost with it. The store sends
+ * them again on reconnecting — yoke answers a repeat the way it did the
+ * first, so a press is never left waiting on an answer that is not coming.
+ */
+export function unansweredApprovalPresses(state: DashboardState): ApprovalPress[] {
+  const unanswered: ApprovalPress[] = [];
+  for (const press of state.approvalPresses.values()) {
+    if (press.merged) continue;
+    const answered = [...state.approvals.values()].some((status) =>
+      pressIsFor(press, status.repo, status.pullRequestNumber) && status.receivedAtMs >= press.atMs);
+    if (!answered) unanswered.push(press);
+  }
+  return unanswered;
+}
+
+/** Mark presses as sent (again) at `atMs`. */
+export function markApprovalPressesSent(
+  state: DashboardState,
+  presses: readonly ApprovalPress[],
+  atMs: number,
+): DashboardState {
+  if (presses.length === 0) return state;
+  const approvalPresses = new Map(state.approvalPresses);
+  for (const press of presses) {
+    const key = approveKey(press);
+    const current = approvalPresses.get(key);
+    if (current !== undefined) approvalPresses.set(key, { ...current, sent: true, sentAtMs: atMs });
+  }
+  return { ...state, approvalPresses };
+}
+
 function pressIsFor(press: ApprovalPress, repo: string | null, pullRequestNumber: number): boolean {
   return press.pullRequestNumber === pullRequestNumber && (press.repo === '' || !repo || press.repo === repo);
 }
@@ -797,12 +830,20 @@ export class DashboardStore {
   /**
    * Ask yoke to approve a review-gated PR and squash-merge it (#274), and
    * record the press so its pill follows it at once (#278). Returns false when
-   * there is no live connection to send the request on.
+   * there is no live connection to send the request on: the press is sent
+   * when the connection comes back.
    */
   approvePullRequest(target: ApproveTarget): boolean {
     const sent = this._wsClient?.send(approveRequestMessage(target)) ?? false;
     this._setState(recordApprovalPress(this._state, target, sent, Date.now()));
     return sent;
+  }
+
+  /** Send each press yoke has not answered, now the connection is back (#278). */
+  private _resendUnansweredPresses(): void {
+    const sent = unansweredApprovalPresses(this._state)
+      .filter((press) => this._wsClient?.send(approveRequestMessage(press)) ?? false);
+    this._setState(markApprovalPressesSent(this._state, sent, Date.now()));
   }
 
   connectLive(wsUrl?: string): void {
@@ -826,6 +867,7 @@ export class DashboardStore {
       },
       (connected) => {
         this._setState({ ...this._state, connection: connected ? 'connected' : 'disconnected' });
+        if (connected) this._resendUnansweredPresses();
       }
     );
     this._wsClient = client;

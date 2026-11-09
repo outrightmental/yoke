@@ -1,9 +1,11 @@
 import type { ApprovalPress, LifecyclePair, PullRequestApprovalState, PullRequestApprovalStatus } from '../store/types.js';
 import type { PillActivity } from './pill-activity.js';
 
-/** How long a sent approval waits for yoke's first answer before the pill
- *  says none came and offers Retry. Yoke answers the moment a request arrives,
- *  even when the approval then has to queue; a later answer still counts. */
+/** How long a sent approval waits for yoke's first answer before the pill's
+ *  line says none has come yet. Yoke answers the moment a request arrives,
+ *  even when the approval then has to queue. The pill stays Queued however
+ *  long it waits — there is no error state to give up into (#278) — and the
+ *  store sends the press again when the connection comes back. */
 export const APPROVE_ACK_MS = 10_000;
 /** How long the pill shows how another dashboard's approval ended (#276) —
  *  this dashboard's own press shows its outcome for good (#278) — and how long
@@ -124,13 +126,13 @@ export const APPROVE_BUTTON_LABELS = {
   idle: 'Approve',
   /** Pressed: waiting for yoke, then for an engine, to carry it out. */
   queued: 'Queued',
-  /** An engine is squash-merging the PR. */
-  merging: 'Merging',
-  /** An engine is fixing the PR before it can merge. */
-  working: 'Working',
+  /** An engine is carrying it out: squash-merging the PR, or fixing it so
+   *  it can merge. */
+  approving: 'Approving',
   /** An engine has squash-merged the PR. */
   merged: 'Merged',
-  /** The press did not go through, for the reason on the line: press again. */
+  /** Yoke refused the press or it failed, for the reason on the line: press
+   *  again. */
   retry: 'Retry',
 } as const;
 
@@ -152,7 +154,7 @@ export interface ApprovalView {
 }
 
 /** What an engine working an approved PR is doing first, when it is not the
- *  merge: each change sends the PR back for approval once it is done. */
+ *  merge. The approval stands through it (#278): the PR merges after. */
 const WORK_BEFORE_MERGE: Record<string, string> = {
   'address-failing-checks': 'an engine is fixing its failing checks',
   'resolve-conflicts': 'an engine is resolving its merge conflicts',
@@ -165,14 +167,15 @@ const WORK_BEFORE_MERGE: Record<string, string> = {
  * dashboard's own press, the connection to yoke, and the time.
  *
  * One press approves. From that instant the button reads Queued — sent to
- * yoke, then while yoke reads the PR and waits for an engine to finish
- * planning, then, approved, until an engine is free to carry it out — and
- * Merging (or Working, when the engine must fix the PR first) once one is,
- * then Merged. Yoke's answers and the engines' actions move it along, never a
- * timer. A press that does not go through says why and offers Retry, for as
- * long as the pill is there: it never reads Approve again as if it had not
- * been pressed. Only when the approval has been carried out and yoke asks for
- * a new one does Approve come back, saying so.
+ * yoke (or waiting to be, while the dashboard reconnects), then while yoke
+ * reads the PR and waits for an engine to finish planning, then, approved,
+ * until an engine is free to carry it out — and Approving once one is, while
+ * it squash-merges the PR or fixes it first, then Merged. Yoke's answers and
+ * the engines' actions move it along, never a timer: with no answer it stays
+ * Queued, saying so. A press yoke refuses, or that fails, says why and offers
+ * Retry, for as long as the pill is there: it never reads Approve again as if
+ * it had not been pressed. Approve comes back only if yoke asks for approval
+ * again after recording this one, saying so.
  *
  * An approval this dashboard did not send — another dashboard's, or one in
  * flight when the page loaded — shows the same way while yoke has it in hand
@@ -243,19 +246,19 @@ export function approvalView(params: {
   const askedAgain = approvedWord !== null && pair.approval === 'awaiting-approval' && !working &&
     nowMs - approvedWord.receivedAtMs >= APPROVAL_OUTCOME_SHOW_MS;
   if (askedAgain) {
-    return show('idle', { text: 'approved earlier — it came back for approval after yoke worked on it', tone: 'progress' }, false);
+    return show('idle', { text: 'approved earlier — yoke is asking for approval again', tone: 'progress' }, false);
   }
   if (pair.approval === 'approved' || approvedWord !== null) {
     if (working) {
       const action = params.workingAction;
       const first = action !== null ? WORK_BEFORE_MERGE[action] : undefined;
       if (first !== undefined) {
-        return show('working', { text: `approved, but ${first} first — it comes back for approval after`, tone: 'progress' }, true);
+        return show('approving', { text: `approving — ${first}, then it squash-merges`, tone: 'approved' }, true);
       }
       if (action === null || action === 'squash-merge') {
-        return show('merging', { text: 'merging — an engine is squash-merging it', tone: 'approved' }, true);
+        return show('approving', { text: 'approving — an engine is squash-merging it', tone: 'approved' }, true);
       }
-      return show('working', { text: 'approved — an engine is working on it first', tone: 'progress' }, true);
+      return show('approving', { text: 'approving — an engine is working on it, then it squash-merges', tone: 'approved' }, true);
     }
     const checks = pair.pr?.checksStatus;
     const checksPending = checks === 'pending' ||
@@ -263,7 +266,7 @@ export function approvalView(params: {
     const text = dark
       ? 'approved — an engine squash-merges it once yoke runs again'
       : checks === 'failure'
-        ? 'approved, but its checks failed — an engine fixes them, then it comes back for approval'
+        ? 'approved — its checks failed: an engine fixes them, then squash-merges it'
         : checksPending
           ? 'approved — an engine squash-merges it once its checks pass'
           : 'approved — waiting for a free engine to squash-merge it';
@@ -277,23 +280,20 @@ export function approvalView(params: {
     return show('queued', { text, tone: 'progress' }, false);
   }
 
-  if (press !== null && !press.sent) {
-    return show('retry', { text: 'not sent — the dashboard is not connected to yoke', tone: 'problem' }, false);
-  }
-
   if (press !== null && word === null) {
-    // Sent, and nothing back yet. A dashboard that lost its connection
-    // meanwhile gets the answer replayed when it reconnects, however late.
-    const connected = params.connected;
-    const answerByMs = press.atMs + APPROVE_ACK_MS;
+    // Nothing back yet: it stays Queued, saying what it waits on (#278). A
+    // press made while the dashboard was not connected, or sent and lost with
+    // the connection, is sent again when it reconnects; a sent one's answer
+    // is replayed then too, however late.
+    if (!press.sent || !params.connected) {
+      return show('queued', { text: 'queued — reconnecting to yoke…', tone: 'progress' }, false);
+    }
+    const answerByMs = (press.sentAtMs ?? press.atMs) + APPROVE_ACK_MS;
     if (nowMs < answerByMs) {
       refreshTimes.push(answerByMs);
-      return show('queued', { text: connected ? 'queued — sent to yoke…' : 'queued — reconnecting to yoke…', tone: 'progress' }, false);
+      return show('queued', { text: 'queued — sent to yoke…', tone: 'progress' }, false);
     }
-    const text = connected
-      ? 'no answer from yoke — check the connection and the event log'
-      : 'no answer yet — the dashboard lost its connection to yoke';
-    return show('retry', { text, tone: 'problem' }, false);
+    return show('queued', { text: 'queued — sent to yoke, no answer yet…', tone: 'progress' }, false);
   }
 
   if (word?.state === 'refused' || word?.state === 'failed') {
