@@ -1,6 +1,6 @@
 import { ALREADY_APPROVED_REASON, approvePullRequest, type ActionSessionStore } from "./actions.js";
 import type { EventEmitter } from "./event-emitter.js";
-import { latestSessionIsApproval } from "./orchestrator.js";
+import { pullRequestIsApproved } from "./orchestrator.js";
 import { pullRequestClaimKey, type ShutdownSignal } from "./scheduler.js";
 import type { AgentSession, RepositorySnapshot } from "./types.js";
 
@@ -52,7 +52,8 @@ export type ApprovalDecision =
       checksPending: boolean;
       /** False when this attempt recorded the approval. */
       alreadyApproved: boolean;
-      /** For an earlier approval: an engine is already carrying it out. */
+      /** For an earlier approval: an engine is already working the PR to
+       *  carry it out — merging it, or fixing it first (#278). */
       merging?: boolean;
     }
   | { state: "refused"; reason: string };
@@ -74,7 +75,8 @@ export function approvalKey(repo: string, pullRequestNumber: number): string {
  * A press that finds the PR already approved is not a refusal (#276): it is
  * what a second press, or a press on another dashboard, sees once the first
  * has gone through — whether that approval is still waiting for an engine or
- * an engine is already squash-merging the PR because of it.
+ * an engine is already working the PR because of it: squash-merging it, or
+ * fixing it first, since an approval stands until the PR merges (#278).
  */
 export async function decideApproval(params: {
   repoKey: string;
@@ -94,7 +96,7 @@ export async function decideApproval(params: {
   const pullRequest = snapshot.pullRequests.find((candidate) => candidate.number === pullRequestNumber);
   const checksPending = pullRequest?.checksStatus === "pending";
   if (params.claimedActions.has(pullRequestClaimKey(repoKey, pullRequestNumber))) {
-    const approved = latestSessionIsApproval(
+    const approved = pullRequestIsApproved(
       { number: pullRequestNumber, linkedIssueNumbers: pullRequest?.linkedIssueNumbers ?? [] },
       snapshot.agentSessions,
     );
@@ -171,7 +173,7 @@ export class DashboardApprovals {
     return this.inFlight.get(approvalKey(repo, pullRequestNumber));
   }
 
-  /** Handle one confirmed press of Approve. Resolves when its attempt ends; never rejects. */
+  /** Handle one press of Approve. Resolves when its attempt ends; never rejects. */
   request<Snapshot>(repo: string, pullRequestNumber: number, steps: ApprovalSteps<Snapshot>): Promise<void> {
     const key = approvalKey(repo, pullRequestNumber);
     const label = `${repo} PR #${pullRequestNumber}`;
@@ -245,7 +247,7 @@ export class DashboardApprovals {
         return;
       }
       const next = decision.merging
-        ? "an engine is merging it"
+        ? "an engine is already working on it"
         : decision.checksPending
           ? "it will be squash-merged once its checks pass"
           : "an engine will squash-merge it next";

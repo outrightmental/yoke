@@ -183,10 +183,20 @@ test("decideApproval: an engine claimed on a PR because of its approval is mergi
     state: "approved", checksPending: false, alreadyApproved: true, merging: true,
   });
 
+  // The approval stands until the PR merges (#278): an engine fixing the PR
+  // first is carrying it out too.
+  const fixing = parkedSnapshot({}, [
+    session("s2", "approval", "2024-01-03T00:00:00.000Z"),
+    session("s3", "resolve-conflicts", "2024-01-04T00:00:00.000Z", "in_progress"),
+  ]);
+  assert.deepEqual(await decide(fixing, { claimed: true }).decision, {
+    state: "approved", checksPending: false, alreadyApproved: true, merging: true,
+  }, "an engine fixing an approved PR first");
+
   const otherWork = parkedSnapshot({}, [session("s2", "resolve-conflicts", "2024-01-03T00:00:00.000Z", "in_progress")]);
   assert.deepEqual(await decide(otherWork, { claimed: true }).decision, {
     state: "refused", reason: ENGINE_WORKING_REASON,
-  }, "an engine doing anything else to it is still a refusal");
+  }, "an engine doing anything to an unapproved PR is still a refusal");
 });
 
 test("decideApproval judges the claim against the session store as it is now", async () => {
@@ -435,7 +445,7 @@ test("a press that finds the PR already approved reports approved, logs it as su
     repo: "o/a", pullRequestNumber: 10, requestedAt: events[0]!.requestedAt,
     state: "approved", checksPending: false, alreadyApproved: true,
   });
-  assert.match(merging.lines.at(-1) ?? "", /✓ already approved after 0s \(waited 0s for the planner\) — an engine is merging it\.$/);
+  assert.match(merging.lines.at(-1) ?? "", /✓ already approved after 0s \(waited 0s for the planner\) — an engine is already working on it\.$/);
   assert.equal(merging.ran.announces, 0, "no second PR comment");
 
   const waiting = steps({ decide: async () => ({ state: "approved", checksPending: false, alreadyApproved: true }) });

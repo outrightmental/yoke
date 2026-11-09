@@ -4,7 +4,7 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import WebSocket from "ws";
-import { DashboardServer } from "../src/dashboard-server.js";
+import { DashboardServer, NOT_OWN_PAGE_REASON } from "../src/dashboard-server.js";
 import { EventEmitter, globalEventEmitter } from "../src/event-emitter.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
 
@@ -730,6 +730,73 @@ test("DashboardServer takes Approve clicks only from its own page, never another
     `evil.example:${TEST_PORT + 30}`,
   );
   assert.deepEqual(rebound, [], "a site whose name was made to resolve to this machine cannot");
+});
+
+/**
+ * Start a dashboard on `port` with an onlooker page connected, send `message`
+ * from a page of its own (opened with `origin`, when given), and return what
+ * the sending page and the onlooker were sent, and what the engine pool heard.
+ */
+async function approveAnswers(
+  t: { after: (fn: () => void) => void },
+  port: number,
+  message: unknown,
+  origin?: string,
+) {
+  const emitter = new EventEmitter();
+  const heard: Array<Record<string, unknown>> = [];
+  emitter.subscribe((event) => {
+    if (event.type === "pull-request-approve") heard.push(event.data);
+  });
+  const server = new DashboardServer({
+    port, host: "127.0.0.1", owner: "", repo: "", multiProject: true, projects: ["o/a", "o/b"], eventEmitter: emitter,
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const onlooker = new WebSocket(`ws://127.0.0.1:${port}/api/ws`);
+  const seen = collectWsMessages(onlooker, 300);
+  await new Promise<void>((resolve) => onlooker.once("open", resolve));
+  const sender = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, origin !== undefined ? { origin } : {});
+  const got = collectWsMessages(sender, 200);
+  await new Promise<void>((resolve) => sender.once("open", resolve));
+  sender.send(JSON.stringify(message));
+  const [sent, onlooked] = await Promise.all([got, seen]);
+  sender.close();
+  onlooker.close();
+  const answers = (events: DashboardEvent[]) => events.filter((e) => e.type === "pull-request-approval").map((e) => e.data);
+  return { answers: answers(sent), onlookerAnswers: answers(onlooked), heard };
+}
+
+test("DashboardServer answers an Approve press it will not relay, so the pill says why instead of waiting (#278)", async (t) => {
+  const foreign = await approveAnswers(
+    t, TEST_PORT + 36, { type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: 7 }, "https://evil.example",
+  );
+  assert.deepEqual(foreign.heard, [], "still never relayed");
+  assert.equal(foreign.answers.length, 1);
+  assert.deepEqual(
+    { ...foreign.answers[0], requestedAt: undefined },
+    { repo: "o/a", pullRequestNumber: 7, requestedAt: undefined, state: "refused", reason: NOT_OWN_PAGE_REASON },
+  );
+  assert.deepEqual(foreign.onlookerAnswers, [], "told to the page that asked, and no other");
+
+  const unknown = await approveAnswers(t, TEST_PORT + 37, { type: "pull-request-approve-request", repo: "o/c", pullRequestNumber: 7 });
+  assert.deepEqual(unknown.heard, []);
+  assert.equal(unknown.answers[0]?.["reason"], "o/c is not one of this dashboard's projects");
+
+  const unnamed = await approveAnswers(t, TEST_PORT + 38, { type: "pull-request-approve-request", repo: "", pullRequestNumber: 7 });
+  assert.equal(unnamed.answers[0]?.["reason"], "the press did not say which of this dashboard's projects the PR is in");
+
+  const noPullRequest = await approveAnswers(t, TEST_PORT + 39, { type: "pull-request-approve-request", repo: "o/a", pullRequestNumber: -3 });
+  assert.deepEqual(noPullRequest.answers, [], "no pill names a PR like that, so none is answered");
+});
+
+test("DashboardServer answers nothing itself for an Approve press it relays: the engine pool answers", async (t) => {
+  const relayed = await approveAnswers(t, TEST_PORT + 40, { type: "pull-request-approve-request", repo: "o/b", pullRequestNumber: 7 });
+
+  assert.deepEqual(relayed.heard, [{ repo: "o/b", pullRequestNumber: 7 }]);
+  assert.deepEqual(relayed.answers, []);
 });
 
 // ── What became of an approval (#276) ─────────────────────────────────────────

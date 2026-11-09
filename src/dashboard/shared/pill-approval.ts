@@ -1,13 +1,15 @@
-import type { LifecyclePair, PullRequestApprovalState, PullRequestApprovalStatus } from '../store/types.js';
+import type { ApprovalPress, LifecyclePair, PullRequestApprovalState, PullRequestApprovalStatus } from '../store/types.js';
 import type { PillActivity } from './pill-activity.js';
 
-/** How long an armed Approve button waits for the confirming second click. */
-export const APPROVE_CONFIRM_MS = 4000;
-/** How long a sent approval waits for yoke's first answer before the pill
- *  says none came. Yoke answers at once, even while the approval queues. */
+/** How long a sent approval waits for yoke's first answer before the pill's
+ *  line says none has come yet. Yoke answers the moment a request arrives,
+ *  even when the approval then has to queue. The pill stays Queued however
+ *  long it waits — there is no error state to give up into (#278) — and the
+ *  store sends the press again when the connection comes back. */
 export const APPROVE_ACK_MS = 10_000;
-/** How long the pill shows how an approval ended (#276) — and how long the
- *  dashboard server replays it to a page opened meanwhile. */
+/** How long the pill shows how another dashboard's approval ended (#276) —
+ *  this dashboard's own press shows its outcome for good (#278) — and how long
+ *  the dashboard server replays an outcome to a page opened meanwhile. */
 export const APPROVAL_OUTCOME_SHOW_MS = 60_000;
 
 /** The PR an Approve click names: its number and the project it is in. */
@@ -32,12 +34,15 @@ export interface ApproveControl {
 }
 
 /**
- * The Approve button a lifecycle pill shows (#274), or null for none.
+ * Whether a lifecycle pill's PR can be approved right now (#274), or null when
+ * it cannot: the Approve button, or Retry after a press that did not go
+ * through. A press already made goes on showing where it stands either way
+ * (see `approvalView`).
  *
- * Only a ready PR parked by the `review` label gets one — the server marks
- * those `awaiting-approval` — and only while no engine is working it and yoke
- * is not shutting down, when no engine would start the merge. An approval
- * never merges over failing checks, so the button is disabled while they fail;
+ * Only a ready PR parked by the `review` label can be — the server marks those
+ * `awaiting-approval` — and only while no engine is working it and yoke is not
+ * shutting down, when no engine would start the merge. An approval never
+ * merges over failing checks, so the button is disabled while they fail;
  * pressed while they are still running, it approves a merge that waits for
  * them.
  */
@@ -105,32 +110,38 @@ export function approvalStatusFor(
   return null;
 }
 
-/** The pill's own latest press of its Approve button. */
-export interface ApproveClick {
-  /** The PR it was for (`approveKey`), so a pill element reused for another
-   *  PR never carries it over. */
-  key: string;
-  /** `confirm`: the first click, armed for a confirming second one.
-   *  `sent`: the confirming click, sent to yoke.
-   *  `unsent`: the confirming click, which could not be sent. */
-  step: 'confirm' | 'sent' | 'unsent';
-  /** Epoch millis of the click, by this browser's clock. */
-  atMs: number;
+/** This dashboard's press of a pill's Approve button, from the store's
+ *  `approvalPresses` (#278), or null when there has been none. */
+export function approvalPressFor(
+  presses: ReadonlyMap<string, ApprovalPress>,
+  pair: LifecyclePair,
+): ApprovalPress | null {
+  const target = pairApproveTarget(pair);
+  return target === null ? null : presses.get(approveKey(target)) ?? null;
 }
 
 /** Every label the Approve button can show. They all fit its fixed width. */
 export const APPROVE_BUTTON_LABELS = {
+  /** Nothing pressed: press to approve. */
   idle: 'Approve',
-  confirm: 'Confirm',
-  sending: 'Sending',
+  /** Pressed: waiting for yoke, then for an engine, to carry it out. */
+  queued: 'Queued',
+  /** An engine is carrying it out: squash-merging the PR, or fixing it so
+   *  it can merge. */
   approving: 'Approving',
+  /** An engine has squash-merged the PR. */
+  merged: 'Merged',
+  /** Yoke refused the press or it failed, for the reason on the line: press
+   *  again. */
+  retry: 'Retry',
 } as const;
 
 export type ApproveButtonStep = keyof typeof APPROVE_BUTTON_LABELS;
 
 /** What a pill shows of its PR's approval, as it stands right now. */
 export interface ApprovalView {
-  /** The Approve button, or null for none. */
+  /** The Approve button, or null for none. Only `idle` and `retry` are ever
+   *  pressable. */
   button: { step: ApproveButtonStep; label: string; disabled: boolean; title: string } | null;
   /** Yoke has recorded the approval: the PR reads APPROVED, even before its
    *  lifecycle says so. */
@@ -142,106 +153,191 @@ export interface ApprovalView {
   refreshAtMs: number | null;
 }
 
+/** What an engine working an approved PR is doing first, when it is not the
+ *  merge. The approval stands through it (#278): the PR merges after. */
+const WORK_BEFORE_MERGE: Record<string, string> = {
+  'address-failing-checks': 'an engine is fixing its failing checks',
+  'resolve-conflicts': 'an engine is resolving its merge conflicts',
+  'self-review': 'an engine is reviewing it again',
+};
+
 /**
- * What a pill shows of its PR's approval (#276), from the Approve button the
- * lifecycle offers (`approveControl`), yoke's latest word on the approval, the
- * pill's own latest click, and the time.
+ * What a pill shows of its PR's approval (#276, #278), from its lifecycle,
+ * what an engine is doing to it, yoke's latest word on the approval, this
+ * dashboard's own press, the connection to yoke, and the time.
  *
- * Once the confirming click is sent the pill follows yoke, not a timer: it
- * reads Sending until yoke's first answer — any status for the PR that arrives
- * after the click, since yoke always answers, if only with the attempt already
- * in flight — then Approving for as long as the approval is under way, then
- * how it ended. Only when no answer comes within `APPROVE_ACK_MS` does it say
- * so. An approval this pill did not send (another dashboard's, or one in
- * flight when the page loaded) shows the same way. How an approval ended is
- * shown for `APPROVAL_OUTCOME_SHOW_MS`, or until the next press.
+ * One press approves. From that instant the button reads Queued — sent to
+ * yoke (or waiting to be, while the dashboard reconnects), then while yoke
+ * reads the PR and waits for an engine to finish planning, then, approved,
+ * until an engine is free to carry it out — and Approving once one is, while
+ * it squash-merges the PR or fixes it first, then Merged. Yoke's answers and
+ * the engines' actions move it along, never a timer: with no answer it stays
+ * Queued, saying so. A press yoke refuses, or that fails, says why and offers
+ * Retry, for as long as the pill is there: it never reads Approve again as if
+ * it had not been pressed. Approve comes back only if yoke asks for approval
+ * again after recording this one, saying so.
+ *
+ * An approval this dashboard did not send — another dashboard's, or one in
+ * flight when the page loaded — shows the same way while yoke has it in hand
+ * or the lifecycle shows it approved; how one ended shows for
+ * `APPROVAL_OUTCOME_SHOW_MS`.
  */
 export function approvalView(params: {
-  /** The PR the pill is for, or null when it has none. */
-  target: ApproveTarget | null;
-  control: ApproveControl | null;
+  pair: LifecyclePair;
+  activity: PillActivity | null;
+  /** The type of the action an engine is running on the pill, if any. */
+  workingAction: string | null;
+  /** Yoke is shutting down (issue #268). */
+  dark: boolean;
   status: PullRequestApprovalStatus | null;
-  click: ApproveClick | null;
+  press: ApprovalPress | null;
+  /** The dashboard has a live connection to yoke. */
+  connected: boolean;
   nowMs: number;
 }): ApprovalView {
-  const { target, control, nowMs } = params;
-  const status = target !== null && params.status !== null && statusIsFor(params.status, target) ? params.status : null;
-  const click = target !== null && params.click?.key === approveKey(target) ? params.click : null;
-  const prNumber = target?.pullRequestNumber ?? 0;
-
-  const button = (step: ApproveButtonStep, disabled: boolean, title: string): ApprovalView['button'] =>
-    control ? { step, label: APPROVE_BUTTON_LABELS[step], disabled, title } : null;
-  const idle = (): ApprovalView['button'] => button('idle', control?.disabled ?? false, control?.title ?? '');
-  const problem = (text: string, refreshAtMs: number): ApprovalView => ({
-    button: idle(),
-    approved: false,
-    line: { text, tone: 'problem' },
-    refreshAtMs,
-  });
-
-  // The confirming click went to yoke and nothing has come back since.
-  if (click?.step === 'sent' && (status === null || status.receivedAtMs < click.atMs)) {
-    const ackByMs = click.atMs + APPROVE_ACK_MS;
-    if (nowMs < ackByMs) {
-      return {
-        button: button('sending', true, `Approval of PR #${prNumber} sent to yoke`),
-        approved: false,
-        line: { text: 'approval sent to yoke…', tone: 'progress' },
-        refreshAtMs: ackByMs,
-      };
-    }
-    if (nowMs < ackByMs + APPROVAL_OUTCOME_SHOW_MS) {
-      return problem('no answer from yoke — check the connection and the event log', ackByMs + APPROVAL_OUTCOME_SHOW_MS);
-    }
-    return { button: idle(), approved: false, line: null, refreshAtMs: null };
+  const { pair, activity, dark, nowMs } = params;
+  const target = pairApproveTarget(pair);
+  const press = target !== null && params.press !== null && approveKey(params.press) === approveKey(target)
+    ? params.press
+    : null;
+  // Only an open PR yoke may merge has an approval to follow: a merged or
+  // manual one says what became of it in its own badges, as does a draft one
+  // — unless yoke has it approved, since the approval stands through the
+  // re-review a return to draft brings, or this dashboard pressed Approve on
+  // it, which goes on saying how that press fared (#278).
+  const draftHeld = pair.prPhase === 'active' && pair.pr?.draft === true &&
+    (pair.approval === 'approved' || press !== null);
+  if (target === null || (pair.prPhase !== 'review' && !draftHeld) || pair.disabled) {
+    return { button: null, approved: false, line: null, refreshAtMs: null };
   }
+  const n = target.pullRequestNumber;
+  const control = approveControl(pair, activity, dark);
+  const working = activity === 'working';
+  const status = params.status !== null && statusIsFor(params.status, target) ? params.status : null;
+  // Yoke's word the view goes by: after a press, only an answer to it — a
+  // status that arrived after it, whenever that was; with none, the latest,
+  // an outcome only while it is fresh.
+  const word = press !== null
+    ? (status !== null && status.receivedAtMs >= press.atMs ? status : null)
+    : (status !== null && !approvalStatusExpired(status, nowMs) ? status : null);
 
-  if (status !== null && (status.state === 'loading' || status.state === 'waiting')) {
-    const text = status.state === 'loading'
-      ? `approving — reading PR #${prNumber} from GitHub…`
-      : 'approving — waiting for a free planner…';
+  // The view changes on its own when another dashboard's outcome goes stale,
+  // and when an approval's answer is old enough for the lifecycle to rule.
+  const refreshTimes: number[] = [];
+  if (word !== null && isApprovalOutcome(word.state) && (press === null || word.state === 'approved')) {
+    refreshTimes.push(word.receivedAtMs + APPROVAL_OUTCOME_SHOW_MS);
+  }
+  const show = (
+    step: ApproveButtonStep,
+    line: ApprovalView['line'],
+    approved: boolean,
+  ): ApprovalView => {
+    const future = refreshTimes.filter((atMs) => atMs > nowMs);
     return {
-      button: button('approving', true, `Yoke is approving PR #${prNumber}`),
-      approved: false,
-      line: { text, tone: 'progress' },
-      refreshAtMs: null,
+      button: buttonFor(step, n, line, control, working, dark),
+      approved,
+      line,
+      refreshAtMs: future.length > 0 ? Math.min(...future) : null,
     };
+  };
+
+  if (press?.merged) {
+    return show('merged', { text: 'merged — an engine squash-merged it', tone: 'approved' }, true);
   }
 
-  // How the approval ended, unless it is stale or a later press supersedes it.
-  if (status !== null && !approvalStatusExpired(status, nowMs) && (click === null || status.receivedAtMs >= click.atMs)) {
-    const hideAtMs = status.receivedAtMs + APPROVAL_OUTCOME_SHOW_MS;
-    if (status.state === 'approved') {
-      const text = status.checksPending
-        ? 'approved — an engine will squash-merge it once its checks pass'
-        : 'approved — an engine will squash-merge it';
-      // The line stays until the lifecycle shows the approval, when the
-      // pill offers no Approve button any more and APPROVED says it all.
-      return {
-        button: null,
-        approved: true,
-        line: control ? { text, tone: 'approved' } : null,
-        refreshAtMs: hideAtMs,
-      };
+  // Yoke has recorded the approval. The lifecycle can lag a beat behind the
+  // answer; once the answer is old, a lifecycle asking for approval again
+  // means this one was carried out and yoke changed the PR since.
+  const approvedWord = word?.state === 'approved' ? word : null;
+  const askedAgain = approvedWord !== null && pair.approval === 'awaiting-approval' && !working &&
+    nowMs - approvedWord.receivedAtMs >= APPROVAL_OUTCOME_SHOW_MS;
+  if (askedAgain) {
+    return show('idle', { text: 'approved earlier — yoke is asking for approval again', tone: 'progress' }, false);
+  }
+  if (pair.approval === 'approved' || approvedWord !== null) {
+    if (working) {
+      const action = params.workingAction;
+      const first = action !== null ? WORK_BEFORE_MERGE[action] : undefined;
+      if (first !== undefined) {
+        return show('approving', { text: `approving — ${first}, then it squash-merges`, tone: 'approved' }, true);
+      }
+      if (action === null || action === 'squash-merge') {
+        return show('approving', { text: 'approving — an engine is squash-merging it', tone: 'approved' }, true);
+      }
+      return show('approving', { text: 'approving — an engine is working on it, then it squash-merges', tone: 'approved' }, true);
     }
-    return problem(
-      status.state === 'refused' ? `not approved: ${status.reason ?? 'no reason given'}` : `approval failed: ${status.reason ?? 'unknown error'}`,
-      hideAtMs,
-    );
+    const checks = pair.pr?.checksStatus;
+    const checksPending = checks === 'pending' ||
+      (pair.approval !== 'approved' && approvedWord?.checksPending === true && checks !== 'failure');
+    const text = dark
+      ? 'approved — an engine squash-merges it once yoke runs again'
+      : draftHeld
+        ? 'approved — back in draft: an engine reviews it again, then squash-merges it'
+        : checks === 'failure'
+          ? 'approved — its checks failed: an engine fixes them, then squash-merges it'
+          : checksPending
+            ? 'approved — an engine squash-merges it once its checks pass'
+            : 'approved — waiting for a free engine to squash-merge it';
+    return show('queued', { text, tone: 'approved' }, true);
   }
 
-  if (click?.step === 'confirm' && nowMs < click.atMs + APPROVE_CONFIRM_MS && !control?.disabled) {
-    return {
-      button: button('confirm', false, `Click again to approve and squash-merge PR #${prNumber}`),
-      approved: false,
-      line: null,
-      refreshAtMs: click.atMs + APPROVE_CONFIRM_MS,
-    };
+  if (word?.state === 'loading' || word?.state === 'waiting') {
+    const text = word.state === 'loading'
+      ? `queued — yoke is reading PR #${n} from GitHub…`
+      : 'queued — waiting for an engine to finish planning…';
+    return show('queued', { text, tone: 'progress' }, false);
   }
 
-  if (click?.step === 'unsent' && nowMs < click.atMs + APPROVAL_OUTCOME_SHOW_MS) {
-    return problem('not sent — the dashboard is not connected to yoke', click.atMs + APPROVAL_OUTCOME_SHOW_MS);
+  if (press !== null && word === null) {
+    // Nothing back yet: it stays Queued, saying what it waits on (#278). A
+    // press made while the dashboard was not connected, or sent and lost with
+    // the connection, is sent again when it reconnects; a sent one's answer
+    // is replayed then too, however late.
+    if (!press.sent || !params.connected) {
+      return show('queued', { text: 'queued — reconnecting to yoke…', tone: 'progress' }, false);
+    }
+    const answerByMs = (press.sentAtMs ?? press.atMs) + APPROVE_ACK_MS;
+    if (nowMs < answerByMs) {
+      refreshTimes.push(answerByMs);
+      return show('queued', { text: 'queued — sent to yoke…', tone: 'progress' }, false);
+    }
+    return show('queued', { text: 'queued — sent to yoke, no answer yet…', tone: 'progress' }, false);
   }
 
-  return { button: idle(), approved: false, line: null, refreshAtMs: null };
+  if (word?.state === 'refused' || word?.state === 'failed') {
+    const text = word.state === 'refused'
+      ? `not approved: ${word.reason ?? 'no reason given'}`
+      : `approval failed: ${word.reason ?? 'unknown error'}`;
+    return show(press !== null ? 'retry' : 'idle', { text, tone: 'problem' }, false);
+  }
+
+  return show('idle', null, false);
+}
+
+/** The button for `step`: pressable only to approve (again) when the PR can
+ *  be approved, and otherwise saying what it is waiting on. */
+function buttonFor(
+  step: ApproveButtonStep,
+  pullRequestNumber: number,
+  line: ApprovalView['line'],
+  control: ApproveControl | null,
+  working: boolean,
+  dark: boolean,
+): ApprovalView['button'] {
+  const label = APPROVE_BUTTON_LABELS[step];
+  if (step === 'idle') {
+    return control ? { step, label, disabled: control.disabled, title: control.title } : null;
+  }
+  if (step === 'retry') {
+    if (control) {
+      return { step, label, disabled: control.disabled, title: control.disabled ? control.title : `Retry — ${control.title}` };
+    }
+    const why = dark
+      ? 'yoke is shutting down'
+      : working
+        ? `an engine is working on PR #${pullRequestNumber}`
+        : `PR #${pullRequestNumber} is not waiting on approval`;
+    return { step, label, disabled: true, title: `Cannot retry: ${why}` };
+  }
+  return { step, label, disabled: true, title: `PR #${pullRequestNumber} · ${line?.text ?? label}` };
 }

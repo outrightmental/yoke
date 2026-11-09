@@ -1,8 +1,8 @@
 import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, PullRequestApprovalState, PullRequestApprovalStatus } from './types.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus } from './types.js';
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
-import { approvalStatusExpired, approveKey, approveRequestMessage, type ApproveTarget } from '../shared/pill-approval.js';
+import { approvalStatusExpired, approveKey, approveRequestMessage, isApprovalOutcome, type ApproveTarget } from '../shared/pill-approval.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -126,6 +126,7 @@ export function initialState(): DashboardState {
     hold: null,
     usage: null,
     approvals: new Map(),
+    approvalPresses: new Map(),
     multiProject: false,
     owner: '',
     repo: '',
@@ -294,7 +295,7 @@ function applyActionComplete(state: DashboardState, data: Record<string, unknown
     cylinders = [...cylinders];
     cylinders[idx] = { ...cyl, status: 'done', thinkingLines: [] };
   }
-  return addToStream({ ...state, cylinders }, atMs, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
+  return addToStream({ ...withMergedPresses(state, cyl), cylinders }, atMs, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
 }
 
 function applyActionError(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
@@ -433,7 +434,7 @@ function applyLifecycleUpdate(state: DashboardState, data: Record<string, unknow
   const lastLifecyclePairs: LifecyclePair[] = [];
   for (const slice of lifecycleByRepo.values()) lastLifecyclePairs.push(...slice);
 
-  return { ...state, lifecycleByRepo, lastLifecyclePairs };
+  return { ...state, lifecycleByRepo, lastLifecyclePairs, approvalPresses: pressesStillListed(state.approvalPresses, repo, pairs) };
 }
 
 /** Action-type label for the feed — specific enough that types are
@@ -555,11 +556,12 @@ const APPROVAL_STATES: readonly PullRequestApprovalState[] = ['loading', 'waitin
 /**
  * Yoke's latest word on a PR's dashboard approval (#276) replaces the last.
  * The time it arrived is what the pill compares its own click with, so its
- * Sending gives way only to an answer that came after the click. Outcomes too
+ * Queued gives way only to an answer that came after the press. Outcomes too
  * old to show are dropped on the way, so a stale refusal never comes back —
  * nor does one the server replays when the socket reconnects: the same event
  * again (same server stamp) is not a new answer, and keeps the time it first
- * arrived.
+ * arrived. The answer to this dashboard's own press is never dropped (#278):
+ * the pill goes on saying how its press ended.
  */
 function applyPullRequestApproval(state: DashboardState, data: Record<string, unknown>, emittedAt: string): DashboardState {
   const pullRequestNumber = data['pullRequestNumber'];
@@ -585,7 +587,7 @@ function applyPullRequestApproval(state: DashboardState, data: Record<string, un
   if (previous !== undefined && sameApprovalEvent(previous, status)) return state;
   const approvals = new Map<string, PullRequestApprovalStatus>();
   for (const [key, existing] of state.approvals) {
-    if (!approvalStatusExpired(existing, receivedAtMs)) approvals.set(key, existing);
+    if (!approvalStatusExpired(existing, receivedAtMs) || state.approvalPresses.has(key)) approvals.set(key, existing);
   }
   approvals.set(key, status);
   return { ...state, approvals };
@@ -594,20 +596,113 @@ function applyPullRequestApproval(state: DashboardState, data: Record<string, un
 /**
  * After a reconnect's bootstrap rebuilt the state from the server's replay,
  * the approval statuses this page already had keep the time they first
- * arrived (#276): to the pill they are old answers, not new ones.
+ * arrived (#276): to the pill they are old answers, not new ones. How a press
+ * of this dashboard's ended stays even once the server no longer replays it
+ * (#278). An approval the server last said was under way and no longer
+ * replays is not under way any more — yoke restarted, or it ended while the
+ * page was away and its outcome has aged out — so it is dropped: the press
+ * reads unanswered and is sent again, rather than read Queued for good on an
+ * answer nothing will ever follow.
  */
 function keepArrivalTimes(
   approvals: Map<string, PullRequestApprovalStatus>,
   previous: Map<string, PullRequestApprovalStatus>,
+  presses: ReadonlyMap<string, ApprovalPress>,
 ): Map<string, PullRequestApprovalStatus> {
   const nowMs = Date.now();
   const kept = new Map<string, PullRequestApprovalStatus>();
   for (const [key, status] of approvals) {
     const earlier = previous.get(key);
     const merged = earlier !== undefined && sameApprovalEvent(earlier, status) ? earlier : status;
-    if (!approvalStatusExpired(merged, nowMs)) kept.set(key, merged);
+    if (!approvalStatusExpired(merged, nowMs) || presses.has(key)) kept.set(key, merged);
+  }
+  for (const [key, status] of previous) {
+    if (!kept.has(key) && presses.has(key) && isApprovalOutcome(status.state)) kept.set(key, status);
   }
   return kept;
+}
+
+/**
+ * Record a press of a pill's Approve button (#278), sent to yoke or not. It
+ * replaces any earlier press of that PR's, and stays until the PR leaves the
+ * lifecycle, so the pill follows it whichever element draws the pill.
+ */
+export function recordApprovalPress(
+  state: DashboardState,
+  target: ApproveTarget,
+  sent: boolean,
+  atMs: number,
+): DashboardState {
+  const approvalPresses = new Map(state.approvalPresses);
+  approvalPresses.set(approveKey(target), { repo: target.repo, pullRequestNumber: target.pullRequestNumber, atMs, sent });
+  return { ...state, approvalPresses };
+}
+
+/**
+ * The presses of this dashboard's that yoke has not answered (#278): made
+ * while the connection was down, or sent and lost with it. The store sends
+ * them again on reconnecting — yoke answers a repeat the way it did the
+ * first, so a press is never left waiting on an answer that is not coming.
+ */
+export function unansweredApprovalPresses(state: DashboardState): ApprovalPress[] {
+  const unanswered: ApprovalPress[] = [];
+  for (const press of state.approvalPresses.values()) {
+    if (press.merged) continue;
+    const answered = [...state.approvals.values()].some((status) =>
+      pressIsFor(press, status.repo, status.pullRequestNumber) && status.receivedAtMs >= press.atMs);
+    if (!answered) unanswered.push(press);
+  }
+  return unanswered;
+}
+
+/** Mark presses as sent (again) at `atMs`. */
+export function markApprovalPressesSent(
+  state: DashboardState,
+  presses: readonly ApprovalPress[],
+  atMs: number,
+): DashboardState {
+  if (presses.length === 0) return state;
+  const approvalPresses = new Map(state.approvalPresses);
+  for (const press of presses) {
+    const key = approveKey(press);
+    const current = approvalPresses.get(key);
+    if (current !== undefined) approvalPresses.set(key, { ...current, sent: true, sentAtMs: atMs });
+  }
+  return { ...state, approvalPresses };
+}
+
+function pressIsFor(press: ApprovalPress, repo: string | null, pullRequestNumber: number): boolean {
+  return press.pullRequestNumber === pullRequestNumber && (press.repo === '' || !repo || press.repo === repo);
+}
+
+/** A cylinder's action just completed: a squash-merge has done what a press
+ *  of Approve on its PR asked for (#278), so the pill reads Merged until the
+ *  lifecycle shows the PR closed. */
+function withMergedPresses(state: DashboardState, cyl: CylinderState | undefined): DashboardState {
+  if (!cyl || cyl.actionType !== 'squash-merge' || cyl.prNumber === null) return state;
+  let approvalPresses: Map<string, ApprovalPress> | null = null;
+  for (const [key, press] of state.approvalPresses) {
+    if (press.merged || !pressIsFor(press, cyl.repo, cyl.prNumber)) continue;
+    approvalPresses ??= new Map(state.approvalPresses);
+    approvalPresses.set(key, { ...press, merged: true });
+  }
+  return approvalPresses ? { ...state, approvalPresses } : state;
+}
+
+/** The presses left once a project's lifecycle no longer lists their PRs —
+ *  merged and gone, or closed — so they never pile up over a long run. */
+function pressesStillListed(
+  presses: Map<string, ApprovalPress>,
+  repo: string,
+  pairs: readonly LifecyclePair[],
+): Map<string, ApprovalPress> {
+  let kept: Map<string, ApprovalPress> | null = null;
+  for (const [key, press] of presses) {
+    if (press.repo !== repo || pairs.some((pair) => pair.pr?.number === press.pullRequestNumber)) continue;
+    kept ??= new Map(presses);
+    kept.delete(key);
+  }
+  return kept ?? presses;
 }
 
 /** Whether two statuses come from the one `pull-request-approval` event. */
@@ -715,6 +810,9 @@ export class DashboardStore {
       const currentConnection = this._state.connection;
       let state = initialState();
       state.connection = currentConnection;
+      // This dashboard's presses outlive the rebuild (#278), so a reconnect
+      // never makes one look as if it never happened.
+      state.approvalPresses = this._state.approvalPresses;
       state.owner = data.owner ?? '';
       state.repo = data.repo ?? '';
       state.title = data.dashboardTitle ?? data.repo ?? '';
@@ -726,7 +824,7 @@ export class DashboardStore {
       for (const event of (data.cachedEvents ?? [])) {
         state = dashboardReducer(state, event);
       }
-      state = { ...state, approvals: keepArrivalTimes(state.approvals, this._state.approvals) };
+      state = { ...state, approvals: keepArrivalTimes(state.approvals, this._state.approvals, state.approvalPresses) };
       this._setState(state);
     } catch (err) {
       console.error('[DashboardStore] bootstrap failed:', err);
@@ -734,11 +832,22 @@ export class DashboardStore {
   }
 
   /**
-   * Ask yoke to approve a review-gated PR and squash-merge it (#274). Returns
-   * false when there is no live connection to send the request on.
+   * Ask yoke to approve a review-gated PR and squash-merge it (#274), and
+   * record the press so its pill follows it at once (#278). Returns false when
+   * there is no live connection to send the request on: the press is sent
+   * when the connection comes back.
    */
   approvePullRequest(target: ApproveTarget): boolean {
-    return this._wsClient?.send(approveRequestMessage(target)) ?? false;
+    const sent = this._wsClient?.send(approveRequestMessage(target)) ?? false;
+    this._setState(recordApprovalPress(this._state, target, sent, Date.now()));
+    return sent;
+  }
+
+  /** Send each press yoke has not answered, now the connection is back (#278). */
+  private _resendUnansweredPresses(): void {
+    const sent = unansweredApprovalPresses(this._state)
+      .filter((press) => this._wsClient?.send(approveRequestMessage(press)) ?? false);
+    this._setState(markApprovalPressesSent(this._state, sent, Date.now()));
   }
 
   connectLive(wsUrl?: string): void {
@@ -762,6 +871,7 @@ export class DashboardStore {
       },
       (connected) => {
         this._setState({ ...this._state, connection: connected ? 'connected' : 'disconnected' });
+        if (connected) this._resendUnansweredPresses();
       }
     );
     this._wsClient = client;

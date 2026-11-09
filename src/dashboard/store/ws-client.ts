@@ -75,8 +75,9 @@ export class WsClient {
 
   /**
    * Send a message to the server as JSON. Returns false, sending nothing, when
-   * the socket is not open — a click made while reconnecting is not queued up
-   * to fire later, when it may no longer mean the same thing.
+   * the socket is not open. Nothing is queued here: a caller that wants a
+   * message sent once the socket reopens (the store's Approve presses, #278)
+   * sends it again itself.
    */
   send(message: Record<string, unknown>): boolean {
     const ws = this._ws;

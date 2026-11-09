@@ -331,13 +331,16 @@ export type ReviewApproval = "awaiting-approval" | "approved";
  * - `awaiting-approval`: parked. Yoke requested review after a clean
  *   self-review and has nothing more to do on it until a human acts; the
  *   dashboard offers an Approve button.
- * - `approved`: a human approved it on the dashboard. Yoke squash-merges it on
- *   an engine as soon as one is free and the merge gate allows.
+ * - `approved`: a human approved it on the dashboard. The approval stands
+ *   until the PR merges (#278): yoke carries it through whatever fixing,
+ *   conflict resolution and re-review the PR needs first, then squash-merges
+ *   it on an engine as soon as one is free and the merge gate allows.
  *
- * Mirrors the parking rules in `planPullRequestAction`: a PR with an engine on
- * it, a re-queue signal (converted to draft, new comments) or merge conflicts
- * is not waiting on anyone. Project mode is excluded — there every PR waits
- * for a human on GitHub, whatever its labels — as are `manual` PRs.
+ * Mirrors the parking rules in `planPullRequestAction`: an unapproved PR with
+ * an engine on it, a re-queue signal (converted to draft, new comments) or
+ * merge conflicts is not waiting on anyone. Project mode is excluded — there
+ * every PR waits for a human on GitHub, whatever its labels — as are `manual`
+ * PRs.
  */
 export function reviewApprovalState(
   pullRequest: PullRequest,
@@ -352,30 +355,34 @@ export function reviewApprovalState(
     pullRequest.linkedIssueNumbers,
     pullRequest.number,
   );
+  if (hasApproval(sessions)) return "approved";
   if (sessions.some(isActiveSession)) return undefined;
   if (pullRequest.draft || pullRequest.hasNewCommentsSinceLastRead || pullRequest.hasMergeConflicts) {
     return undefined;
   }
   const phase = getLatestCompletedSession(sessions)?.phase;
-  if (phase === "approval") return "approved";
   if (phase === "request-review" && reviewGate(snapshot.issues)(pullRequest)) {
     return "awaiting-approval";
   }
   return undefined;
 }
 
+/** Whether `sessions` (a PR's relevant sessions) hold a dashboard approval of it (#274). */
+function hasApproval(sessions: readonly AgentSession[]): boolean {
+  return sessions.some((session) => session.phase === "approval" && session.status === "completed");
+}
+
 /**
- * Whether a dashboard approval (#274) is the latest word on a PR: its most
- * recent completed session is the `approval`, so the work yoke does on it
- * next carries out that approval. An engine claimed on such a PR is merging it
- * because of the approval, not doing something else to it (#276).
+ * Whether a PR has a dashboard approval (#274). It stands until the PR merges
+ * (#278), so all the work yoke does on the PR from then on carries out that
+ * approval: an engine claimed on such a PR is getting it merged because of
+ * the approval, not doing something else to it (#276).
  */
-export function latestSessionIsApproval(
+export function pullRequestIsApproved(
   pullRequest: Pick<PullRequest, "number" | "linkedIssueNumbers">,
   agentSessions: AgentSession[],
 ): boolean {
-  const sessions = getRelevantSessions(agentSessions, pullRequest.linkedIssueNumbers, pullRequest.number);
-  return getLatestCompletedSession(sessions)?.phase === "approval";
+  return hasApproval(getRelevantSessions(agentSessions, pullRequest.linkedIssueNumbers, pullRequest.number));
 }
 
 function planPullRequestAction(
@@ -460,11 +467,17 @@ function planPullRequestAction(
 
   // A human approved this parked PR on the dashboard (#274): carry on with
   // the squash-merge the review label held back, through the same merge gate
-  // as every other merge. The approval covers the PR as it was approved, so
-  // a PR converted back to draft or commented on since gets another
-  // self-review and comes back for approval, as does one whose failing
-  // checks or conflicts yoke has to fix first. Project mode never merges.
-  if (!projectMode && latestCompletedSession?.phase === "approval") {
+  // as every other merge. The approval stands until the PR merges (#278): a
+  // PR converted back to draft or commented on since gets another
+  // self-review, and one with failing checks or conflicts gets them fixed,
+  // and then it merges, without coming back for approval. A request-review
+  // after the approval (recorded before approvals stood) parks nothing.
+  // Project mode never merges.
+  const approved = !projectMode && hasApproval(relevantSessions);
+  if (
+    approved &&
+    (latestCompletedSession?.phase === "approval" || latestCompletedSession?.phase === "request-review")
+  ) {
     if (mergeGateAction !== "proceed") {
       return mergeGateAction;
     }
@@ -531,6 +544,15 @@ function planPullRequestAction(
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
       });
+    }
+
+    // Clean self-review of a PR a human has approved (#278): the human was
+    // the second reviewer, and the approval stands — squash-merge it.
+    if (approved) {
+      if (mergeGateAction !== "proceed") {
+        return mergeGateAction;
+      }
+      return withIssueNumber(squashMergeAction(pullRequest));
     }
 
     // Clean self-review. In project mode or on a review-gated PR, one clean

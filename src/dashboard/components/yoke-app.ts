@@ -44,10 +44,11 @@ export class YokeApp extends LitElement {
     this._unsub = null;
   }
 
-  /** A pill's Approve button was clicked and confirmed (#274). Cancelled
-   *  when there is no live connection to send it on, so the pill says so. */
+  /** A pill's Approve button was pressed (#274): one press approves (#278).
+   *  The store sends it and records the press, sent or not, and the pill
+   *  follows it from there. */
   private _onPillApprove(event: CustomEvent<ApproveTarget>) {
-    if (!this.store?.approvePullRequest(event.detail)) event.preventDefault();
+    this.store?.approvePullRequest(event.detail);
   }
 
   override render() {
@@ -104,6 +105,8 @@ export class YokeApp extends LitElement {
           .dark=${pillsDark(s)}
           .frozenActivity=${s.frozenPillActivity}
           .approvals=${s.approvals}
+          .approvalPresses=${s.approvalPresses}
+          .connected=${s.connection === 'connected'}
           @pill-approve=${this._onPillApprove}
         ></lifecycle-list>
         <broadcast-feed
