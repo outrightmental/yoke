@@ -123,6 +123,10 @@ async function serveMedia(
   res.end(req.method === "HEAD" ? undefined : slice);
 }
 
+/** Why a press of Approve from a page `isSameOriginRequest` turns away is refused. */
+export const NOT_OWN_PAGE_REASON =
+  "this page's address is not one yoke takes approvals from — open the dashboard by IP address or as localhost";
+
 /**
  * Whether a WebSocket was opened by the dashboard's own page. A browser lets
  * any site it visits open a socket to localhost, but always names that site in
@@ -307,15 +311,44 @@ export class DashboardServer {
         };
         if (message.type === "cylinder-cancel-request" && typeof message.engineIndex === "number") {
           this.projectEmitter.emit("cylinder-cancel", { engineIndex: message.engineIndex });
-        } else if (message.type === "pull-request-approve-request" && sameOrigin) {
-          const target = this.approvalTarget(message.repo, message.pullRequestNumber);
-          if (target !== undefined) this.projectEmitter.emit("pull-request-approve", target);
+        } else if (message.type === "pull-request-approve-request") {
+          this.handleApproveRequest(ws, message.repo, message.pullRequestNumber, sameOrigin);
         }
       } catch {
         // Ignore malformed messages from clients
       }
     });
 
+  }
+
+  /**
+   * Relay an Approve press (#274) to the engine pool, which answers every one
+   * it hears. A press this dashboard will not relay — from another site's
+   * page, or naming no PR of its projects — is answered here instead, as
+   * refused, to the page that sent it and no other (#278): its pill says why
+   * rather than wait for an answer that is never coming.
+   */
+  private handleApproveRequest(ws: WebSocket, repo: unknown, pullRequestNumber: unknown, sameOrigin: boolean): void {
+    const target = this.approvalTarget(repo, pullRequestNumber);
+    if (sameOrigin && target !== undefined) {
+      this.projectEmitter.emit("pull-request-approve", target);
+      return;
+    }
+    // A pill names its PR by a positive whole number: anything else is no pill's.
+    if (typeof pullRequestNumber !== "number" || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) return;
+    const named = typeof repo === "string" ? repo : "";
+    const reason = !sameOrigin
+      ? NOT_OWN_PAGE_REASON
+      : named !== ""
+        ? `${named} is not one of this dashboard's projects`
+        : "the press did not say which of this dashboard's projects the PR is in";
+    const at = new Date().toISOString();
+    const answer: DashboardEvent = {
+      type: "pull-request-approval",
+      timestamp: at,
+      data: { repo: named, pullRequestNumber, requestedAt: at, state: "refused", reason },
+    };
+    ws.send(JSON.stringify(answer));
   }
 
   /**
