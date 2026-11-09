@@ -197,9 +197,12 @@ export function approvalView(params: {
 }): ApprovalView {
   const { pair, activity, dark, nowMs } = params;
   const target = pairApproveTarget(pair);
-  // Only an open, ready PR yoke may merge has an approval to follow: a merged,
-  // draft or manual one says what became of it in its own badges.
-  if (target === null || pair.prPhase !== 'review' || pair.disabled) {
+  // Only an open PR yoke may merge has an approval to follow: a merged or
+  // manual one says what became of it in its own badges, as does a draft one
+  // — unless yoke has it approved, since the approval stands through the
+  // re-review a return to draft brings (#278).
+  const draftApproved = pair.prPhase === 'active' && pair.pr?.draft === true && pair.approval === 'approved';
+  if (target === null || (pair.prPhase !== 'review' && !draftApproved) || pair.disabled) {
     return { button: null, approved: false, line: null, refreshAtMs: null };
   }
   const key = approveKey(target);
@@ -265,11 +268,13 @@ export function approvalView(params: {
       (pair.approval !== 'approved' && approvedWord?.checksPending === true && checks !== 'failure');
     const text = dark
       ? 'approved — an engine squash-merges it once yoke runs again'
-      : checks === 'failure'
-        ? 'approved — its checks failed: an engine fixes them, then squash-merges it'
-        : checksPending
-          ? 'approved — an engine squash-merges it once its checks pass'
-          : 'approved — waiting for a free engine to squash-merge it';
+      : draftApproved
+        ? 'approved — back in draft: an engine reviews it again, then squash-merges it'
+        : checks === 'failure'
+          ? 'approved — its checks failed: an engine fixes them, then squash-merges it'
+          : checksPending
+            ? 'approved — an engine squash-merges it once its checks pass'
+            : 'approved — waiting for a free engine to squash-merge it';
     return show('queued', { text, tone: 'approved' }, true);
   }
 

@@ -441,6 +441,24 @@ test("approvalView: a merged, draft or manual PR's pill shows no approval: its b
   }
 });
 
+test("approvalView: an approved PR back in draft keeps its approval: it is re-reviewed, then merged (#278)", () => {
+  const pair = parkedPair({ prPhase: "active", approval: "approved" }, { draft: true });
+  const answer = approvalStatus("approved", NOW + 1_000);
+
+  const waiting = view({ pair, press: pressAt(NOW), status: answer, nowMs: NOW + 5 * 60_000 });
+  assert.equal(waiting.button?.label, "Queued");
+  assert.equal(waiting.approved, true);
+  assert.deepEqual(waiting.line, {
+    text: "approved — back in draft: an engine reviews it again, then squash-merges it", tone: "approved",
+  });
+
+  const reviewing = view({ pair, status: answer, activity: "working", workingAction: "self-review", nowMs: NOW + 6 * 60_000 });
+  assert.equal(reviewing.button?.label, "Approving", "another dashboard's approval shows the same way");
+  assert.deepEqual(reviewing.line, {
+    text: "approving — an engine is reviewing it again, then it squash-merges", tone: "approved",
+  });
+});
+
 test("approvalView: a refusal shows its reason and offers Retry, for as long as the pill is there", () => {
   const refused = approvalStatus("refused", NOW + 2_000, { reason: "its checks are failing" });
   const v = view({ status: refused, press: pressAt(NOW), nowMs: NOW + 3_000 });
