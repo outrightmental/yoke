@@ -2,7 +2,7 @@ import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
 import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus } from './types.js';
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
-import { approvalStatusExpired, approveKey, approveRequestMessage, type ApproveTarget } from '../shared/pill-approval.js';
+import { approvalStatusExpired, approveKey, approveRequestMessage, isApprovalOutcome, type ApproveTarget } from '../shared/pill-approval.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -596,9 +596,13 @@ function applyPullRequestApproval(state: DashboardState, data: Record<string, un
 /**
  * After a reconnect's bootstrap rebuilt the state from the server's replay,
  * the approval statuses this page already had keep the time they first
- * arrived (#276): to the pill they are old answers, not new ones. The answer
- * to a press of this dashboard's stays even once the server no longer
- * replays it (#278).
+ * arrived (#276): to the pill they are old answers, not new ones. How a press
+ * of this dashboard's ended stays even once the server no longer replays it
+ * (#278). An approval the server last said was under way and no longer
+ * replays is not under way any more — yoke restarted, or it ended while the
+ * page was away and its outcome has aged out — so it is dropped: the press
+ * reads unanswered and is sent again, rather than read Queued for good on an
+ * answer nothing will ever follow.
  */
 function keepArrivalTimes(
   approvals: Map<string, PullRequestApprovalStatus>,
@@ -613,7 +617,7 @@ function keepArrivalTimes(
     if (!approvalStatusExpired(merged, nowMs) || presses.has(key)) kept.set(key, merged);
   }
   for (const [key, status] of previous) {
-    if (!kept.has(key) && presses.has(key)) kept.set(key, status);
+    if (!kept.has(key) && presses.has(key) && isApprovalOutcome(status.state)) kept.set(key, status);
   }
   return kept;
 }

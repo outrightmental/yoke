@@ -1520,6 +1520,29 @@ test("DashboardStore.bootstrap() on a reconnect keeps the dashboard's presses an
   });
 });
 
+test("DashboardStore.bootstrap() drops an approval the server no longer replays as under way, so the press is sent again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  // Yoke restarted mid-approval: the new server replays the lifecycle and
+  // nothing of the attempt the old one had under way.
+  await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [lifecycleEvent("o/a", [10])] }, async () => {
+    const store = new DashboardStore();
+    try {
+      store.approvePullRequest(PRESSED);
+      t.mock.timers.tick(1_000);
+      store.applyEvent(approvalEvent("o/a", 10, "loading"));
+      assert.equal(unansweredApprovalPresses(store.getState()).length, 0, "answered while yoke had it");
+      await store.bootstrap();
+
+      const state = store.getState();
+      assert.equal(state.approvals.has("o/a#10"), false, "no stale \"reading PR from GitHub\" to read Queued on for good");
+      assert.deepEqual(unansweredApprovalPresses(state).map((press) => press.pullRequestNumber), [10],
+        "so the press goes out again once the socket reopens");
+    } finally {
+      store.disconnect();
+    }
+  });
+});
+
 test("DashboardStore.bootstrap() restores an approval under way from the replayed cache", async () => {
   await withMockFetch(
     { ...MOCK_STATE_RESPONSE, cachedEvents: [approvalEvent("o/a", 10, "waiting")] },
