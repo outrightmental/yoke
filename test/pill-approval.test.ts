@@ -433,12 +433,32 @@ test("approvalView: a merged, draft or manual PR's pill shows no approval: its b
   const press = pressAt(NOW, { merged: true });
   for (const pair of [
     parkedPair({ prPhase: "completed" }),
-    parkedPair({ prPhase: "active" }, { draft: true }),
     parkedPair({ disabled: true }),
     parkedPair({ pr: null, prPhase: "absent" }),
   ]) {
     assert.deepEqual(view({ pair, press, nowMs: NOW }), { button: null, approved: false, line: null, refreshAtMs: null });
   }
+  const draft = parkedPair({ prPhase: "active" }, { draft: true });
+  assert.deepEqual(view({ pair: draft, nowMs: NOW }), { button: null, approved: false, line: null, refreshAtMs: null });
+});
+
+test("approvalView: a press on a PR that goes back to draft keeps saying how it fared (#278)", () => {
+  const { approval: _awaiting, ...draft } = parkedPair({ prPhase: "active" }, { draft: true });
+  const pair: LifecyclePair = draft;
+
+  const unanswered = view({ pair, press: pressAt(NOW), nowMs: NOW + 1_000 });
+  assert.equal(unanswered.button?.label, "Queued");
+  assert.deepEqual(unanswered.line, { text: "queued — sent to yoke…", tone: "progress" });
+
+  const refused = view({
+    pair,
+    press: pressAt(NOW),
+    status: approvalStatus("refused", NOW + 2_000, { reason: "PR #10 is not waiting on approval" }),
+    nowMs: NOW + 3_000,
+  });
+  assert.equal(refused.button?.label, "Retry");
+  assert.equal(refused.button?.disabled, true);
+  assert.deepEqual(refused.line, { text: "not approved: PR #10 is not waiting on approval", tone: "problem" });
 });
 
 test("approvalView: an approved PR back in draft keeps its approval: it is re-reviewed, then merged (#278)", () => {

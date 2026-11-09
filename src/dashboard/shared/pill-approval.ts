@@ -197,20 +197,23 @@ export function approvalView(params: {
 }): ApprovalView {
   const { pair, activity, dark, nowMs } = params;
   const target = pairApproveTarget(pair);
+  const press = target !== null && params.press !== null && approveKey(params.press) === approveKey(target)
+    ? params.press
+    : null;
   // Only an open PR yoke may merge has an approval to follow: a merged or
   // manual one says what became of it in its own badges, as does a draft one
   // — unless yoke has it approved, since the approval stands through the
-  // re-review a return to draft brings (#278).
-  const draftApproved = pair.prPhase === 'active' && pair.pr?.draft === true && pair.approval === 'approved';
-  if (target === null || (pair.prPhase !== 'review' && !draftApproved) || pair.disabled) {
+  // re-review a return to draft brings, or this dashboard pressed Approve on
+  // it, which goes on saying how that press fared (#278).
+  const draftHeld = pair.prPhase === 'active' && pair.pr?.draft === true &&
+    (pair.approval === 'approved' || press !== null);
+  if (target === null || (pair.prPhase !== 'review' && !draftHeld) || pair.disabled) {
     return { button: null, approved: false, line: null, refreshAtMs: null };
   }
-  const key = approveKey(target);
   const n = target.pullRequestNumber;
   const control = approveControl(pair, activity, dark);
   const working = activity === 'working';
   const status = params.status !== null && statusIsFor(params.status, target) ? params.status : null;
-  const press = params.press !== null && approveKey(params.press) === key ? params.press : null;
   // Yoke's word the view goes by: after a press, only an answer to it — a
   // status that arrived after it, whenever that was; with none, the latest,
   // an outcome only while it is fresh.
@@ -268,7 +271,7 @@ export function approvalView(params: {
       (pair.approval !== 'approved' && approvedWord?.checksPending === true && checks !== 'failure');
     const text = dark
       ? 'approved — an engine squash-merges it once yoke runs again'
-      : draftApproved
+      : draftHeld
         ? 'approved — back in draft: an engine reviews it again, then squash-merges it'
         : checks === 'failure'
           ? 'approved — its checks failed: an engine fixes them, then squash-merges it'
