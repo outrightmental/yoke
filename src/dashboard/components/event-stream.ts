@@ -52,6 +52,10 @@ export class EventStream extends LitElement {
       overflow: hidden;
     }
 
+    /* A line with neither an engine's color nor a status color is trim, and
+       so are the emoji the font draws in color on it (📍 📊 🔄) (#280). */
+    .event-content.plain { filter: grayscale(1); }
+
     @keyframes fadeIn {
       from { opacity: 0; transform: translateX(-4px); }
       to   { opacity: 1; transform: translateX(0); }
@@ -80,14 +84,17 @@ export class EventStream extends LitElement {
   override render() {
     return html`
       <div class="event-stream">
-        ${this.events.map(line => html`
+        ${this.events.map(line => {
+          const contentStyle = this._contentStyle(line);
+          return html`
           <div class="event-line">
             <span class="event-dot" style="${line.color ? `color:${line.color};text-shadow:0 0 5px ${line.color}` : ''}">●</span>
             <span class="event-time">${formatLogTime(line.atMs)}</span>
             ${this.multiProject && line.repo ? html`<span class="event-repo">${line.repo}</span>` : ''}
-            <span class="event-content" style="${this._contentStyle(line)}">${line.text}</span>
+            <span class="event-content${contentStyle ? '' : ' plain'}" style="${contentStyle}">${line.text}</span>
           </div>
-        `)}
+        `;
+        })}
       </div>
     `;
   }
