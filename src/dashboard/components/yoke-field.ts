@@ -194,6 +194,11 @@ export class YokeField extends LitElement {
     this._staticCtx = null;
     this._painter = null;
     this._press = null;
+    // The next `_start` makes a new static layer at a canvas's default size,
+    // so its first `_resize` must not find the size unchanged and skip it.
+    this._width = 0;
+    this._height = 0;
+    this._lastFrameMs = 0;
   }
 
   private _listen(target: EventTarget, type: string, handler: (event: Event) => void, options?: AddEventListenerOptions) {
