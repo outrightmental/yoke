@@ -367,6 +367,45 @@ export function reviewApprovalState(
   return undefined;
 }
 
+/**
+ * Whether an open PR is parked for a person to review on GitHub, in Project
+ * SDLC: yoke requested review after a clean self-review and has nothing more
+ * to do on it until someone acts there. The dashboard's inbox lists it, with a
+ * link, since nothing on the dashboard itself can move it on.
+ *
+ * Mirrors the parking rule in `planPullRequestAction`, the way
+ * `reviewApprovalState` does for a review-gated PR outside project mode: a PR
+ * with an engine on it, merge conflicts, or a re-queue signal — returned to
+ * draft, commented on, or its issue moved back to Ready on the board — is
+ * yoke's to work, not a person's. Outside project mode a parked PR is approved
+ * on the dashboard instead, so this is false there, as it is for `manual` PRs.
+ */
+export function awaitsHumanReview(
+  pullRequest: PullRequest,
+  snapshot: Pick<RepositorySnapshot, "issues" | "agentSessions">,
+  projectModeEnabled = false,
+): boolean {
+  if (!projectModeEnabled || pullRequest.state !== "open" || isManualPullRequest(pullRequest)) {
+    return false;
+  }
+  const issueNumbers = pullRequest.linkedIssueNumbers;
+  const sessions = getRelevantSessions(snapshot.agentSessions, issueNumbers, pullRequest.number);
+  if (sessions.some(isActiveSession)) return false;
+  if (pullRequest.draft || pullRequest.hasNewCommentsSinceLastRead || pullRequest.hasMergeConflicts) {
+    return false;
+  }
+  const latest = getLatestCompletedSession(sessions);
+  if (latest?.phase !== "request-review") return false;
+  // The issue the planner reads the board for: the one the request was made
+  // for, when the PR still links it, else the PR's first.
+  const issueNumber =
+    latest.issueNumber !== undefined && issueNumbers.includes(latest.issueNumber)
+      ? latest.issueNumber
+      : issueNumbers[0];
+  const status = snapshot.issues.find((issue) => issue.number === issueNumber)?.projectStatus;
+  return status?.toLowerCase() !== "ready";
+}
+
 /** Whether `sessions` (a PR's relevant sessions) hold a dashboard approval of it (#274). */
 function hasApproval(sessions: readonly AgentSession[]): boolean {
   return sessions.some((session) => session.phase === "approval" && session.status === "completed");

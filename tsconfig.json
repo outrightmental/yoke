@@ -45,6 +45,6 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
   },
-  "include": ["src/**/*.ts", "test/**/*.test.ts"],
+  "include": ["src/**/*.ts", "test/**/*.test.ts", "tools/**/*.ts"],
   "exclude": ["src/dashboard"]
 }

@@ -1,5 +1,6 @@
 {
-  // Dashboard-only tsconfig consumed by the esbuild bundle build.
+  // Dashboard-only tsconfig: consumed by the esbuild bundle build, and by
+  // `npm run typecheck:dashboard`, which type-checks the browser code.
   //
   // Lit installs reactive property accessors on the prototype from each
   // component's `static properties`. With `useDefineForClassFields: true`
@@ -11,9 +12,18 @@
   //
   // Setting this to false emits plain `this.connection = ...` assignments
   // that go through Lit's accessors, restoring reactivity.
+  //
+  // The root tsconfig leaves this directory out of its build, so only the
+  // files a test happened to import were ever type-checked. `exclude` is
+  // emptied here to undo that, `noEmit` keeps the check from writing anything
+  // (esbuild does the emitting), and `types` is emptied because this code
+  // runs in a browser, where Node's globals are not there to lean on.
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "useDefineForClassFields": false
+    "useDefineForClassFields": false,
+    "noEmit": true,
+    "types": []
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts"],
+  "exclude": []
 }

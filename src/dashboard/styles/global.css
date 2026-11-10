@@ -7,223 +7,97 @@
 }
 
 body {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--font-sans);
   background: var(--bg-dark);
   color: var(--trim);
   overflow: hidden;
   height: 100vh;
+  height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  /* Nothing on the page scrolls as a page, so nothing should rubber-band or
+     pull to refresh under a finger either. */
+  overscroll-behavior: none;
 }
 
+/* ── The shell ──
+   One canvas the size of the window, and three things laid over it: the
+   keep-awake lamp, the inbox down the right-hand edge, and the activity
+   drawer. There are no panels: what the run is doing is painted on the
+   canvas, and takes the room its state has earned (field/layout.ts). */
 yoke-app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-dark-alt) 100%);
-  position: relative;
+  position: fixed;
+  inset: 0;
+  display: block;
   overflow: hidden;
+  background: var(--bg-dark);
 }
 
-yoke-app::before {
-  content: '';
-  position: fixed;
-  top: 0;
-  left: 0;
+/* Clipped, not merely hidden: a hidden box can still be scrolled by script —
+   by anything asking to be scrolled into view — and the drawer, parked below
+   the bottom edge, gives it somewhere to scroll to. The whole picture would
+   then sit shifted up, with nothing on screen to scroll it back. */
+.shell {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  overflow: clip;
+}
+
+yoke-field {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.field-canvas {
+  display: block;
   width: 100%;
   height: 100%;
-  background: repeating-linear-gradient(
-    0deg,
-    rgba(var(--trim-rgb), 0.025) 0px,
-    rgba(var(--trim-rgb), 0.025) 1px,
-    transparent 1px,
-    transparent 2px
-  );
-  pointer-events: none;
-  z-index: -1;
-  animation: scanlines 8s linear infinite;
+  /* The field scrolls itself, with the finger and with the wheel. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-@keyframes scanlines {
-  0% { transform: translateY(0); }
-  100% { transform: translateY(10px); }
-}
-
-yoke-header { display: contents; }
-hold-banner { display: contents; }
-cylinder-engine { display: contents; }
-lifecycle-list  { display: contents; }
-broadcast-feed  { display: contents; }
-event-stream    { display: contents; }
-status-bar      { display: contents; }
-keep-awake-light { display: contents; }
-
-/* ── Hold banner (whole pool parked on a shared limit) ── */
-.hold-banner {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 24px;
-  background: rgba(var(--color-orange-rgb), 0.12);
-  border-bottom: 2px solid var(--color-orange);
-  box-shadow: 0 0 24px rgba(var(--color-orange-rgb), 0.35);
-  color: var(--color-orange);
-  z-index: 11;
-  flex-shrink: 0;
-  animation: holdPulse 2.4s ease-in-out infinite;
-}
-
-@keyframes holdPulse {
-  0%, 100% { box-shadow: 0 0 24px rgba(var(--color-orange-rgb), 0.35); }
-  50%      { box-shadow: 0 0 40px rgba(var(--color-orange-rgb), 0.6); }
-}
-
-.hold-banner-icon {
-  font-size: 26px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.hold-banner-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.hold-banner-headline {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  text-shadow: 0 0 12px rgba(var(--color-orange-rgb), 0.8);
-}
-
-.hold-banner-duration,
-.hold-banner-deadline {
-  font-size: 20px;
-  color: var(--color-yellow);
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 14px rgba(var(--color-yellow-rgb), 0.9);
-}
-
-.hold-banner-reason {
-  font-size: 11px;
-  letter-spacing: 1px;
-  color: rgba(255, 255, 255, 0.65);
-}
-
-/* ── Header ── */
-.header {
-  padding: 14px 24px;
-  border-bottom: 2px solid var(--trim);
-  box-shadow: 0 0 20px rgba(var(--trim-rgb), 0.3);
-  background: var(--bg-bar);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 20px;
-  z-index: 10;
-  flex-shrink: 0;
-}
-
-.header-title {
-  display: flex;
-  align-items: center;
-  font-size: 24px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 3px;
-  color: var(--trim-bright);
-  text-shadow: 0 0 10px rgba(var(--trim-rgb), 0.5);
-  /* Trim is gray (#280), and that includes the ⚡ the font draws in color. */
-  filter: grayscale(1);
-}
-
-.header-title span {
-  font-size: 0.5em;
-  font-weight: 300;
-  color: var(--trim-dim);
-  margin-left: 10px;
-  align-self: center;
-  letter-spacing: 2px;
-  vertical-align: middle;
-}
-
-.iteration-info {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-}
-
-.iteration-label {
-  font-size: 10px;
-  color: var(--trim-dim);
-  text-transform: uppercase;
-  letter-spacing: 2px;
-}
-
-.iteration-number {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--trim-bright);
-  text-shadow: 0 0 10px rgba(var(--trim-rgb), 0.5);
-  font-variant-numeric: tabular-nums;
-}
-
-.countdown {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 3px;
-}
-
-.countdown-label {
-  font-size: 10px;
-  color: var(--trim-dim);
-  text-transform: uppercase;
-  letter-spacing: 2px;
-}
-
-.countdown-timer {
-  margin-top: -6px !important;
-  margin-left: 6px !important;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--trim-bright);
-  text-shadow: 0 0 15px rgba(var(--trim-rgb), 0.6);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Only while a hold parks the whole pool (WAITING): the time to the next
-   cycle (NEXT) is plain trim. */
-.countdown.state-waiting .countdown-label {
-  color: var(--color-yellow);
-}
-
-.countdown.state-waiting .countdown-timer {
-  color: var(--color-yellow);
-  text-shadow: 0 0 15px rgba(var(--color-yellow-rgb), 0.8);
+/* Everything on the canvas, as markup, for a screen reader and the keyboard.
+   Out of sight, but not hidden: hidden content cannot take focus. */
+.field-mirror {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ── Keep-awake lamp (#246) ──
    The glow is a playing video, not CSS. An actively playing video is the only
    thing observed to stop a locked-down laptop sleeping mid-run, so the
-   Dashboard plays one for as long as it is open — in the corner, where the
-   buffoonery is on show rather than hidden offscreen. */
+   Dashboard plays one for as long as it is open — in the corner of the field,
+   beside its instruments, where the buffoonery is on show rather than hidden
+   offscreen. */
+keep-awake-light { display: contents; }
+
 .keep-awake {
-  /* The lamp is exactly as tall as the two text lines beside it (#250), so it
-     can never be the thing that sets the header's height. Both line boxes are
-     pinned rather than left to the font's natural leading, so that diameter is
-     arithmetic instead of a guess. */
+  /* The lamp is exactly as tall as the two text lines beside it (#250). Both
+     line boxes are pinned rather than left to the font's natural leading, so
+     that diameter is arithmetic instead of a guess — and matches the two
+     lines of every instrument the canvas draws to its left. */
   --keep-awake-label-line: 12px;
-  --keep-awake-state-line: 26px;
+  --keep-awake-state-line: 22px;
   --keep-awake-text-gap: 2px;
   --keep-awake-lamp-size: calc(
     var(--keep-awake-label-line) + var(--keep-awake-text-gap) + var(--keep-awake-state-line)
   );
+  position: absolute;
+  top: 14px;
+  right: calc(var(--rail-w, 0px) + 28px);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  transition: right 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .keep-awake-text {
@@ -231,33 +105,33 @@ keep-awake-light { display: contents; }
   flex-direction: column;
   align-items: flex-end;
   gap: var(--keep-awake-text-gap);
+  font-family: var(--font-mono);
 }
 
 .keep-awake-label {
-  font-size: 10px;
+  font-size: 9.5px;
+  font-weight: 500;
   line-height: var(--keep-awake-label-line);
   color: var(--trim-dim);
   text-transform: uppercase;
-  letter-spacing: 2px;
+  letter-spacing: 1.8px;
+  white-space: nowrap;
 }
 
 .keep-awake-state {
-  font-size: 22px;
+  font-size: 17px;
   line-height: var(--keep-awake-state-line);
   font-weight: 700;
-  letter-spacing: 3px;
+  letter-spacing: 2px;
   color: var(--trim-bright);
-  text-shadow: 0 0 12px rgba(var(--trim-rgb), 0.5);
 }
 
-/* As big as the header's own text rows allow, and no bigger (#250): a lamp
-   taller than the text beside it drags the whole header taller, which it used
-   to do at 104px even with a negative margin overhanging the padding. What a
+/* As big as the text rows beside it allow, and no bigger (#250). What a
    browser wants before it holds the system screen wake lock is a video it
    considers properly visible — playing, on screen, unclipped, not hidden or
    scrolled away — rather than a video of any particular bulk, so the loop
-   stays fully on show at the height the header already has, and the Screen
-   Wake Lock API request in keep-awake.ts backs it up where it is allowed. */
+   stays fully on show, and the Screen Wake Lock API request in keep-awake.ts
+   backs it up where it is allowed. */
 .keep-awake-lamp {
   width: var(--keep-awake-lamp-size);
   height: var(--keep-awake-lamp-size);
@@ -266,7 +140,7 @@ keep-awake-light { display: contents; }
   overflow: hidden;
   background: var(--bg-dark);
   border: 2px solid rgba(var(--trim-rgb), 0.6);
-  box-shadow: 0 0 14px rgba(var(--trim-rgb), 0.5), inset 0 0 8px rgba(var(--trim-rgb), 0.3);
+  box-shadow: 0 0 14px rgba(var(--trim-rgb), 0.4), inset 0 0 8px rgba(var(--trim-rgb), 0.3);
 }
 
 .keep-awake-video {
@@ -280,7 +154,6 @@ keep-awake-light { display: contents; }
 
 .keep-awake.is-blocked .keep-awake-state {
   color: var(--color-yellow);
-  text-shadow: 0 0 10px rgba(var(--color-yellow-rgb), 0.8);
 }
 
 .keep-awake.is-blocked .keep-awake-lamp {
@@ -290,275 +163,10 @@ keep-awake-light { display: contents; }
   filter: grayscale(0.7) brightness(0.55);
 }
 
-/* ── Claude usage gauge (#254) ──
-   One more instrument on the panel: how much of the account's rolling 5-hour
-   window is used, and how long until it resets. Same pinned line boxes as the
-   keep-awake lamp beside it, so it can never make the header taller. */
-.usage-gauge {
-  --usage-label-line: 12px;
-  --usage-value-line: 26px;
-  --usage-text-gap: 2px;
-  /* A reading with room to spare is plain trim; only nearing the limit (warn,
-     critical) takes on a status color. */
-  --usage-tone: var(--trim-bright);
-  --usage-glow: rgba(var(--trim-rgb), 0.5);
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  cursor: default;
-}
-
-.usage-gauge.tone-warn {
-  --usage-tone: var(--color-yellow);
-  --usage-glow: rgba(var(--color-yellow-rgb), 0.8);
-}
-
-.usage-gauge.tone-critical {
-  --usage-tone: var(--color-red);
-  --usage-glow: rgba(var(--color-red-rgb), 0.9);
-}
-
-/* No trustworthy reading — not configured, unreachable or stale. Dark, like an
-   instrument with no power, rather than a number that might be wrong. */
-.usage-gauge.tone-unknown {
-  --usage-tone: rgba(255, 255, 255, 0.35);
-  --usage-glow: transparent;
-}
-
-.usage-gauge-reading {
-  display: flex;
-  flex-direction: column;
-  gap: var(--usage-text-gap);
-}
-
-.usage-gauge-label {
-  font-size: 10px;
-  line-height: var(--usage-label-line);
-  color: var(--trim-dim);
-  text-transform: uppercase;
-  letter-spacing: 2px;
-}
-
-.usage-gauge-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.usage-gauge-value {
-  min-width: 4ch;
-  font-size: 22px;
-  line-height: var(--usage-value-line);
-  font-weight: 700;
-  color: var(--usage-tone);
-  text-shadow: 0 0 12px var(--usage-glow);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.usage-gauge-reading:last-child .usage-gauge-value {
-  min-width: 7ch;
-}
-
-.usage-gauge-meter {
-  width: 64px;
-  height: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 2px;
-  background: var(--bg-dark);
-  overflow: hidden;
-}
-
-.usage-gauge-fill {
-  width: var(--usage-fill, 0%);
-  height: 100%;
-  background: var(--usage-tone);
-  box-shadow: 0 0 8px var(--usage-glow);
-  transition: width 0.6s ease;
-}
-
-/* ── Main layout ── */
-.main-content {
-  flex: 1;
-  display: flex;
-  gap: 14px;
-  padding: 14px 20px;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.panel {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-panel);
-  border: 2px solid rgba(var(--trim-rgb), 0.3);
-  border-radius: 4px;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.panel-a {
-  width: 280px;
-  flex-shrink: 0;
-  border-color: rgba(var(--trim-rgb), 0.5);
-  box-shadow: 0 0 24px rgba(var(--trim-rgb), 0.08), inset 0 0 16px rgba(var(--trim-rgb), 0.03);
-}
-
-.panel-b {
-  flex: 2;
-  min-width: 0;
-}
-
-.panel-c {
-  flex: 1;
-  min-width: 180px;
-  background: var(--bg-panel);
-  border: 2px solid var(--trim);
-  border-radius: 4px;
-  box-shadow: 0 0 20px rgba(var(--trim-rgb), 0.2), inset 0 0 20px rgba(var(--trim-rgb), 0.05);
-}
-
-.panel-header {
-  padding: 9px 14px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  color: var(--trim);
-  border-bottom: 1px solid rgba(var(--trim-rgb), 0.25);
-  text-shadow: 0 0 8px rgba(var(--trim-rgb), 0.5);
-  flex-shrink: 0;
-  background: rgba(var(--trim-rgb), 0.03);
-  /* Gray emoji too (⚡ 📡 📋): a panel header is trim (#280). */
-  filter: grayscale(1);
-}
-
-.panel-b .panel-header span {
-  font-size: 10px;
-  color: rgba(var(--trim-rgb), 0.6);
-  margin-left: 8px;
-}
-
-.panel-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 12px;
-}
-
-.panel-c .panel-body {
-  padding: 10px;
-}
-
-.panel-body::-webkit-scrollbar {
-  width: 8px;
-}
-
-.panel-body::-webkit-scrollbar-track {
-  background: rgba(var(--trim-rgb), 0.1);
-}
-
-.panel-body::-webkit-scrollbar-thumb {
-  background: rgba(var(--trim-rgb), 0.5);
-  border-radius: 4px;
-}
-
-/* ── Lifecycle container ── */
-.lifecycle-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.lifecycle-content {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 52px;
-  overflow-x: hidden;
-}
-
-.lifecycle-empty {
-  font-size: 11px;
-  color: rgba(var(--trim-rgb), 0.4);
-  letter-spacing: 1px;
-  align-self: center;
-  padding: 10px 0;
-}
-
-/* ── Event log section ── */
-.event-log-section {
-  padding: 0 20px 8px 20px;
-  height: 140px;
-  flex-shrink: 0;
-}
-
-.panel-d {
-  height: 100%;
-  border-color: rgba(var(--trim-rgb), 0.2);
-}
-
-/* ── Status bar ── */
-.status-bar {
-  padding: 10px 24px;
-  border-top: 2px solid rgba(var(--trim-rgb), 0.4);
-  background: var(--bg-bar);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
-  z-index: 10;
-  font-size: 11px;
-  flex-shrink: 0;
-}
-
-.status-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.status-indicator {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--trim);
-  box-shadow: 0 0 5px rgba(var(--trim-rgb), 0.8);
-}
-
-.status-indicator.active {
-  animation: blink 1s ease-in-out infinite;
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.3; }
-}
-
-.stats { display: flex; gap: 20px; flex-wrap: wrap; }
-.stat  { display: flex; gap: 8px; }
-.stat-value { font-weight: 700; color: var(--trim-bright); }
-
-.connection-status {
-  padding: 4px 10px;
-  border-radius: 2px;
-  background: rgba(var(--trim-rgb), 0.12);
-  border: 1px solid rgba(var(--trim-rgb), 0.4);
-}
-
-.connection-status.disconnected {
-  background: rgba(var(--color-red-rgb), 0.12);
-  border-color: var(--color-red);
-  color: var(--color-red);
-}
-
-.connection-status.shutdown {
-  background: rgba(var(--color-orange-rgb), 0.12);
-  border-color: var(--color-orange);
-  color: var(--color-orange);
+/* Too narrow for the words: the lamp alone still says it is lit. */
+@media (max-width: 699px) {
+  .keep-awake { right: calc(var(--rail-w, 0px) + 14px); }
+  .keep-awake-text { display: none; }
 }
 
 /* ── GitHub links ── */
@@ -576,7 +184,6 @@ a.gh-link:hover {
 /* ── Misc ── */
 .hidden { display: none !important; }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-4px); }
-  to   { opacity: 1; transform: translateX(0); }
+@media (prefers-reduced-motion: reduce) {
+  .keep-awake { transition: none; }
 }

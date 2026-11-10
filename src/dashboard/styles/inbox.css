@@ -1,0 +1,488 @@
+/* ── The inbox ──
+   Every interaction the dashboard offers, down the right-hand edge of the
+   screen, top to bottom. It is laid out for a finger: each target is at least
+   44 pixels tall and the one that matters on a card is 56, nothing is revealed
+   by hovering, and nothing here is reached for across the picture. */
+yoke-inbox { display: contents; }
+
+.inbox {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--panel-w, 68px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 12px 6px;
+  z-index: 3;
+  /* A scrim, not a panel: the field's light carries on underneath it, and the
+     lines from the field to the cards arrive through its soft edge. */
+  background: linear-gradient(
+    to right,
+    rgba(var(--bg-dark-rgb), 0) 0,
+    rgba(var(--bg-dark-rgb), 0.86) 22px,
+    rgba(var(--bg-dark-rgb), 0.94) 100%
+  );
+  transition: width 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Over the field, on a narrow screen: solid, since what is under it is no
+   longer beside it to be read. */
+.inbox.is-overlay.is-open {
+  background: var(--bg-dark);
+  box-shadow: -28px 0 56px rgba(0, 0, 0, 0.55);
+  padding-left: 12px;
+}
+
+.inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding-left: 14px;
+  flex-shrink: 0;
+}
+
+/* How many cards there are. A button too: on a narrow screen it opens the
+   inbox over the field, and closes it again. */
+.inbox-badge {
+  flex-shrink: 0;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 22px;
+  border: 1px solid rgba(var(--trim-rgb), 0.3);
+  background: transparent;
+  color: var(--trim);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.inbox-badge.has-cards {
+  background: var(--trim-bright);
+  border-color: transparent;
+  color: var(--bg-dark);
+}
+
+.inbox.is-overlay .inbox-badge { cursor: pointer; }
+
+.inbox-heading {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2.4px;
+  text-transform: uppercase;
+  color: var(--trim-bright);
+}
+
+.inbox-summary {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--trim-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Folded away: the count, and the Log button, in a strip one button wide. */
+.inbox.is-closed {
+  padding: 12px;
+  align-items: center;
+  background: none;
+}
+
+.inbox.is-closed .inbox-head { padding-left: 0; }
+
+.inbox.is-closed .inbox-heading,
+.inbox.is-closed .inbox-summary,
+.inbox.is-closed .inbox-list,
+.inbox.is-closed .inbox-inspector,
+.inbox.is-closed .inbox-log-word { display: none; }
+
+.inbox.is-closed .inbox-foot { margin-top: auto; }
+
+.inbox-list {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Room on the left for the lines from the field to arrive in. */
+  padding: 2px 2px 10px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--trim-rgb), 0.3) transparent;
+}
+
+.inbox-empty {
+  padding: 4px 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--trim-dim);
+}
+
+/* ── A card ── */
+.inbox-card {
+  --card-color: var(--trim-dim);
+  --card-rgb: var(--trim-rgb);
+  position: relative;
+  flex-shrink: 0;
+  padding: 12px 14px 12px 18px;
+  border-radius: 14px;
+  background: rgba(var(--trim-rgb), 0.055);
+  box-shadow: inset 0 0 0 1px rgba(var(--trim-rgb), 0.09);
+  animation: cardArrive 0.34s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+@keyframes cardArrive {
+  from { opacity: 0; transform: translateX(18px); }
+}
+
+/* The bar down its left edge is the color of the work it is about, at that
+   work's burn level: the same color the field draws the work in. */
+.inbox-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--card-color);
+}
+
+.inbox-card.accent-warning { --card-color: var(--color-yellow); --card-rgb: var(--color-yellow-rgb); }
+.inbox-card.accent-alarm { --card-color: var(--color-coral); --card-rgb: var(--color-coral-rgb); }
+
+/* A failure keeps its work's color down its edge, so it can be matched to
+   the work on the field, and says what it is in the color of a problem. */
+.inbox-card.accent-alarm .inbox-eyebrow { color: var(--color-coral); }
+
+.inbox-card.is-selected {
+  background: rgba(var(--trim-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--trim-rgb), 0.34);
+}
+
+.inbox-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.inbox-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--card-color);
+  white-space: nowrap;
+}
+
+.inbox-repo {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--trim-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inbox-title {
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.34;
+  color: var(--trim-bright);
+  /* Three lines is enough to know which PR it is; the rest is on GitHub. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.inbox-body {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--trim);
+  overflow-wrap: anywhere;
+}
+
+/* Under the title: the links to GitHub, and the facts beside them. */
+.inbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.inbox-facts {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--trim-dim);
+  padding-left: 2px;
+}
+
+/* ── The one thing a card does ── */
+.inbox-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  margin-top: 10px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 2.2px;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.08s ease;
+}
+
+.inbox-action:active:not(:disabled) { transform: scale(0.985); }
+
+/* Approve, unpressed: the brightest thing in the inbox, and trim gray — it is
+   chrome until it is pressed, and green only while the approval goes through
+   (#280). The same width and height in every step, so pressing it and
+   following the approval never move anything (#276). */
+.inbox-action.approve.idle,
+.inbox-action.wake {
+  background: var(--trim-bright);
+  color: var(--bg-dark);
+}
+
+.inbox-action.approve.idle:hover:not(:disabled),
+.inbox-action.wake:hover {
+  background: #ffffff;
+}
+
+.inbox-action:disabled { cursor: not-allowed; }
+
+/* Greyed out only when it cannot be pressed (failing checks): once pressed it
+   stays lit, whatever the approval is waiting on (#278). */
+.inbox-action.approve:is(.idle, .retry):disabled {
+  background: rgba(var(--trim-rgb), 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.36);
+}
+
+/* Pressed, and waiting for an engine to carry it out: lit at once, and
+   breathing slowly for as long as it waits. */
+.inbox-action.approve.queued {
+  background: rgba(var(--color-green-rgb), 0.12);
+  border-color: var(--color-green);
+  color: var(--color-green);
+  cursor: default;
+  animation: approvalQueued 2.4s ease-in-out infinite;
+}
+
+/* An engine is carrying it out. */
+.inbox-action.approve.approving {
+  background: rgba(var(--color-green-rgb), 0.26);
+  border-color: var(--color-green);
+  color: var(--color-green);
+  cursor: default;
+  box-shadow: 0 0 18px rgba(var(--color-green-rgb), 0.35);
+  animation: approvalCarriedOut 1s ease-in-out infinite;
+}
+
+.inbox-action.approve.merged {
+  background: rgba(var(--color-green-rgb), 0.4);
+  border-color: var(--color-green);
+  color: #ffffff;
+  cursor: default;
+}
+
+/* Yoke refused the press, or it failed: the line says why. */
+.inbox-action.approve.retry:not(:disabled) {
+  border-color: rgba(var(--color-coral-rgb), 0.8);
+  color: var(--color-coral);
+}
+
+.inbox-action.approve.retry:hover:not(:disabled) {
+  background: rgba(var(--color-coral-rgb), 0.14);
+  border-color: var(--color-coral);
+}
+
+.inbox-action.open {
+  border-color: rgba(var(--trim-rgb), 0.45);
+  color: var(--trim-bright);
+}
+
+.inbox-action.open:hover {
+  background: rgba(var(--trim-rgb), 0.12);
+  border-color: var(--trim-bright);
+}
+
+@keyframes approvalQueued {
+  0%, 100% { opacity: 0.72; }
+  50%       { opacity: 1; }
+}
+
+@keyframes approvalCarriedOut {
+  0%, 100% { opacity: 0.78; }
+  50%       { opacity: 1; }
+}
+
+/* What the approval is doing, or why it did not go through (#276). Always
+   there, empty or not, so a screen reader announces each change to it. */
+.inbox-line {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--trim);
+  overflow-wrap: anywhere;
+}
+
+.inbox-line:empty { display: none; }
+.inbox-line.approved { color: var(--color-green); }
+.inbox-line.problem { color: var(--color-coral); }
+
+.inbox-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  border: 1px solid rgba(var(--trim-rgb), 0.22);
+  color: var(--trim);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-decoration: none;
+  white-space: nowrap;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.inbox-link:hover {
+  background: rgba(var(--trim-rgb), 0.1);
+  border-color: rgba(var(--trim-rgb), 0.5);
+  color: var(--trim-bright);
+}
+
+.inbox-out { opacity: 0.7; }
+
+.inbox-dismiss {
+  margin: -10px -8px -10px auto;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 22px;
+  background: transparent;
+  color: var(--trim-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.inbox-repo + .inbox-dismiss { margin-left: 0; }
+
+.inbox-dismiss:hover {
+  background: rgba(var(--trim-rgb), 0.12);
+  color: var(--trim-bright);
+}
+
+/* ── The inspector: what was tapped on the field, said in full ── */
+.inbox-inspector {
+  margin-left: 14px;
+  max-height: 46%;
+  overflow-y: auto;
+  background: rgba(var(--trim-rgb), 0.09);
+  box-shadow: inset 0 0 0 1px rgba(var(--trim-rgb), 0.24);
+}
+
+/* ── The foot: the way to the activity log ── */
+.inbox-foot {
+  flex-shrink: 0;
+  padding-left: 14px;
+}
+
+.inbox.is-closed .inbox-foot { padding-left: 0; }
+
+.inbox-log {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 44px;
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--trim-rgb), 0.22);
+  background: transparent;
+  color: var(--trim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2.2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+/* Three lines of a log, for when there is no room for the word. */
+.inbox-log::before {
+  content: '';
+  display: none;
+  width: 18px;
+  height: 12px;
+  background:
+    linear-gradient(currentColor, currentColor) 0 0 / 100% 2px no-repeat,
+    linear-gradient(currentColor, currentColor) 0 5px / 70% 2px no-repeat,
+    linear-gradient(currentColor, currentColor) 0 10px / 86% 2px no-repeat;
+}
+
+.inbox.is-closed .inbox-log { width: 44px; padding: 0; }
+.inbox.is-closed .inbox-log::before { display: block; }
+
+.inbox-log:hover,
+.inbox-log.is-on {
+  background: rgba(var(--trim-rgb), 0.12);
+  border-color: rgba(var(--trim-rgb), 0.5);
+  color: var(--trim-bright);
+}
+
+.inbox :is(button, a):focus-visible {
+  outline: 2px solid var(--trim-bright);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox,
+  .inbox-card,
+  .inbox-action { transition: none; animation: none; }
+}

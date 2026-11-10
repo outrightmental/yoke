@@ -6,9 +6,11 @@ import {
   usageGaugeView,
   usageLimitUntilMs,
 } from "../src/dashboard/shared/usage-gauge.js";
-import type { AccountUsage } from "../src/dashboard/store/types.js";
-import { YokeHeader } from "../src/dashboard/components/yoke-header.js";
+import type { AccountUsage, DashboardState } from "../src/dashboard/store/types.js";
+import { inspect } from "../src/dashboard/shared/inbox.js";
+import { initialState } from "../src/dashboard/store/dashboard-store.js";
 import { formatClockTime } from "../src/dashboard/shared/format.js";
+import { paintField, tokensPalette, triplet } from "./dashboard-helpers.js";
 
 const NOW = Date.parse("2026-10-12T14:30:00Z");
 const MINUTE = 60_000;
@@ -35,21 +37,28 @@ function heldReading(fiveHourPercent: number, overrides: Partial<AccountUsage> =
   });
 }
 
-/** A Lit TemplateResult flattened to the markup it describes. */
-function flatten(value: unknown): string {
-  if (value === null || value === undefined || typeof value === "symbol") return "";
-  if (Array.isArray(value)) return value.map(flatten).join("");
-  if (typeof value === "object" && "strings" in value && "values" in value) {
-    const { strings, values } = value as { strings: readonly string[]; values: readonly unknown[] };
-    return strings.reduce((out, s, i) => out + s + (i < values.length ? flatten(values[i]) : ""), "");
-  }
-  return String(value);
+const PALETTE = tokensPalette();
+const TAU = Math.PI * 2;
+
+/** The dashboard's state for the field's instruments, with `props` over a quiet, connected run. */
+function hudState(props: Partial<DashboardState> = {}): DashboardState {
+  return { ...initialState(), connection: "connected", owner: "o", repo: "r", ...props };
 }
 
-function renderHeader(props: Partial<YokeHeader> = {}): string {
-  const header = new YokeHeader();
-  Object.assign(header, { owner: "o", repo: "r" }, props);
-  return flatten(header.render()).replace(/\s+/g, " ");
+/** The field for `props`, painted as it stands at `nowMs`, and what tapping its usage gauge says. */
+function renderHud(props: Partial<DashboardState> = {}, nowMs = Date.now()) {
+  const painted = paintField(hudState(props), { nowMs });
+  const said = inspect({ kind: "usage" }, {
+    works: painted.model.works,
+    engines: painted.model.bench,
+    usageTitle: painted.model.vitals.usage.title,
+    hold: painted.model.vitals.hold,
+  });
+  /** How far round the gauge's ring is filled, as a fraction of the whole; 0 when no arc was drawn. */
+  const sweeps = painted.calls
+    .filter((call) => call.method === "arc" && call.args[2] === 14)
+    .map((call) => (Number(call.args[4]) - Number(call.args[3])) / TAU);
+  return { ...painted, said: said?.body.join(" ") ?? "", filled: sweeps.find((sweep) => sweep < 0.9999) ?? (sweeps.length > 1 ? 1 : 0) };
 }
 
 /** Run `fn` as a browser whose time zone is `timeZone`: Node renders local times in process.env.TZ. */
@@ -261,20 +270,20 @@ test("usageLimitUntilMs: only the Claude usage-limit hold reaches the usage gaug
   assert.equal(usageLimitUntilMs({ kind: "github-rate-limit", reason: "GitHub rate limit", untilMs: NOW + HOUR }), null);
 });
 
-// ── <yoke-header> rendering ──────────────────────────────────────────────────
+// ── the field's instruments ──────────────────────────────────────────────────
 
-test("yoke-header always renders the usage gauge, dark until the first reading", () => {
-  const markup = renderHeader();
-  assert.match(markup, /class="usage-gauge tone-unknown"/);
-  assert.match(markup, /title="Claude usage: waiting for the first reading"/);
-  assert.match(markup, /<div class="usage-gauge-label">CLAUDE 5H<\/div>/);
-  assert.match(markup, /<div class="usage-gauge-label">RESETS IN<\/div>/);
-  assert.match(markup, /<div class="usage-gauge-value">—<\/div>/);
-  assert.match(markup, /--usage-fill:0%/);
+test("the field always draws the usage gauge, dark until the first reading", () => {
+  const hud = renderHud();
+  assert.ok(hud.texts.includes("CLAUDE 5H"));
+  assert.ok(hud.texts.includes("RESETS IN"));
+  assert.equal(hud.texts.filter((text) => text === "—").length, 2, "no percent and no countdown, said so");
+  assert.ok((hud.inkOf("—")?.alpha ?? 1) < 0.5, "dark, like an instrument with no power");
+  assert.equal(hud.filled, 0, "an empty ring");
+  assert.equal(hud.said, "Claude usage: waiting for the first reading", "and a tap on it says why");
 });
 
-test("yoke-header shows the gauge OFF when no usage token is configured", () => {
-  const markup = renderHeader({
+test("the field shows the gauge OFF when no usage token is configured", () => {
+  const hud = renderHud({
     usage: {
       status: "unconfigured",
       fiveHourPercent: null,
@@ -283,14 +292,14 @@ test("yoke-header shows the gauge OFF when no usage token is configured", () => 
       reason: "set anthropic_usage_token in env.yaml to show live Claude usage",
     },
   });
-  assert.match(markup, /class="usage-gauge tone-unknown"/);
-  assert.match(markup, /<div class="usage-gauge-value">OFF<\/div>/);
-  assert.match(markup, /title="Claude usage is off: set anthropic_usage_token in env\.yaml/);
+  assert.ok(hud.texts.includes("OFF"));
+  assert.ok((hud.inkOf("OFF")?.alpha ?? 1) < 0.5);
+  assert.match(hud.said, /^Claude usage is off: set anthropic_usage_token in env\.yaml/);
 });
 
-test("yoke-header shows a live reading's percent, meter and reset countdown", () => {
+test("the field shows a live reading's percent, ring and reset countdown", () => {
   const now = Date.now();
-  const markup = renderHeader({
+  const hud = renderHud({
     usage: {
       status: "ok",
       fiveHourPercent: 92,
@@ -299,15 +308,21 @@ test("yoke-header shows a live reading's percent, meter and reset countdown", ()
       reason: "",
     },
   });
-  assert.match(markup, /class="usage-gauge tone-critical"/);
-  assert.match(markup, /<div class="usage-gauge-value">92%<\/div>/);
-  assert.match(markup, /--usage-fill:92%/);
-  assert.match(markup, /<div class="usage-gauge-value">2h 14m<\/div>/);
+  assert.deepEqual(hud.inkOf("92%"), { rgb: triplet(PALETTE.red), alpha: 1 }, "red past 90%");
+  assert.ok(Math.abs(hud.filled - 0.92) < 0.001, "the ring is filled as far as the window is used");
+  assert.ok(hud.texts.includes("2h 14m"));
 });
 
-test("yoke-header keeps showing the last good reading when the latest read failed (#261)", () => {
+test("the field's gauge turns amber at 70% and is plain trim below it", () => {
   const now = Date.now();
-  const markup = renderHeader({
+  const reading = (percent: number) => renderHud({ usage: okReading(percent, { fetchedAtMs: now, resetsAtMs: now + HOUR }) });
+  assert.equal(reading(37).inkOf("37%")?.rgb, triplet(PALETTE.trimBright), "room to spare is not a signal");
+  assert.equal(reading(71).inkOf("71%")?.rgb, triplet(PALETTE.yellow));
+});
+
+test("the field keeps showing the last good reading when the latest read failed (#261)", () => {
+  const now = Date.now();
+  const hud = renderHud({
     usage: {
       status: "unavailable",
       fiveHourPercent: 15,
@@ -317,19 +332,17 @@ test("yoke-header keeps showing the last good reading when the latest read faile
       heldFromMs: now - MINUTE,
     },
   });
-  assert.match(markup, /class="usage-gauge tone-ok"/);
-  assert.match(markup, /<div class="usage-gauge-value">15%<\/div>/);
-  assert.match(markup, /--usage-fill:15%/);
-  assert.match(markup, /<div class="usage-gauge-value">2h 14m<\/div>/);
-  assert.match(markup, /title="Claude usage: 15% of the 5-hour window used as of .* · the latest reading failed: Anthropic is overloaded \(HTTP 529\)"/);
+  assert.deepEqual(hud.inkOf("15%"), { rgb: triplet(PALETTE.trimBright), alpha: 1 });
+  assert.ok(Math.abs(hud.filled - 0.15) < 0.001);
+  assert.ok(hud.texts.includes("2h 14m"));
+  assert.match(hud.said, /^Claude usage: 15% of the 5-hour window used as of .* · the latest reading failed: Anthropic is overloaded \(HTTP 529\)$/);
 });
 
-test("yoke-header shows LIMIT and the reset countdown while a Claude usage-limit hold parks the pool", () => {
+test("the field shows LIMIT and the reset countdown while a Claude usage-limit hold parks the pool", () => {
   const now = Date.now();
   const untilMs = now + 1 * HOUR + 41 * MINUTE + 30_000;
-  const markup = renderHeader({
-    holdUntilMs: untilMs,
-    usageLimitUntilMs: untilMs,
+  const hud = renderHud({
+    hold: { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs },
     usage: {
       status: "unavailable",
       fiveHourPercent: null,
@@ -338,26 +351,38 @@ test("yoke-header shows LIMIT and the reset countdown while a Claude usage-limit
       reason: "could not reach the Anthropic usage endpoint",
     },
   });
-  assert.match(markup, /<div class="countdown-label">WAITING<\/div>/);
-  assert.match(markup, /class="countdown state-waiting"/, "a hold colors the countdown; the time to the next cycle is trim (#280)");
-  assert.match(markup, /class="usage-gauge tone-critical"/);
-  assert.match(markup, /<div class="usage-gauge-value">LIMIT<\/div>/);
-  assert.match(markup, /--usage-fill:100%/);
-  assert.match(markup, /<div class="usage-gauge-value">1h 41m<\/div>/);
-  assert.match(markup, /title="Claude usage limit reached — work resumes /);
+  assert.equal(hud.model.vitals.countdown?.label, "WAITING");
+  // "WAITING" is drawn twice — on the hold itself, in orange, and above the countdown, in yellow.
+  const waiting = hud.fills.filter((fill) => fill.text === "WAITING").map((fill) => fill.fill);
+  assert.ok(waiting.some((fill) => fill.includes(triplet(PALETTE.yellow))), "a hold colors the countdown; the time to the next cycle is trim (#280)");
+  assert.deepEqual(hud.inkOf("LIMIT"), { rgb: triplet(PALETTE.red), alpha: 1 });
+  assert.equal(hud.filled, 1, "the ring is full");
+  assert.equal(hud.texts.filter((text) => text === "1h 41m").length, 2, "the countdown, and the gauge's time to reset");
+  assert.match(hud.said, /^Claude usage limit reached — work resumes /);
 });
 
-test("yoke-header puts the gauge in the upper-right cluster, before the keep-awake lamp", () => {
+test("the time to the next cycle is plain trim: only a hold colors the countdown (#280)", () => {
   const now = Date.now();
-  const markup = renderHeader({
-    iteration: 12,
-    nextCycleAtMs: now + 5 * MINUTE,
+  const hud = renderHud({
+    cylinders: initialState().cylinders.map((cyl, i) => (i === 0 ? { ...cyl, iterationNumber: 12, nextCycleAtMs: now + 5 * MINUTE } : cyl)),
+  }, now);
+  assert.equal(hud.inkOf("NEXT")?.rgb, triplet(PALETTE.trimDim));
+  assert.equal(hud.inkOf("5m 0s")?.rgb, triplet(PALETTE.trimBright));
+});
+
+test("the field sets the gauge at its upper right, before the keep-awake lamp: CYCLE · NEXT · usage · lamp", () => {
+  const now = Date.now();
+  const hud = renderHud({
+    cylinders: initialState().cylinders.map((cyl, i) => (i === 0 ? { ...cyl, iterationNumber: 12, nextCycleAtMs: now + 5 * MINUTE } : cyl)),
     usage: okReading(37, { fetchedAtMs: now, resetsAtMs: now + HOUR }),
   });
-  const cycle = markup.indexOf('class="iteration-info"');
-  const countdown = markup.indexOf('class="countdown"');
-  const gauge = markup.indexOf('class="usage-gauge tone-ok"');
-  const lamp = markup.indexOf("<keep-awake-light></keep-awake-light>");
-  assert.ok(cycle >= 0 && countdown >= 0 && gauge >= 0 && lamp >= 0, markup);
-  assert.ok(cycle < countdown && countdown < gauge && gauge < lamp, "CYCLE · NEXT · usage · lamp");
+  const { slots } = hud.layout.hud;
+  assert.deepEqual(slots.map((slot) => slot.kind), ["cycle", "countdown", "usage"]);
+  for (let i = 1; i < slots.length; i++) {
+    assert.ok(slots[i]!.rect.x >= slots[i - 1]!.rect.x + slots[i - 1]!.rect.w, "left to right, none over another");
+  }
+  const usage = slots[slots.length - 1]!.rect;
+  const fieldRight = hud.layout.field.x + hud.layout.field.w;
+  assert.equal(usage.x + usage.w, fieldRight - hud.layout.viewport.lampWidth, "the lamp has the corner to itself");
+  assert.ok(hud.texts.includes("CYCLE") && hud.texts.includes("12"));
 });

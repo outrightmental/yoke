@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BroadcastEventData, CylinderState, EventLine, LifecyclePair } from "../src/dashboard/store/types.js";
+import type { BroadcastEventData, EventLine, LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
-import { StatusBar } from "../src/dashboard/components/status-bar.js";
-import { LifecycleList } from "../src/dashboard/components/lifecycle-list.js";
 import { EventStream } from "../src/dashboard/components/event-stream.js";
 import { BroadcastEventCard } from "../src/dashboard/components/broadcast-event-card.js";
+import { parseColor, readPalette } from "../src/dashboard/field/palette.js";
+import { withoutColorEmoji } from "../src/dashboard/field/text.js";
+import { workViews } from "../src/dashboard/shared/work-view.js";
+import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
+import { cylinder, flatten, makeEvent, paintField, parseRgba, stateWith, tokensPalette, tokenStyle, triplet } from "./dashboard-helpers.js";
 
 // The dashboard's trim is hue-free gray and its saturated colors mean live
 // computing burn (issue #280). These guard the split: the trim tokens have no
@@ -72,16 +75,6 @@ function dashboardSources(dir = DASHBOARD): string[] {
   });
 }
 
-function flatten(value: unknown): string {
-  if (value === null || value === undefined || typeof value === "symbol") return "";
-  if (Array.isArray(value)) return value.map(flatten).join("");
-  if (typeof value === "object" && "strings" in value && "values" in value) {
-    const { strings, values } = value as { strings: readonly string[]; values: readonly unknown[] };
-    return strings.reduce((out, s, i) => out + s + (i < values.length ? flatten(values[i]) : ""), "");
-  }
-  return String(value);
-}
-
 test("trim and background tokens are fully desaturated: r = g = b, no hue at all", () => {
   const all = tokens();
   const trim = [...all].filter(([name]) => name.startsWith("trim") || name.startsWith("bg-"));
@@ -124,30 +117,113 @@ test("nothing else in the dashboard brings a saturated color of its own", () => 
 test("the base UI is not green: green is a status signal, never trim", () => {
   const css = withoutComments(readFileSync(GLOBAL_CSS, "utf-8"));
   assert.doesNotMatch(css, /--color-green/, "global.css styles structure, which is gray");
+  assert.doesNotMatch(withoutComments(readFileSync(join(DASHBOARD, "styles", "drawer.css"), "utf-8")), /--color-/, "as is the drawer");
   const body = /^body\s*\{([^}]*)\}/m.exec(css)?.[1] ?? "";
   assert.match(body, /color:\s*var\(--trim\);/, "body text is trim gray");
 });
 
-test("the status bar marks a shutdown with a class, not an inline color", () => {
-  const bar = new StatusBar();
-  Object.assign(bar, { appShutdown: true });
-  const markup = flatten(bar.render());
-  assert.match(markup, /class="connection-status shutdown"/);
-  assert.doesNotMatch(markup, /style=/);
-  const css = readFileSync(GLOBAL_CSS, "utf-8");
-  const rule = /^\.connection-status\.shutdown\s*\{([^}]*)\}/m.exec(css)?.[1] ?? "";
-  assert.match(rule, /color:\s*var\(--color-orange\);/, "shut down reads orange, like the shut-down cylinders");
+test("the stylesheets keep green for the one place it is a signal: an approval going through", () => {
+  for (const file of dashboardSources().filter((path) => path.endsWith(".css") && path !== TOKENS_CSS)) {
+    const css = withoutComments(readFileSync(file, "utf-8"));
+    for (const [, selectors] of css.matchAll(/([^{}]+)\{[^{}]*--color-green[^{}]*\}/g)) {
+      assert.match(
+        selectors!,
+        /\.approve\.(queued|approving|merged)|\.inbox-line\.approved/,
+        `${relative(ROOT, file)}: ${selectors!.trim()} is green`,
+      );
+    }
+  }
 });
 
-test("a pill for a PR that closes no issue takes the PR's own color, as its cylinder does (#280)", () => {
-  const list = new LifecycleList();
+// ── the canvas ───────────────────────────────────────────────────────────────
+
+test("the canvas paints with the dashboard's own tokens, and brings no color of its own", () => {
+  const all = tokens();
+  const palette = readPalette(tokenStyle());
+  const named: Array<[keyof typeof palette, string]> = [
+    ["bg", "bg-dark"], ["bgAlt", "bg-dark-alt"], ["trim", "trim"], ["trimBright", "trim-bright"], ["trimDim", "trim-dim"],
+    ["green", "color-green"], ["yellow", "color-yellow"], ["orange", "color-orange"], ["red", "color-red"], ["coral", "color-coral"],
+  ];
+  for (const [key, token] of named) {
+    assert.deepEqual([...palette[key]], tokenRgb(token, all.get(token)!), `${key} is --${token}`);
+  }
+  // A stylesheet that has not loaded costs the canvas its signals, but never invents a color.
+  for (const color of Object.values(readPalette({ getPropertyValue: () => "" }))) {
+    assert.ok(hueFree([...color] as Rgb), "every fallback is gray");
+  }
+  assert.deepEqual(parseColor("#f05"), [255, 0, 85]);
+  assert.deepEqual(parseColor(" 0, 255, 136 "), [0, 255, 136]);
+  assert.equal(parseColor("var(--trim)"), null);
+});
+
+test("everything the canvas draws is trim, a status signal, or the color of a piece of work", () => {
+  const pairs: LifecyclePair[] = [
+    { issue: { number: 7, title: "Burning", state: "open" }, pr: null, prPhase: "planning" },
+    { issue: { number: 8, title: "Checks", state: "open" }, pr: { number: 80, title: "Checks", state: "open", draft: true, checksStatus: "pending" }, prPhase: "active" },
+    { issue: { number: 9, title: "Blocked", state: "open" }, pr: null, prPhase: "absent", blockedByIssueNumbers: [8] },
+    { issue: { number: 10, title: "Merged", state: "open" }, pr: { number: 81, title: "Merged", state: "open", checksStatus: "success" }, prPhase: "completed" },
+  ];
+  let state = stateWith(pairs, "o/a", { cylinders: [cylinder({ ...issueColorOf(7) }), cylinder({ index: 2, status: "idle", actionType: null, issueNumber: null })] });
+  state = dashboardReducer(state, makeEvent("log-message", { level: "info", message: "📊 Snapshot" }));
+  const painted = paintField(state);
+
+  const palette = tokensPalette();
+  const allowed = new Set<string>(["255,255,255", ...Object.values(palette).map((color) => triplet(color))]);
+  for (const work of workViews(state, Date.now())) {
+    allowed.add(work.color.rgb);
+    allowed.add(work.hue.rgb);
+  }
+  const strays = painted.fills
+    .map((fill) => ({ text: fill.text, ink: parseRgba(fill.fill) }))
+    .filter(({ ink }) => ink !== undefined && !allowed.has(ink.rgb));
+  assert.deepEqual(strays, [], "no other color reaches the canvas");
+  assert.ok(painted.texts.length > 10, "and plenty was drawn");
+});
+
+test("the field marks a shutdown in orange, like the shut-down engines", () => {
+  const palette = tokensPalette();
+  let state = stateWith([], "o/a", { cylinders: [cylinder({ status: "idle", actionType: null, issueNumber: null })] });
+  state = dashboardReducer(state, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  state = dashboardReducer(state, makeEvent("app-shutdown", {}));
+  const painted = paintField(state);
+  assert.equal(painted.inkOf("SHUT DOWN")?.rgb, triplet(palette.orange), "said among the instruments");
+  assert.equal(painted.inkOf("shut down")?.rgb, triplet(palette.orange), "and by each engine");
+});
+
+test("the field marks a lost connection in red, and connecting in trim", () => {
+  const palette = tokensPalette();
+  assert.equal(paintField({ ...initialState(), connection: "disconnected" }).inkOf("LOST")?.rgb, triplet(palette.red));
+  assert.equal(paintField({ ...initialState(), connection: "connecting" }).inkOf("CONNECTING")?.rgb, triplet(palette.trimDim));
+  assert.equal(paintField({ ...initialState(), connection: "connected" }).inkOf("LOST"), undefined, "connected, it says nothing");
+});
+
+test("an idle engine is trim, and work is never gray: an orphan PR takes its own number's color (#280)", () => {
   const orphan: LifecyclePair = { issue: null, pr: { number: 300, title: "Orphan", state: "open" }, prPhase: "review" };
   const withIssue: LifecyclePair = { issue: { number: 7, title: "X", state: "open" }, pr: null, prPhase: "planning" };
-  Object.assign(list, { pairs: [orphan, withIssue], cylinders: [] as CylinderState[] });
-  const colors = [...flatten(list.render()).matchAll(/data-key="([^"]+)"[\s\S]*?\.color=(#[0-9a-f]{6})/g)]
-    .map((m) => m[2]);
-  assert.deepEqual(colors.sort(), [issueColor(300).hex, issueColor(7).hex].sort());
-  assert.ok(!colors.includes(NEUTRAL_COLOR), "no pill of work is gray");
+  const state = stateWith([orphan, withIssue], "o/a", { cylinders: [cylinder({ status: "idle", actionType: null, issueNumber: null })] });
+  const hues = workViews(state, Date.now()).map((work) => work.hue.hex);
+  assert.deepEqual(hues.sort(), [issueColor(300).hex, issueColor(7).hex].sort());
+  assert.ok(!hues.includes(NEUTRAL_COLOR), "no piece of work is gray");
+  for (const work of workViews(state, Date.now())) {
+    assert.ok(!hueFree(parseColor(work.color.rgb)! as unknown as Rgb), "nor is it gray at its burn level");
+  }
+  const painted = paintField(state);
+  assert.equal(painted.inkOf("idle")?.rgb, triplet(tokensPalette().trimDim), "an engine with no work is trim");
+});
+
+test("a line of the ribbon with no color of its own is trim, with no picture-emoji to bring one in (#280)", () => {
+  let state = initialState();
+  state = dashboardReducer(state, makeEvent("log-message", { level: "info", message: "📊 Snapshot: 3 issues" }));
+  state = dashboardReducer(state, makeEvent("log-message", { level: "success", message: "✅ approved" }));
+  const painted = paintField(state);
+  const palette = tokensPalette();
+  assert.equal(painted.inkOf("Snapshot: 3 issues")?.rgb, triplet(palette.trim), "the chart is gone, and the line is trim");
+  assert.equal(painted.inkOf("✅ approved")?.rgb, triplet(palette.green), "an outcome keeps its color, emoji and all");
+
+  assert.equal(withoutColorEmoji("📍 Phase: implementation"), "Phase: implementation");
+  assert.equal(withoutColorEmoji("🔄 Engine 6 · cycle 2"), "Engine 6 · cycle 2");
+  assert.equal(withoutColorEmoji("▶ [1/6] Implement #40 ✓"), "▶ [1/6] Implement #40 ✓", "plain glyphs stay");
+  assert.equal(withoutColorEmoji("⏸\uFE0F waiting"), "⏸ waiting", "without the selector that asks for the picture");
 });
 
 test("an event-log line with no color of its own is trim, color emoji and all (#280)", () => {
@@ -179,3 +255,9 @@ test("a broadcast card's ✨ is card chrome, so gray (#280)", () => {
   const css = (BroadcastEventCard.styles as { cssText: string }).cssText;
   assert.match(css, /\.broadcast-event-sparkle\s*\{\s*filter:\s*grayscale\(1\);/);
 });
+
+/** The full-saturation color of issue `n`, as a cylinder working it carries it. */
+function issueColorOf(n: number): { color: string; colorRgb: string; issueNumber: number } {
+  const c = issueColor(n);
+  return { color: c.hex, colorRgb: c.rgb, issueNumber: n };
+}

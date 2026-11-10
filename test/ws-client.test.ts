@@ -207,9 +207,9 @@ test("one Approve press travels over a real socket: Queued at once, then loading
   const { DashboardServer } = await import("../src/dashboard-server.js");
   const { EventEmitter } = await import("../src/event-emitter.js");
   const { DashboardApprovals } = await import("../src/dashboard-approval.js");
-  const { LifecyclePill } = await import("../src/dashboard/components/lifecycle-pill.js");
-  const { approvalPressFor, approvalStatusFor } = await import("../src/dashboard/shared/pill-approval.js");
+  const { YokeInbox } = await import("../src/dashboard/components/yoke-inbox.js");
   const { DashboardStore } = await import("../src/dashboard/store/dashboard-store.js");
+  const { click, renderInbox } = await import("./dashboard-helpers.js");
 
   // The engine pool's side, as src/index.ts wires it, reading the PR held open.
   const emitter = new EventEmitter();
@@ -243,59 +243,36 @@ test("one Approve press travels over a real socket: Queued at once, then loading
   store.connectLive(`ws://127.0.0.1:${port}/api/ws`);
   await waitMs(300);
 
-  // The pill, wired to the store the way yoke-app wires it.
+  // The inbox, wired to the store the way yoke-app wires it.
   const pair = {
     issue: { number: 1, title: "Add the thing", state: "open" },
     pr: { number: 10, title: "Add the thing", state: "open", draft: false, checksStatus: "success" },
-    prPhase: "review", approval: "awaiting-approval" as const, repo: "o/a",
+    prPhase: "review", approval: "awaiting-approval" as const,
   };
-  const pill = new LifecyclePill();
-  pill.addEventListener("pill-approve", (event) => {
+  emitter.emit("lifecycle-update", { repo: "o/a", pairs: [pair] });
+  await waitMs(100);
+  const inbox = new YokeInbox();
+  inbox.addEventListener("inbox-approve", (event) => {
     store.approvePullRequest((event as CustomEvent).detail);
   });
-  const render = () => {
-    const state = store.getState();
-    Object.assign(pill, {
-      pair,
-      activity: "review",
-      approvalStatus: approvalStatusFor(state.approvals, pair),
-      approvalPress: approvalPressFor(state.approvalPresses, pair),
-      connected: state.connection === "connected",
-    });
-    return JSON.stringify(pill.render(), (_key, value: unknown) => (typeof value === "function" ? "fn" : value));
-  };
-  const clickButton = () => {
-    const find = (value: unknown): ((event: Event) => void) | undefined => {
-      if (Array.isArray(value)) return value.map(find).find(Boolean);
-      if (typeof value !== "object" || value === null || !("strings" in value)) return undefined;
-      const template = value as { strings: string[]; values: unknown[] };
-      if (template.strings.join("").includes('class="pill-approve')) {
-        return template.values.find((v) => typeof v === "function") as (event: Event) => void;
-      }
-      return find(template.values);
-    };
-    const handler = find(pill.render());
-    assert.ok(handler, "the pill has an Approve button");
-    handler(new Event("click"));
-  };
+  /** The card for PR #10, drawn from the store's state as it stands. */
+  const draw = () => renderInbox(store.getState(), { inbox });
+  const render = () => draw().html;
+  const clickButton = () => click(draw().approveButton(10));
 
-  try {
-    render();
-    clickButton(); // one press sends it
-    assert.match(render(), /Queued/, "Queued the instant it is pressed, before yoke has answered");
-    assert.match(render(), /queued — sent to yoke/);
-    await waitMs(150);
-    assert.equal(store.getState().approvals.get("o/a#10")?.state, "loading", "yoke answered at once");
-    assert.match(render(), /Queued/);
-    assert.match(render(), /reading PR #10 from GitHub/);
+  render();
+  clickButton(); // one press sends it
+  assert.match(render(), /Queued/, "Queued the instant it is pressed, before yoke has answered");
+  assert.match(render(), /queued — sent to yoke/);
+  await waitMs(150);
+  assert.equal(store.getState().approvals.get("o/a#10")?.state, "loading", "yoke answered at once");
+  assert.match(render(), /Queued/);
+  assert.match(render(), /reading PR #10 from GitHub/);
 
-    finishLoading();
-    await waitMs(150);
-    assert.equal(store.getState().approvals.get("o/a#10")?.state, "refused");
-    assert.match(render(), /Retry/, "never back to Approve as if it was not pressed");
-    assert.match(render(), /not approved: its checks are failing/);
-    assert.equal(attempts, 1);
-  } finally {
-    pill.disconnectedCallback();
-  }
+  finishLoading();
+  await waitMs(150);
+  assert.equal(store.getState().approvals.get("o/a#10")?.state, "refused");
+  assert.match(render(), /Retry/, "never back to Approve as if it was not pressed");
+  assert.match(render(), /not approved: its checks are failing/);
+  assert.equal(attempts, 1);
 });

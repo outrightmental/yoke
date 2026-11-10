@@ -4,11 +4,14 @@
   "description": "Yoke a team of coding agents to work through a GitHub issue queue",
   "main": "dist/src/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:dashboard",
+    "build": "tsc -p tsconfig.json && npm run typecheck:dashboard && npm run build:dashboard",
+    "typecheck:dashboard": "tsc -p src/dashboard/tsconfig.json",
     "build:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --tsconfig=src/dashboard/tsconfig.json --outfile=dist/dashboard/bundle.js",
     "watch:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --tsconfig=src/dashboard/tsconfig.json --outfile=dist/dashboard/bundle.js --watch",
     "predev": "npm run build:dashboard",
     "dev": "tsx src/index.ts",
+    "predemo:dashboard": "npm run build:dashboard",
+    "demo:dashboard": "tsx tools/dashboard-demo.ts",
     "start": "npm run build && node dist/src/index.js",
     "test": "node --import tsx --test --test-force-exit $(find test -name '*.test.ts' | sort)"
   },

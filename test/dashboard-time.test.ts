@@ -8,9 +8,13 @@ import {
   localizeClockTimes,
 } from "../src/dashboard/shared/format.js";
 import type { BroadcastEventData, EventLine } from "../src/dashboard/store/types.js";
-import { HoldBanner } from "../src/dashboard/components/hold-banner.js";
+import { YokeField } from "../src/dashboard/components/yoke-field.js";
 import { EventStream } from "../src/dashboard/components/event-stream.js";
 import { BroadcastEventCard } from "../src/dashboard/components/broadcast-event-card.js";
+import { fieldModel } from "../src/dashboard/field/model.js";
+import { inspect } from "../src/dashboard/shared/inbox.js";
+import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
+import { flatten, makeEvent, paintField } from "./dashboard-helpers.js";
 
 // Every wall-clock time the dashboard shows is rendered in the browser, in the
 // viewer's own time zone (issue #272). Node renders local times in
@@ -37,17 +41,6 @@ function asViewerIn<T>(timeZone: string, fn: () => T): T {
 
 /** Newer ICU puts a narrow no-break space before AM/PM. */
 const spaced = (text: string): string => text.replace(/\s/g, " ");
-
-/** A Lit TemplateResult flattened to the markup it describes. */
-function flatten(value: unknown): string {
-  if (value === null || value === undefined || typeof value === "symbol") return "";
-  if (Array.isArray(value)) return value.map(flatten).join("");
-  if (typeof value === "object" && "strings" in value && "values" in value) {
-    const { strings, values } = value as { strings: readonly string[]; values: readonly unknown[] };
-    return strings.reduce((out, s, i) => out + s + (i < values.length ? flatten(values[i]) : ""), "");
-  }
-  return String(value);
-}
 
 // ── formatters ───────────────────────────────────────────────────────────────
 
@@ -146,14 +139,30 @@ test("localizeClockTimes never mistakes a time it re-rendered for another one th
 
 // ── components ───────────────────────────────────────────────────────────────
 
-test("hold banner: the deadline reads in the viewer's time zone", () => {
+test("the hold on the field: the deadline reads in the viewer's time zone", () => {
   const untilMs = Date.now() + 2 * HOUR;
-  const banner = new HoldBanner();
-  banner.hold = { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs };
+  const state = { ...initialState(), hold: { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs } };
   for (const zone of [NEW_YORK, TOKYO]) {
-    const markup = asViewerIn(zone, () => flatten(banner.render()));
-    assert.match(markup, new RegExp(`UNTIL <span class="hold-banner-deadline">${formatClockTime(untilMs, zone)}</span>`), zone);
+    const deadline = formatClockTime(untilMs, zone);
+    asViewerIn(zone, () => {
+      // Painted on the canvas, in capitals like the rest of the line…
+      assert.ok(paintField(state).texts.includes(deadline.toUpperCase()), `${zone}: painted`);
+      // …said to a screen reader, as the same words…
+      const field = new YokeField();
+      field.model = fieldModel(state, Date.now());
+      assert.ok(flatten(field.render()).includes(`<span class="hold-deadline">${deadline}</span>`), `${zone}: in the markup`);
+      // …and said again in full by the card a tap on it opens.
+      const model = fieldModel(state, Date.now());
+      const said = inspect({ kind: "hold" }, { works: [], engines: [], usageTitle: "", hold: model.vitals.hold });
+      assert.ok(said?.title.endsWith(`until ${deadline}`), `${zone}: in the inspector`);
+    });
   }
+});
+
+test("the ribbon along the bottom of the field stamps each line in the viewer's time zone", () => {
+  const state = dashboardReducer(initialState(), makeEvent("log-message", { level: "info", message: "hello" }, new Date(AT + 7_000).toISOString()));
+  assert.ok(asViewerIn(NEW_YORK, () => paintField(state).texts.includes("18:45:07")));
+  assert.ok(asViewerIn(TOKYO, () => paintField(state).texts.includes("07:45:07")));
 });
 
 test("event stream: each line is stamped with its event's time in the viewer's time zone", () => {

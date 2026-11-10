@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildPlan, REVIEW_LABEL, reviewApprovalState } from "../src/orchestrator.js";
+import { awaitsHumanReview, buildPlan, REVIEW_LABEL, reviewApprovalState } from "../src/orchestrator.js";
 import { approvePullRequest, commentOnApproval, executeAction } from "../src/actions.js";
 import type {
   ActionClaudeAgentClient,
@@ -650,6 +650,73 @@ test("reviewApprovalState: nothing is awaited from a PR yoke would act on, or th
   ];
   for (const [description, snapshot, projectMode] of cases) {
     assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot, projectMode), undefined, description);
+  }
+});
+
+// ─── awaitsHumanReview: parked for a person on GitHub (Project SDLC) ───────────
+
+test("awaitsHumanReview: in project mode, a PR parked after request-review waits on a person, labels or not", () => {
+  for (const snapshot of [
+    parkedSnapshot(),
+    parkedSnapshot({ issueLabels: [], pullRequest: { labels: [] } }),
+    parkedSnapshot({ pullRequest: { checksStatus: "pending" } }),
+    parkedSnapshot({ pullRequest: { checksStatus: "failure" } }),
+  ]) {
+    assert.equal(awaitsHumanReview(snapshot.pullRequests[0]!, snapshot, true), true);
+  }
+});
+
+test("awaitsHumanReview: outside project mode nothing does — a parked PR is approved on the dashboard instead", () => {
+  const snapshot = parkedSnapshot();
+
+  assert.equal(awaitsHumanReview(snapshot.pullRequests[0]!, snapshot, false), false);
+  assert.equal(awaitsHumanReview(snapshot.pullRequests[0]!, snapshot), false, "project mode is off unless said");
+  assert.equal(reviewApprovalState(snapshot.pullRequests[0]!, snapshot), "awaiting-approval");
+});
+
+test("awaitsHumanReview: a PR yoke would act on is not waiting on anyone, and the planner agrees", () => {
+  const projectMode = { projectNumber: 1, reviewers: [] };
+  const cases: Array<[string, RepositorySnapshot]> = [
+    ["converted back to draft", parkedSnapshot({ pullRequest: { draft: true } })],
+    ["new comments since the review request", parkedSnapshot({ pullRequest: { hasNewCommentsSinceLastRead: true } })],
+    ["merge conflicts to resolve", parkedSnapshot({ pullRequest: { hasMergeConflicts: true } })],
+    ["its issue moved back to Ready on the board", (() => {
+      const snapshot = parkedSnapshot();
+      snapshot.issues[0]!.projectStatus = "Ready";
+      return snapshot;
+    })()],
+    ["still being self-reviewed", cleanSelfReviewSnapshot({})],
+  ];
+  for (const [description, snapshot] of cases) {
+    assert.equal(awaitsHumanReview(snapshot.pullRequests[0]!, snapshot, true), false, description);
+    assert.equal(buildPlan(snapshot, 3, projectMode).actions.length, 1, `${description}: yoke plans work on it`);
+  }
+
+  // And the ones it awaits are the ones the planner leaves alone.
+  const parked = parkedSnapshot();
+  parked.issues[0]!.projectStatus = "In Review";
+  assert.equal(awaitsHumanReview(parked.pullRequests[0]!, parked, true), true);
+  assert.deepEqual(buildPlan(parked, 3, projectMode).actions, []);
+});
+
+test("awaitsHumanReview: never for a manual or closed PR, or one an engine is on", () => {
+  const cases: Array<[string, RepositorySnapshot]> = [
+    ["labelled manual", parkedSnapshot({ pullRequest: { labels: ["manual"] } })],
+    ["closed", parkedSnapshot({ pullRequest: { state: "closed" } })],
+    [
+      "an engine on it",
+      parkedSnapshot({
+        sessions: [
+          createSession({
+            id: "s9", issueNumber: 1, pullRequestNumber: 10, phase: "self-review",
+            status: "in_progress", updatedAt: "2024-01-09T00:00:00.000Z",
+          }),
+        ],
+      }),
+    ],
+  ];
+  for (const [description, snapshot] of cases) {
+    assert.equal(awaitsHumanReview(snapshot.pullRequests[0]!, snapshot, true), false, description);
   }
 });
 

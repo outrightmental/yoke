@@ -1,4 +1,6 @@
 import './styles/global.css';
+import './styles/inbox.css';
+import './styles/drawer.css';
 import './components/yoke-app.js';
 import { DashboardStore } from './store/dashboard-store.js';
 

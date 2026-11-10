@@ -1,6 +1,6 @@
 import { globalEventEmitter, type EventEmitter } from "./event-emitter.js";
 import type { GitHubRateLimitHold } from "./github-rate-limit.js";
-import { reviewApprovalState, type ReviewApproval } from "./orchestrator.js";
+import { awaitsHumanReview, reviewApprovalState, type ReviewApproval } from "./orchestrator.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
 // Issues labelled "manual" are intentionally hidden from the dashboard; the
@@ -10,8 +10,8 @@ function isManualIssue(issue: Issue): boolean {
 }
 
 // In focus mode only issues carrying the "focus" label are in scope, so the
-// lifecycle pane hides everything else (matching the orchestrator, which parks
-// non-focus issues and their PRs).
+// dashboard's lifecycle leaves everything else out (matching the orchestrator,
+// which parks non-focus issues and their PRs).
 function isFocusIssue(issue: Issue): boolean {
   return issue.labels.includes("focus");
 }
@@ -25,7 +25,8 @@ function isManualPullRequest(pr: PullRequest): boolean {
 export interface LifecyclePair {
   /**
    * The issue this PR closes, or null for an orphan PR — a PR not connected to
-   * any issue. Orphan-PR pairs render as a whole pill with an empty left half.
+   * any issue. An orphan-PR pair is still one piece of work on the dashboard,
+   * going by its PR's number and title.
    */
   issue: { number: number; title: string; state: string } | null;
   pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
@@ -36,18 +37,24 @@ export interface LifecyclePair {
   /** Issue numbers blocking this issue, if any (populated for pre-implementation issues) */
   blockedByIssueNumbers?: number[];
   /**
-   * True when the PR is labelled "manual" — yoke will not work on it, so
-   * the PR half is rendered disabled (greyed out, no glow).
+   * True when the PR is labelled "manual" — yoke will not work on it, so the
+   * dashboard draws it cold and lists it in the inbox as a person's to do.
    */
   disabled?: boolean;
-  /** Project status label shown on inactive pills (e.g. "Backlog", "Done"). */
+  /** Project status label shown for work out of the queue (e.g. "Backlog", "Done"). */
   projectStatus?: string;
   /**
    * Set while a review-gated PR waits on a human (#274): `awaiting-approval`
-   * while it is parked — the pill offers an Approve button — and `approved`
-   * once a human has approved it and its squash-merge is pending.
+   * while it is parked — its card in the inbox offers an Approve button — and
+   * `approved` once a human has approved it and its squash-merge is pending.
    */
   approval?: ReviewApproval;
+  /**
+   * Set while a PR is parked for a person to review on GitHub (Project SDLC):
+   * yoke has asked for the review and waits for it. Nothing on the dashboard
+   * can move such a PR on, so its inbox lists it with a link.
+   */
+  awaitingReview?: true;
 }
 
 function phaseSortPriority(phase: string, isBlocked: boolean): number {
@@ -77,9 +84,12 @@ export function broadcastLifecycleUpdate(
   const visibleIssues = snapshot.issues.filter(
     (i) => !isManualIssue(i) && (!focusMode || isFocusIssue(i)),
   );
-  const approvalOf = (pr: PullRequest): { approval?: ReviewApproval } => {
+  // What the PR is waiting on a person for, if anything: an Approve on the
+  // dashboard (#274), or a review on GitHub in project mode. Never both.
+  const approvalOf = (pr: PullRequest): { approval?: ReviewApproval; awaitingReview?: true } => {
     const approval = reviewApprovalState(pr, snapshot, projectModeEnabled);
-    return approval !== undefined ? { approval } : {};
+    if (approval !== undefined) return { approval };
+    return awaitsHumanReview(pr, snapshot, projectModeEnabled) ? { awaitingReview: true } : {};
   };
 
   // Pair each open PR with its closing issues (falling back to linked issues)
@@ -112,13 +122,12 @@ export function broadcastLifecycleUpdate(
   }
 
   // Orphan PRs — open PRs not connected to any issue (no closing or linked
-  // issue numbers). They render as a whole pill with an empty left half and
-  // the PR in the right half.
+  // issue numbers). Each is a piece of work in its own right, with no issue.
   for (const pr of snapshot.pullRequests) {
     if (pr.state !== "open") continue;
     if (pr.closingIssueNumbers.length > 0 || pr.linkedIssueNumbers.length > 0) continue;
     // Orphan PRs advance no focus issue, so the orchestrator parks them in
-    // focus mode — keep them off the lifecycle pane too.
+    // focus mode — keep them off the dashboard too.
     if (focusMode) continue;
     pairs.push({
       issue: null,
@@ -136,7 +145,7 @@ export function broadcastLifecycleUpdate(
     });
   }
 
-  // Issues not yet paired get an absent or planning right half
+  // Issues not yet paired have no PR: absent, or planning once an engine has claimed them
   for (const issue of visibleIssues) {
     if (pairedIssueNumbers.has(issue.number)) continue;
     const isInactive =

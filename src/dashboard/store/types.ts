@@ -15,8 +15,8 @@ export interface CylinderState {
   repo: string | null;
   issueNumber: number | null;
   prNumber: number | null;
-  /** Titles of the issue/PR being worked, carried on the action so a pill can
-   *  still be drawn for work that has left GitHub's open lists (e.g. an issue
+  /** Titles of the issue/PR being worked, carried on the action so the work
+   *  can still be drawn when it has left GitHub's open lists (e.g. an issue
    *  closed mid-flight). Null when unknown or idle. */
   issueTitle: string | null;
   prTitle: string | null;
@@ -44,7 +44,7 @@ export interface WorkHold {
 
 /**
  * The latest reading of the Claude account's rolling 5-hour usage window, for
- * the header's usage gauge (mirrors `UsageReading` in src/anthropic-usage.ts).
+ * the usage gauge (mirrors `UsageReading` in src/anthropic-usage.ts).
  */
 export interface AccountUsage {
   /** "ok": live numbers; "unconfigured": no token to read with, so the gauge
@@ -99,14 +99,17 @@ export interface LifecyclePair {
   colorIndex?: number;
   blockedByIssueNumbers?: number[];
   disabled?: boolean;
-  /** Project status label for inactive pills (e.g. "Backlog", "Done"). */
+  /** Project status label for work out of the queue (e.g. "Backlog", "Done"). */
   projectStatus?: string;
   /** "owner/repo" this pair belongs to (set by the store from the update's scope). */
   repo?: string;
   /** Set while a review-gated PR waits on a human (#274): `awaiting-approval`
-   *  while it is parked (the pill offers Approve), `approved` once approved
-   *  and its squash-merge is pending. */
+   *  while it is parked (its inbox card offers Approve), `approved` once
+   *  approved and its squash-merge is pending. */
   approval?: 'awaiting-approval' | 'approved';
+  /** Set while yoke has asked a person to review the PR on GitHub and waits
+   *  for it (Project SDLC). The inbox lists it, with a link to the PR. */
+  awaitingReview?: boolean;
 }
 
 /** Where one dashboard approval stands (#276); see `PullRequestApprovalStatus`. */
@@ -159,6 +162,31 @@ export interface ApprovalPress {
   sentAtMs?: number;
   /** An engine has since squash-merged the PR. */
   merged?: boolean;
+}
+
+/**
+ * An action an engine ran that failed. The cylinder itself forgets the failure
+ * at once — in the same tick it reports itself idle and starts its cycle wait
+ * — and the line in the event log scrolls away, so the store keeps it here for
+ * the inbox to say, until an engine takes the work up again.
+ */
+export interface ActionFailure {
+  /** The work it was on, as `failureKey` names it. */
+  key: string;
+  /** "owner/repo"; empty when the action did not say. */
+  repo: string;
+  /** The action that failed, e.g. "self-review". */
+  actionType: string;
+  issueNumber: number | null;
+  prNumber: number | null;
+  issueTitle: string | null;
+  prTitle: string | null;
+  /** The first line of the error; the event log has the rest. */
+  error: string;
+  /** Epoch millis of the failure, from the event's stamp. */
+  atMs: number;
+  /** The engine that ran it, counted from 0. */
+  engineIndex: number;
 }
 
 export interface BroadcastEventData {
@@ -230,6 +258,9 @@ export interface DashboardState {
    *  press stays until its PR leaves the lifecycle, and keeps the answer to
    *  it in `approvals` from going stale. */
   approvalPresses: Map<string, ApprovalPress>;
+  /** The latest failed action on each piece of work, by `failureKey`, until an
+   *  engine starts on that work again or the failure is too old to matter. */
+  failures: Map<string, ActionFailure>;
   /** True when more than one project shares this dashboard. */
   multiProject: boolean;
   owner: string;
