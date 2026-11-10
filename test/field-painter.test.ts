@@ -345,8 +345,10 @@ test("the painter: a hold is said across the top of the field, in the colors of 
 
 test("the painter: the last lines of the log run along the bottom, each in its engine's color or its outcome's", () => {
   let state = busyState();
-  state = dashboardReducer(state, makeEvent("action-start", { actionIndex: 1, totalActions: 2, type: "start-implementation", issueNumber: 7, repo: "o/a", description: "Implement #7" }));
-  state = dashboardReducer(state, makeEvent("log-message", { level: "error", message: "it broke" }));
+  // Stamped by this file's clock, like everything else it paints.
+  const at = new Date(NOW).toISOString();
+  state = dashboardReducer(state, makeEvent("action-start", { actionIndex: 1, totalActions: 2, type: "start-implementation", issueNumber: 7, repo: "o/a", description: "Implement #7", startedAt: NOW }, at));
+  state = dashboardReducer(state, makeEvent("log-message", { level: "error", message: "it broke" }, at));
   const painted = paint(state);
 
   assert.equal(painted.inkOf("▶ [1/2] Implement #7")?.rgb, issueColor(7).rgb, "an engine's line is its work's color");

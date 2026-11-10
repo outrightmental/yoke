@@ -53,6 +53,17 @@ function inputFor(state: DashboardState, overrides: Partial<InboxInput> = {}): I
   };
 }
 
+/**
+ * An event stamped by this file's own clock: at NOW unless told otherwise, and
+ * never at the time the suite happens to be run. The store reads the time from
+ * the event it is applying — it lets go of a failure that is old by then — so
+ * an event stamped with the wall clock would make what a test here sees depend
+ * on how long after NOW it ran.
+ */
+function event(type: string, data: Record<string, unknown>, atMs = NOW) {
+  return makeEvent(type, data, new Date(atMs).toISOString());
+}
+
 /** `state` after an engine starts `type` on the work and fails at it, `agoMs` before NOW. */
 function withFailure(
   state: DashboardState,
@@ -60,17 +71,17 @@ function withFailure(
   agoMs = 0,
   engine = 1,
 ): DashboardState {
-  const at = new Date(NOW - agoMs).toISOString();
-  let next = dashboardReducer(state, makeEvent("action-start", {
+  const at = NOW - agoMs;
+  let next = dashboardReducer(state, event("action-start", {
     actionIndex: engine, totalActions: 3, repo: "o/a", description: "d", type: action.type,
     issueNumber: action.issueNumber ?? null, pullRequestNumber: action.pullRequestNumber ?? null,
     pullRequestTitle: action.pullRequestNumber !== undefined ? `PR ${action.pullRequestNumber}` : null,
   }, at));
-  next = dashboardReducer(next, makeEvent("action-error", {
+  next = dashboardReducer(next, event("action-error", {
     actionIndex: engine, totalActions: 3, repo: "o/a", error: action.error ?? "Claude exited with status 1\n    at run (agent.ts:1)",
   }, at));
   // The engine reports itself idle in the same tick, as it does in a real run.
-  return dashboardReducer(next, makeEvent("engine-idle", { engineIndex: engine - 1, nextCycleAtMs: NOW + MINUTE }, at));
+  return dashboardReducer(next, event("engine-idle", { engineIndex: engine - 1, nextCycleAtMs: NOW + MINUTE }, at));
 }
 
 // ── the sources ──────────────────────────────────────────────────────────────
@@ -185,7 +196,7 @@ test("failure: it is listed until an engine takes the work up again", () => {
   assert.deepEqual(card?.links.map((link) => link.label), ["PR #10", "Issue #1"]);
 
   // Another action starting on the same PR — any action — is the work taken up again.
-  state = dashboardReducer(state, makeEvent("action-start", {
+  state = dashboardReducer(state, event("action-start", {
     actionIndex: 1, totalActions: 3, repo: "o/a", type: "address-failing-checks", pullRequestNumber: 10, description: "d",
   }));
   assert.equal(state.failures.size, 0);
@@ -199,7 +210,7 @@ test("failure: a failed implementation is history once an engine is on the PR th
   let state = withFailure(stateWith([pair]), { type: "start-implementation", issueNumber: 7 });
   assert.deepEqual([...state.failures.keys()], ["o/a#issue-7"]);
 
-  state = dashboardReducer(state, makeEvent("action-start", {
+  state = dashboardReducer(state, event("action-start", {
     actionIndex: 1, totalActions: 3, repo: "o/a", type: "self-review", issueNumber: 7, pullRequestNumber: 12, description: "d",
   }));
   assert.equal(state.failures.size, 0, "the same work, taken up again by another name");
@@ -207,15 +218,12 @@ test("failure: a failed implementation is history once an engine is on the PR th
 
 test("failure: an action on other work, or in another project, leaves it listed", () => {
   let state = withFailure(stateWith([ready(1, 10), ready(2, 20)]), { type: "self-review", pullRequestNumber: 10 });
-  // At NOW, not the wall clock: a failure older than FAILURE_SHOW_MS is dropped
-  // as stale by whatever event comes next.
-  const at = new Date(NOW).toISOString();
-  state = dashboardReducer(state, makeEvent("action-start", {
+  state = dashboardReducer(state, event("action-start", {
     actionIndex: 1, totalActions: 3, repo: "o/a", type: "self-review", pullRequestNumber: 20, description: "d",
-  }, at));
-  state = dashboardReducer(state, makeEvent("action-start", {
+  }));
+  state = dashboardReducer(state, event("action-start", {
     actionIndex: 2, totalActions: 3, repo: "o/b", type: "self-review", pullRequestNumber: 10, description: "d",
-  }, at));
+  }));
   assert.deepEqual([...state.failures.keys()], ["o/a#pr-10"]);
 });
 
@@ -239,9 +247,14 @@ test("failure: it leaves once its work leaves the lifecycle, or it is old, or it
   assert.equal(withPairs(failed, "o/a", []).failures.size, 0);
   assert.equal(withPairs(failed, "o/b", []).failures.size, 1, "another project's update says nothing about it");
 
-  // Too old to matter.
+  // Too old to matter: no longer listed, and the store lets go of it the next
+  // time an engine starts on anything.
   assert.equal(buildInbox(inputFor(failed, { nowMs: NOW + FAILURE_SHOW_MS })).length, 0);
   assert.ok(FAILURE_SHOW_MS >= 60 * MINUTE, "listed for at least as long as yoke backs a failing action off");
+  const failedAt = NOW - 5 * MINUTE;
+  const elsewhere = { actionIndex: 1, totalActions: 3, repo: "o/a", type: "self-review", pullRequestNumber: 99, description: "d" };
+  assert.equal(dashboardReducer(failed, event("action-start", elsewhere, failedAt + FAILURE_SHOW_MS - 1)).failures.size, 1);
+  assert.equal(dashboardReducer(failed, event("action-start", elsewhere, failedAt + FAILURE_SHOW_MS)).failures.size, 0);
 
   // Dismissed — and a later failure of the same work is a new card.
   assert.equal(buildInbox(inputFor(failed, { dismissed: new Set([id]) })).length, 0);
@@ -253,8 +266,8 @@ test("failure: it leaves once its work leaves the lifecycle, or it is old, or it
 test("failure: a usage limit is a hold, not a failure, and lists nothing", () => {
   // The engine reports itself parked rather than erroring (see src/index.ts).
   let state = stateWith([ready(1, 10)]);
-  state = dashboardReducer(state, makeEvent("action-start", { actionIndex: 1, totalActions: 3, repo: "o/a", type: "self-review", pullRequestNumber: 10, description: "d" }));
-  state = dashboardReducer(state, makeEvent("engine-idle", { engineIndex: 0, reason: "claude-usage-limit", rateLimitedUntilMs: NOW + MINUTE }));
+  state = dashboardReducer(state, event("action-start", { actionIndex: 1, totalActions: 3, repo: "o/a", type: "self-review", pullRequestNumber: 10, description: "d" }));
+  state = dashboardReducer(state, event("engine-idle", { engineIndex: 0, reason: "claude-usage-limit", rateLimitedUntilMs: NOW + MINUTE }));
   assert.equal(state.failures.size, 0);
 });
 
