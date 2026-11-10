@@ -1,0 +1,145 @@
+/* ── The activity drawer ──
+   The whole event log and the feed of GitHub activity, drawn up from the
+   bottom of the field when asked for and out of the way when not. It stops
+   short of the inbox, so opening it never covers an Approve. */
+activity-drawer { display: contents; }
+
+.drawer {
+  position: absolute;
+  left: 0;
+  right: var(--rail-w, 0px);
+  bottom: 0;
+  height: min(66vh, 620px);
+  display: flex;
+  flex-direction: column;
+  z-index: 2;
+  background: rgba(var(--bg-dark-rgb), 0.96);
+  border-top: 1px solid rgba(var(--trim-rgb), 0.22);
+  box-shadow: 0 -28px 64px rgba(0, 0, 0, 0.6);
+  transform: translateY(103%);
+  visibility: hidden;
+  transition:
+    transform 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
+    right 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 0.34s;
+}
+
+.drawer.is-open {
+  transform: none;
+  visibility: visible;
+  transition:
+    transform 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
+    right 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 0 14px 0 28px;
+  flex-shrink: 0;
+}
+
+.drawer-title,
+.drawer-heading {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2.4px;
+  text-transform: uppercase;
+  color: var(--trim-bright);
+}
+
+.drawer-heading {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--trim-dim);
+  margin-bottom: 8px;
+}
+
+.drawer-counts {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--trim-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer-close {
+  margin-left: auto;
+  min-width: 88px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 22px;
+  border: 1px solid rgba(var(--trim-rgb), 0.24);
+  background: transparent;
+  color: var(--trim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.drawer-close:hover {
+  background: rgba(var(--trim-rgb), 0.12);
+  color: var(--trim-bright);
+}
+
+.drawer-close:focus-visible {
+  outline: 2px solid var(--trim-bright);
+  outline-offset: 2px;
+}
+
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+  gap: 28px;
+  padding: 0 28px 18px;
+}
+
+.drawer-log,
+.drawer-feed {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-log event-stream {
+  flex: 1;
+  min-height: 0;
+}
+
+.drawer-feed-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--trim-rgb), 0.3) transparent;
+}
+
+.drawer-empty {
+  font-size: 12.5px;
+  color: var(--trim-dim);
+}
+
+@media (max-width: 899px) {
+  .drawer-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+    padding: 0 14px 14px;
+  }
+  .drawer-head { padding-left: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer.is-open { transition: none; }
+}

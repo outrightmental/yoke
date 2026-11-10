@@ -1,19 +1,22 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
 :root {
   /* UI trim (issue #280): fully desaturated grays, r = g = b with no hue at
-     all. Everything structural — panel borders, headers, the status bar,
-     scrollbars, body text, the scanline overlay, the keep-awake and gauge
-     labels — is drawn in these, so that saturated color on screen means live
-     computing burn: the per-issue engine colors in shared/issue-colors.ts. */
+     all. Everything structural — the field's ground, its labels and rules,
+     the instruments along its top, the inbox's surfaces, scrollbars, body
+     text — is drawn in these, so that saturated color on screen means live
+     computing burn: the per-issue engine colors in shared/issue-colors.ts.
+     The canvas reads these same properties (field/palette.ts), so the rule
+     holds for what is painted as well as for what is styled. */
   --trim-bright: #e0e0e0;
   --trim: #b4b4b4;
   --trim-rgb: 180, 180, 180;
-  /* Also NEUTRAL_COLOR in shared/issue-colors.ts: idle cylinders, commits, CI. */
+  /* Also NEUTRAL_COLOR in shared/issue-colors.ts: idle engines, commits, CI. */
   --trim-dim: #8c8c8c;
 
   /* Neutral gray base tone (issue #236), as hue-free as the trim (issue #280). */
   --bg-dark: #0e0e0e;
+  --bg-dark-rgb: 14, 14, 14;
   --bg-dark-alt: #1a1a1a;
   --bg-panel: rgba(24, 24, 24, 0.6);
   --bg-bar: rgba(14, 14, 14, 0.95);
@@ -31,4 +34,9 @@
   --color-red-rgb: 255, 0, 85;
   --color-coral: #ff826e;
   --color-coral-rgb: 255, 130, 110;
+
+  /* The two faces: one for reading, one for figures and labels. The canvas
+     names the same two (field/text.ts). */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }

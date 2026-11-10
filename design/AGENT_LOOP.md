@@ -158,7 +158,7 @@ The six orchestrator action types each record a session in the local store. The 
 | `squash-merge` | Claude generates a final PR body from the branch commits and diff. Yoke updates the PR body, promotes the draft to ready-for-review if needed, and squash-merges. |
 | `request-review` | (Project SDLC, or a PR gated by the `review` label) Yoke marks the PR ready-for-review, requests human review from configured reviewers, and moves the issue to "In Review" in project mode. |
 
-One more phase is recorded without being an action: `approval`, written when a human presses **Approve** on a review-gated pill in the Dashboard. It tells the planner to carry on with the `squash-merge` the `review` label held back — on an engine cylinder like any other action, behind the same CI and conflict gate. Work done on the PR after the approval (fixing failing checks, resolving conflicts, re-reviewing after new comments or a return to draft) puts it back up for approval.
+One more phase is recorded without being an action: `approval`, written when a human presses **Approve** on a review-gated PR's card in the Dashboard's inbox. It tells the planner to carry on with the `squash-merge` the `review` label held back — on an engine cylinder like any other action, behind the same CI and conflict gate. Work done on the PR after the approval (fixing failing checks, resolving conflicts, re-reviewing after new comments or a return to draft) puts it back up for approval.
 
 Each action is idempotent through session state. A later iteration observes what changed (new head SHA, clean review flag) and moves to the next phase instead of repeating completed work.
 

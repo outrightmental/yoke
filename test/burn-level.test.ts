@@ -11,8 +11,11 @@ import {
 import { atSaturation, issueColor, issueHue, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from "../src/dashboard/shared/issue-colors.js";
 import type { PillActivity } from "../src/dashboard/shared/pill-activity.js";
 import type { CylinderState, LifecyclePair } from "../src/dashboard/store/types.js";
-import { CylinderRow } from "../src/dashboard/components/cylinder-row.js";
-import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
+import { engineView } from "../src/dashboard/shared/engine-view.js";
+import { fieldModel } from "../src/dashboard/field/model.js";
+import { layoutField } from "../src/dashboard/field/layout.js";
+import { workViews } from "../src/dashboard/shared/work-view.js";
+import { renderInbox, stateWith } from "./dashboard-helpers.js";
 
 // More saturation = more token burn (issue #281): every state lands on one
 // level of a shared scale, the hue keeps saying which issue, and the same level
@@ -37,16 +40,6 @@ function hueDistance(a: number, b: number): number {
   return Math.min(d, 360 - d);
 }
 
-function flatten(value: unknown): string {
-  if (value === null || value === undefined || typeof value === "symbol") return "";
-  if (Array.isArray(value)) return value.map(flatten).join("");
-  if (typeof value === "object" && "strings" in value && "values" in value) {
-    const { strings, values } = value as { strings: readonly string[]; values: readonly unknown[] };
-    return strings.reduce((out, s, i) => out + s + (i < values.length ? flatten(values[i]) : ""), "");
-  }
-  return String(value);
-}
-
 function cylinder(overrides: Partial<CylinderState> = {}): CylinderState {
   const c = issueColor(7);
   return {
@@ -68,23 +61,32 @@ function pair(overrides: Partial<LifecyclePair> = {}): LifecyclePair {
   };
 }
 
-/** The color a cylinder row draws its cylinder in. */
+/** The color the field draws an engine's ring in. */
 function rowColor(cyl: CylinderState): string {
-  const row = new CylinderRow();
-  row.cylinder = cyl;
-  const m = /--cyl-color:(#[0-9a-f]{6});/.exec(flatten(row.render()));
-  assert.ok(m, "the row sets its color");
-  return m[1]!;
+  return engineView(cyl, Date.now()).color.hex;
 }
 
-/** The color a lifecycle pill draws its work in. */
+/** The dashboard's state with `p` as its one piece of work, in the state that gives it `activity`. */
+function stateFor(p: LifecyclePair, activity: PillActivity | null, dark = false) {
+  const state = stateWith([p], p.repo ?? "");
+  return {
+    ...state,
+    // An engine on it is what makes a piece of work `working`.
+    cylinders: activity === "working"
+      ? [cylinder({ issueNumber: p.issue?.number ?? null, prNumber: p.pr?.number ?? null })]
+      : [],
+    shutdownRequested: dark,
+    // A dark pill keeps the activity it had when it went dark (#268).
+    frozenPillActivity: dark ? new Map([[`${p.repo ?? ""}${p.issue ? `#${p.issue.number}` : `pr-${p.pr?.number}`}`, activity]]) : null,
+  };
+}
+
+/** The color the field draws a piece of work in. */
 function pillColor(p: LifecyclePair, activity: PillActivity | null, dark = false): string {
-  const pill = new LifecyclePill();
-  const c = issueColor(p.issue?.number ?? p.pr!.number);
-  Object.assign(pill, { pair: p, activity, dark, color: c.hex, colorRgb: c.rgb });
-  const m = /--pill-color:(#[0-9a-f]{6});/.exec(flatten(pill.render()));
-  assert.ok(m, "the pill sets its color");
-  return m[1]!;
+  const [work] = workViews(stateFor(p, activity, dark), Date.now());
+  assert.ok(work, "the work is on the field");
+  assert.equal(work.activity, activity, "in the state the test means");
+  return work.color.hex;
 }
 
 // ── the scale ────────────────────────────────────────────────────────────────
@@ -139,7 +141,7 @@ test("a cylinder is drawn in its work's color at its level, and in trim gray wit
   assert.deepEqual(cylinderColor(parked), { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB }, "parked by a limit is trim");
 });
 
-test("the cylinder row draws each status at its level", () => {
+test("the field draws an engine at each status's level", () => {
   assert.equal(rowColor(cylinder()), issueColor(7).hex);
   assert.equal(rowColor(cylinder({ status: "done" })), burnColor(issueColor(7), "cold").hex);
   assert.equal(rowColor(cylinder({ status: "error" })), burnColor(issueColor(7), "cold").hex);
@@ -170,25 +172,47 @@ test("a pill with no activity is leveled by where its work stands", () => {
   assert.equal(pillBurnLevel(pair({ pr: null, prPhase: "inactive", projectStatus: "Backlog" }), null, false), "cold");
 });
 
-test("the pill draws its work at its level", () => {
+test("the field draws a piece of work at its level", () => {
   assert.equal(pillColor(pair(), "working"), issueColor(7).hex);
   assert.equal(pillColor(pair(), "review"), burnColor(issueColor(7), "waiting").hex);
   assert.equal(pillColor(pair(), "working", true), burnColor(issueColor(7), "cold").hex);
-  const orphan = pair({ issue: null, pr: { number: 300, title: "Orphan", state: "open" }, prPhase: "active" });
+  const orphan = pair({ issue: null, pr: { number: 300, title: "Orphan", state: "open", checksStatus: "pending" }, prPhase: "active" });
   assert.equal(pillColor(orphan, "waiting-ci"), burnColor(issueColor(300), "queued").hex);
 });
 
-test("a manual PR half is not grayed below the pill's cold level", () => {
-  const css = LifecyclePill.styles.toString();
-  const rule = /\.pill-pr-half\.disabled\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  assert.ok(rule, "the manual PR half has a rule");
-  assert.doesNotMatch(rule, /grayscale/);
+test("a manual PR is drawn at the cold level, hue and all, never grayed below it", () => {
+  const manual = pillColor(pair({ disabled: true }), "manual");
+  assert.equal(manual, burnColor(issueColor(7), "cold").hex);
+  assert.notEqual(manual, NEUTRAL_COLOR, "cold work keeps a trace of its hue");
+});
+
+test("a piece of work is laid out in the stratum of its level, and an engine's work beside its ring", () => {
+  const stratumOf = (p: LifecyclePair, activity: PillActivity | null, dark = false) => {
+    const model = fieldModel(stateFor(p, activity, dark), Date.now());
+    const layout = layoutField(model, { width: 1400, height: 900, railWidth: 0, lampWidth: 0 });
+    const node = layout.nodes.find((candidate) => candidate.kind === "work");
+    assert.ok(node && node.kind === "work");
+    return `${node.mode}:${node.level}`;
+  };
+  assert.equal(stratumOf(pair(), "working"), "reactor:burning", "an engine is on it");
+  assert.equal(stratumOf(pair({ prPhase: "active", pr: { number: 10, title: "X", state: "open", checksStatus: "pending" } }), "waiting-ci"), "row:queued");
+  assert.equal(stratumOf(pair(), "review"), "row:waiting");
+  assert.equal(stratumOf(pair({ disabled: true }), "manual"), "row:cold");
+  assert.equal(stratumOf(pair(), "review", true), "row:cold", "shut down: everything goes cold");
+});
+
+test("an inbox card is accented in its work's color at its level, the same color the field draws it in", () => {
+  const parked = pair({ approval: "awaiting-approval" });
+  const { cards, html } = renderInbox(stateFor(parked, "review"));
+  const leveled = burnColor(issueColor(7), "waiting");
+  assert.equal(cards[0]?.color?.hex, leveled.hex);
+  assert.ok(html.includes(`--card-color:${leveled.hex};--card-rgb:${leveled.rgb}`));
 });
 
 // ── one scale for every component ────────────────────────────────────────────
 
-test("the same level is the same color in the engine pane and the lifecycle pane", () => {
-  assert.equal(rowColor(cylinder()), pillColor(pair(), "working"), "an engine and the pill it works burn alike");
+test("the same level is the same color for an engine and for a piece of work", () => {
+  assert.equal(rowColor(cylinder()), pillColor(pair(), "working"), "an engine and the work it is on burn alike");
   assert.equal(
     rowColor(cylinder({ status: "done" })),
     pillColor(pair({ disabled: true }), "manual"),

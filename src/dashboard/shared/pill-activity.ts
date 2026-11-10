@@ -1,9 +1,16 @@
 import type { CylinderState, DashboardState, LifecyclePair } from '../store/types.js';
 import { workingCylinder } from './working-cylinder.js';
 
+// A note on the word. "Pill" is this code's name for a lifecycle pair as the
+// dashboard shows it — `pillKey`, `pillActivity`, pill-approval.ts — from when
+// each was drawn as a two-halved pill in a list. On the field it is a line of
+// work, or a reactor while an engine is on it, and its Approve button is on a
+// card in the inbox; the name, and everything these functions decide, is as
+// it was.
+
 /**
  * What a lifecycle pill is doing — or waiting on — right now, shown by the
- * animated status icon at its far right (issue #262):
+ * mark at the end of its line on the field (issue #262):
  *
  * - `working`: an engine cylinder is running an action on it.
  * - `manual`: its PR is labelled "manual", so yoke leaves it to a human.

@@ -802,6 +802,38 @@ test("broadcastLifecycleUpdate: no pill awaits approval in project mode, or once
   assert.equal(mergedPairs[0]!.approval, undefined);
 });
 
+test("broadcastLifecycleUpdate: in project mode a PR parked for review says it waits on a person, on GitHub", async () => {
+  const snapshot = {
+    issues: [makeIssue({ number: 10 }), makeIssue({ number: 11 }), makeIssue({ number: 12 })],
+    pullRequests: [
+      makePR({ number: 20, closingIssueNumbers: [10], linkedIssueNumbers: [10] }),
+      // Returned to draft: yoke's to re-review, not a person's to wait on.
+      makePR({ number: 21, draft: true, closingIssueNumbers: [11], linkedIssueNumbers: [11] }),
+      // Never sent for review: still being worked.
+      makePR({ number: 22, closingIssueNumbers: [12], linkedIssueNumbers: [12] }),
+    ],
+    agentSessions: [
+      reviewSession("a", 20, 10, "request-review", "2024-01-01T00:00:00.000Z"),
+      reviewSession("b", 21, 11, "request-review", "2024-01-01T00:00:00.000Z"),
+      reviewSession("c", 22, 12, "self-review", "2024-01-01T00:00:00.000Z"),
+    ],
+  };
+  type Pair = { pr: { number: number } | null; approval?: string; awaitingReview?: boolean };
+  const awaiting = (pairs: Pair[], prNumber: number) => pairs.find((p) => p.pr?.number === prNumber)?.awaitingReview;
+
+  const projectMode = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, true);
+  const pairs = (await projectMode).pairs as Pair[];
+  assert.equal(awaiting(pairs, 20), true);
+  assert.equal(awaiting(pairs, 21), undefined, "a draft is yoke's again");
+  assert.equal(awaiting(pairs, 22), undefined, "review was never requested");
+  assert.ok(pairs.every((p) => p.approval === undefined), "and nothing is approved on the dashboard in project mode");
+
+  const simple = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, false);
+  assert.ok(((await simple).pairs as Pair[]).every((p) => p.awaitingReview === undefined), "only project mode waits on GitHub");
+});
+
 test("broadcastIssueUpdate: emits nothing when the issue is labelled 'manual'", async () => {
   const issue = makeIssue({ number: 11, labels: ["manual"] });
   let emitted = false;

@@ -35,7 +35,15 @@ export class KeepAwakeLight extends LitElement {
     if (!video) return;
     this._keepAwake = new KeepAwake({
       video,
-      onStatusChange: status => { this._status = status; },
+      onStatusChange: status => {
+        this._status = status;
+        // The inbox lists a refused loop as something to tap, so it has to hear of it.
+        this.dispatchEvent(new CustomEvent<KeepAwakeStatus>('keep-awake-status', {
+          detail: status,
+          bubbles: true,
+          composed: true,
+        }));
+      },
     });
     void this._keepAwake.start();
   }
@@ -46,9 +54,15 @@ export class KeepAwakeLight extends LitElement {
     this._keepAwake = null;
   }
 
+  /** Start the loop the browser refused to autoplay: for the lamp's own click,
+   *  and for the inbox's card that offers the same thing to a finger. */
+  resume() {
+    void this._keepAwake?.resume();
+  }
+
   /** Autoplay can be refused until the page has been interacted with. */
   private _onClick() {
-    void this._keepAwake?.resume();
+    this.resume();
   }
 
   override render() {

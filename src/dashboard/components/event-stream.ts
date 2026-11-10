@@ -10,14 +10,18 @@ export class EventStream extends LitElement {
       height: 100%;
       overflow-y: auto;
       overflow-x: hidden;
+      overscroll-behavior: contain;
+      font-family: var(--font-mono, monospace);
+      scrollbar-width: thin;
+      scrollbar-color: rgba(var(--trim-rgb), 0.3) transparent;
     }
 
     .event-line {
       display: flex;
       align-items: flex-start;
-      gap: 5px;
+      gap: 8px;
       padding: 2px 0;
-      font-size: 10px;
+      font-size: 11px;
       line-height: 1.5;
       animation: fadeIn 0.2s ease-in;
     }
@@ -33,15 +37,16 @@ export class EventStream extends LitElement {
 
     .event-time {
       flex-shrink: 0;
-      color: rgba(255, 255, 255, 0.22);
-      font-size: 9px;
-      width: 54px;
+      color: rgba(255, 255, 255, 0.3);
+      font-size: 10px;
+      width: 58px;
+      font-variant-numeric: tabular-nums;
     }
 
     .event-repo {
       flex-shrink: 0;
-      color: rgba(255, 255, 255, 0.3);
-      font-size: 9px;
+      color: rgba(255, 255, 255, 0.36);
+      font-size: 10px;
       white-space: nowrap;
     }
 

@@ -13,7 +13,9 @@ import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
 import { pillActivity, pillKey, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
-import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
+import { fieldModel } from "../src/dashboard/field/model.js";
+import { layoutField } from "../src/dashboard/field/layout.js";
+import { workGlyph, workViews } from "../src/dashboard/shared/work-view.js";
 import { formatClockTime } from "../src/dashboard/shared/format.js";
 
 interface WireEvent {
@@ -461,6 +463,59 @@ test("DashboardStore.bootstrap() preserves 'connecting' status on initial load",
     await store.bootstrap();
     assert.equal(store.getState().connection, "connecting",
       "bootstrap() must not change connection status during initial load");
+  });
+});
+
+test("DashboardStore: the socket's replay of what the bootstrap already applied is not applied twice", async () => {
+  // A page loads its state from /api/state, then opens the socket — which
+  // starts by sending the same cached events again. Each used to be logged a
+  // second time, right under its first line.
+  const started = { type: "action-start", timestamp: "2026-11-10T12:00:00.000Z", data: { actionIndex: 1, totalActions: 2, type: "self-review", pullRequestNumber: 7, repo: "o/a", description: "Self-review PR #7" } };
+  const snapshot = { type: "snapshot-update", timestamp: "2026-11-10T12:00:01.000Z", data: { repo: "o/a", issueCount: 1, prCount: 1, sessionCount: 0, issues: [], pullRequests: [] } };
+  await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [started, snapshot] }, async () => {
+    const store = new DashboardStore();
+    try {
+      await store.bootstrap();
+      const lines = () => store.getState().eventStream.map((line) => line.text);
+      const afterBootstrap = lines();
+      assert.equal(afterBootstrap.length, 2);
+
+      // The socket replays both: neither is a new line.
+      store.applyEvent(structuredClone(started));
+      store.applyEvent(structuredClone(snapshot));
+      assert.deepEqual(lines(), afterBootstrap);
+      assert.equal(store.getState().eventCount, 2);
+
+      // What comes next is new, and is applied — even an event that says the same again.
+      store.applyEvent({ type: "log-message", timestamp: "2026-11-10T12:00:02.000Z", data: { level: "info", message: "hello" } });
+      assert.equal(lines().length, 3);
+      store.applyEvent(structuredClone(snapshot));
+      assert.equal(lines().length, 4, "skipped once, as a replay: after that it is an event like any other");
+
+      // An event of the same type and time that says something else was never a replay.
+      const other = { ...started, data: { ...started.data, pullRequestNumber: 8 } };
+      await store.bootstrap();
+      store.applyEvent(other);
+      assert.equal(store.getState().cylinders[0]?.prNumber, 8);
+    } finally {
+      store.disconnect();
+    }
+  });
+});
+
+test("DashboardStore.bootstrap() on a reconnect keeps the failures it heard of, which the server no longer replays", async () => {
+  await withMockFetch(MOCK_STATE_RESPONSE, async () => {
+    const store = new DashboardStore();
+    try {
+      store.applyEvent(makeEvent("action-start", { actionIndex: 1, totalActions: 2, type: "self-review", pullRequestNumber: 7, repo: "o/a", description: "d" }));
+      store.applyEvent(makeEvent("action-error", { actionIndex: 1, totalActions: 2, repo: "o/a", error: "boom" }));
+      assert.equal(store.getState().failures.size, 1);
+
+      await store.bootstrap();
+      assert.deepEqual([...store.getState().failures.keys()], ["o/a#pr-7"]);
+    } finally {
+      store.disconnect();
+    }
   });
 });
 
@@ -1005,35 +1060,40 @@ test("pillActivity: follows a PR through its checks, an engine's action and revi
 
 // ── dimming every pill no engine is working (issue #262) ──────────────────────
 
-/** A Lit TemplateResult flattened to the markup it describes. */
-function flatten(value: unknown): string {
-  if (value === null || value === undefined || typeof value === "symbol") return "";
-  if (Array.isArray(value)) return value.map(flatten).join("");
-  if (typeof value === "object" && "strings" in value && "values" in value) {
-    const { strings, values } = value as { strings: readonly string[]; values: readonly unknown[] };
-    return strings.reduce((out, s, i) => out + s + (i < values.length ? flatten(values[i]) : ""), "");
-  }
-  return String(value);
-}
-
-/** The classes on a pill rendered for `pair` the way the lifecycle list renders it. */
+/**
+ * How the field sets `pair`: "working" when an engine is on it, which is what
+ * earns it a reactor at the top of the field; nothing otherwise, when it is a
+ * dimmer line in the stratum of its level.
+ */
 function renderedPillClasses(s: DashboardState, pair: LifecyclePair): string[] {
-  const pill = new LifecyclePill();
-  Object.assign(pill, { pair, activity: pillActivity(pair, s.cylinders) });
-  const match = /class="(lifecycle-pill\b[^"]*)"/.exec(flatten(pill.render()));
-  assert.ok(match, "the pill renders its outer element");
-  return match[1]!.split(/\s+/);
+  const model = fieldModel(s, Date.now());
+  const key = pillKey(pair);
+  assert.ok(model.works.some((work) => work.key === key), "the work is on the field");
+  return model.reactors.some((reactor) => reactor.work?.key === key) ? ["working"] : [];
 }
 
-test("lifecycle pill: the stylesheet dims every pill without the working class", () => {
-  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
-  const rule = /\.lifecycle-pill:not\(\.working\) \{ opacity: ([\d.]+); \}/.exec(css);
-  assert.ok(rule, "a pill no engine is working is rendered at a lowered opacity");
-  const opacity = Number(rule[1]);
-  assert.ok(opacity > 0 && opacity < 1, `dimmed, not hidden (opacity ${opacity})`);
+test("the field: everything no engine is working is set below the reactors, a line each", () => {
+  let s = withPills(initialState(), "o/a", [
+    { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
+    prPill(30),
+    { issue: { number: 2, title: "Untouched", state: "open" }, pr: null, prPhase: "absent" },
+  ]);
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 3, type: "start-implementation", issueNumber: 5, repo: "o/a", description: "d",
+  }));
+  const layout = layoutField(fieldModel(s, Date.now()), { width: 1400, height: 900, railWidth: 0, lampWidth: 0 });
+  const works = layout.nodes.filter((node) => node.kind === "work");
+  const reactors = works.filter((node) => node.kind === "work" && node.mode === "reactor");
+  const rows = works.filter((node) => node.kind === "work" && node.mode === "row");
+  assert.equal(reactors.length, 1, "the one piece of work an engine is on");
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.ok(row.rect.y > reactors[0]!.rect.y + reactors[0]!.rect.h - 1, "below the reactor");
+    assert.ok(row.rect.h < reactors[0]!.rect.h, "and with less room: a line, not a reactor");
+  }
 });
 
-test("lifecycle pill: only the pills an engine is working stay undimmed, whatever their phase or icon", () => {
+test("the field: only the work an engine is on is given a reactor, whatever its phase or icon", () => {
   let s = withPills(initialState(), "o/a", [
     { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
     prPill(30),
@@ -1158,7 +1218,7 @@ test("frozenPillActivity: a dashboard that only hears app-shutdown freezes the p
   assert.equal(s.frozenPillActivity?.get(pillKey(pillForPR(s, 30))), "waiting-ci");
 });
 
-test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen icon", () => {
+test("the field: dark work is cold and still, keeping the icon it was frozen with", () => {
   let s = withPills(initialState(), "o/a", [
     { issue: { number: 5, title: "Implementing", state: "open" }, pr: null, prPhase: "planning" },
     prPill(30, {}, { checksStatus: "pending" }),
@@ -1168,27 +1228,35 @@ test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen i
   }));
   s = dashboardReducer(s, makeEvent("shutdown-requested", {}));
 
-  const render = (pair: LifecyclePair) => {
-    const pill = new LifecyclePill();
-    Object.assign(pill, { pair, activity: s.frozenPillActivity?.get(pillKey(pair)) ?? null, dark: pillsDark(s) });
-    return flatten(pill.render());
+  const workOf = (state: DashboardState, key: string) => {
+    const work = workViews(state, Date.now()).find((candidate) => candidate.key === key);
+    assert.ok(work, `${key} is on the field`);
+    return work;
   };
 
-  const worked = render(pillFor(s, 5));
-  const classes = /class="(lifecycle-pill\b[^"]*)"/.exec(worked)![1]!.split(/\s+/);
-  assert.ok(classes.includes("shutdown"), "dark");
-  assert.ok(!classes.includes("working"), "no working pulse, though an engine was on it");
-  assert.ok(worked.includes("shut down") && !worked.includes("implementing…"), "the planned PR half reads shut down");
-  assert.ok(worked.includes('class="meteor"'), "the meteor stays, frozen");
+  // The engine is still finishing its action: its work is dark, but stays beside the ring that is on it.
+  let worked = workOf(s, pillKey(pillFor(s, 5)));
+  assert.equal(worked.dark, true, "dark");
+  assert.equal(worked.level, "cold", "and cold, though an engine is on it");
+  assert.equal(workGlyph(worked), "engine", "the comet stays");
+  assert.ok(renderedPillClasses(s, pillFor(s, 5)).includes("working"), "its engine is still burning beside it");
 
-  const waiting = render(pillForPR(s, 30));
-  assert.ok(waiting.includes("lifecycle-pill shutdown has-status"), "dark, with its icon");
-  assert.ok(waiting.includes('class="hourglass"'), "the hourglass stays, frozen");
+  const waiting = workOf(s, pillKey(pillForPR(s, 30)));
+  assert.equal(waiting.dark, true);
+  assert.equal(waiting.level, "cold");
+  assert.equal(workGlyph(waiting), "checks", "the checks mark stays, frozen");
 
-  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
-  assert.match(css, /\.lifecycle-pill\.shutdown \{ opacity: 0\.5; \}/, "the shut-down cylinder row's opacity");
-  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: var\(--color-orange\); \}/, "and its orange accent");
-  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-status \* \{ animation-play-state: paused; \}/, "icons freeze in place");
+  // The engine finishes and stops: the work settles into the cold stratum, its icon as it was.
+  s = dashboardReducer(s, makeEvent("action-complete", { actionIndex: 1, totalActions: 1, repo: "o/a" }));
+  s = dashboardReducer(s, makeEvent("engine-shutdown", { engineIndex: 0 }));
+  worked = workOf(s, pillKey(pillFor(s, 5)));
+  assert.equal(worked.status.text, "shut down", "a planned implementation reads shut down, not implementing…");
+  assert.equal(workGlyph(worked), "engine", "the comet stays, stopped where it stood");
+  assert.deepEqual(renderedPillClasses(s, pillFor(s, 5)), [], "no engine is on it any more");
+
+  const model = fieldModel(s, Date.now());
+  assert.deepEqual(model.strata.map((stratum) => stratum.level), ["cold"], "everything has gone cold");
+  assert.equal(model.dark, true);
 });
 
 // ── action-start carries issue/PR titles for unlisted-work pills ──────────────

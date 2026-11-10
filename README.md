@@ -8,7 +8,7 @@
 
 It is for developers who want the creative part of software development — expressing intent and reviewing outcomes — without babysitting every agent handoff.
 
-<img width="1512" height="945" alt="Yoke by Outright Mental" src="design/screenshot/outrightmental-yoke-screenshot.png" />
+<img width="1512" alt="The Yoke Dashboard: engines burning at the top of the field, work in strata below them by how hot it is, and the inbox down the right-hand edge with PRs waiting to be approved" src="design/screenshot/outrightmental-yoke-screenshot.png" />
 
 ## Why this exists
 
@@ -126,7 +126,7 @@ When the Claude CLI reports that the subscription's usage limit is exhausted, `y
 The hold is said once, not once per engine per cycle:
 
 - **In the terminal**, a single line updates in place for the duration — `waiting 2h 14m until Sep 21, 8:50 AM for Claude usage limit` — with no repeated checkout output and no repeated identical failures behind it.
-- **On the Dashboard**, a banner across the top of the page shows what is being waited on, how much is left, and the wall-clock time it ends. It is replayed to a browser that connects mid-hold, so a reload never makes a parked run look merely idle.
+- **On the Dashboard**, the hold is said across the top of the field: what is being waited on, how much is left, and the wall-clock time it ends. It is replayed to a browser that connects mid-hold, so a reload never makes a parked run look merely idle.
 
 GitHub rate-limit holds get the same treatment.
 
@@ -143,6 +143,7 @@ See the deeper docs:
 
 - [Design overview](design/SPEC.md)
 - [Agent loop and PR lifecycle](design/AGENT_LOOP.md)
+- [The Dashboard: the field and the inbox](design/DASHBOARD.md)
 
 ## Quick start
 
@@ -183,56 +184,81 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
 ## Dashboard
 
-`yoke` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` (change the port with `dashboard_port`) when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engine cylinders, and each project's own `max_concurrency` caps how many of those cylinders may work it at once. When more than one project is configured, every cylinder, lifecycle pill, broadcast-feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears in the header only. The Dashboard shows:
+`yoke` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` (change the port with `dashboard_port`) when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engines, and each project's own `max_concurrency` caps how many of those engines may work it at once. When more than one project is configured, every piece of work, inbox card, feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears at the top only.
 
-- **Issue → PR Lifecycle panel**: a row of two-halved pills, one per open issue. The left half shows the issue; the right half shows the linked pull request and transitions through states:
-  - *(absent)* — no PR yet
-  - *dotted outline* — implementation is planned for this iteration
-  - *solid outline, draft* — PR is open as a draft
-  - *solid outline, ready* — PR is open and ready for review
-  - *completed (full fill)* — PR is merged/closed
+The Dashboard is two things. **The field** is one canvas the size of the window, on which the state of the whole run is drawn. **The inbox** runs down its right-hand edge, top to bottom, and holds everything you can *do* about it. There are no panels: nothing has a box of fixed size to be fitted into.
 
-  Each pill is colour-coded to its issue's own stable colour — derived from the issue number, so an issue keeps the same colour forever — and the broadcast feed uses that same colour for everything pertaining to the issue. A pill for a PR that closes no issue takes the PR number's own colour. Every one of these colours is fully saturated, and an engine cylinder takes on the colour of whatever it is working, so a working engine never shows up gray.
+### The field
 
-  Everything else on the Dashboard is plain gray with no hue at all: panel borders, headers, the status bar, scrollbars, labels, the keep-awake lamp, idle cylinders. Saturated colour is kept for the work engines burn tokens on, and gray never stands for any of it. The only other colours are alerts and outcomes: red for an error or a lost connection, orange for a hold or a shutdown, amber for a warning, and green for an approval going through.
+- **Heat rises.** Work is laid out by how much token burn it stands for right now, hottest at the top and with the most room:
+  - **BURNING** — an engine is running an action on it. Each gets a *reactor*: the engine's ring with a comet turning on it and the action's running time inside, and beside it the action (`IMPLEMENTING`, `REVIEWING`, `FIXING CHECKS`, `RESOLVING CONFLICTS`, `MERGING`), the model running it, and the work's number and title.
+  - **QUEUED** — Yoke works it next, with nothing but its own pipeline in the way: the PR's checks are running, an approved PR waits for its squash-merge, or an open PR or ready issue waits for a free engine.
+  - **WAITING** — it waits on someone else first: a PR ready for review or parked for your approval, or an issue blocked by other issues.
+  - **COLD** — nothing is coming: a `manual` PR, a merged PR, an issue out of the queue (Backlog, Done) — and every piece of work once Yoke is shutting down.
 
-  How saturated that colour is shows how much token burn the work stands for right now, judged by its state, not by measured usage. The hue still tells you *which* issue, and the saturation tells you *how hot* it is. A cylinder and a pill at the same level are drawn in exactly the same colour:
-  - *full saturation* — an engine is running an action on it: an active cylinder, and the pill it is working
-  - *strong* — Yoke works it next, with nothing but its own pipeline in the way: the PR's checks are running, an approved PR waits for its squash-merge, or an open PR or ready issue waits for a free engine
-  - *muted* — it waits on someone else first: a PR ready for human review, or an issue blocked by other issues
-  - *faint* — nothing is coming: a cylinder whose action is done, failed or shut down, a `manual` PR, a merged PR, an issue out of the queue (Backlog, Done), and every pill once Yoke is shutting down
+  A level with nothing in it takes no room at all. When the window cannot hold everything, the whole field steps down to denser sizes before it ever scrolls; when it does scroll, drag it or use the wheel.
 
-  Even the faint level keeps a trace of the issue's hue, so finished work never reads as trim. Only what is no work at all, such as an idle cylinder or one parked by a rate or usage limit, is plain gray.
-
-  Whatever its state, a pill that an engine cylinder is working on *right now* — through its issue or its pull request — has its border pulse brighter and darker in its colour, and stays at full opacity while every other pill is dimmed, so the pills being worked stand out. The pulse stops and the pill dims as soon as that cylinder's action finishes or fails, or the cylinder goes idle.
-
-  At its far right, a pill also shows an animated icon saying what it is doing or waiting on, if anything:
-  - *spinning meteor* (the same as an engine cylinder's) — an engine is working on it
-  - *waving person* — its PR is labelled `manual`, so yoke leaves it to you
-  - *hourglass* — its PR's GitHub Actions checks are queued or running, which is why no engine is working on it
+- **A line for every piece of work.** Below the reactors, each piece of work is one line: a track of five marks saying how far along the lifecycle it is — *issue · build · draft · ready · merged*, coloured up to the one it has reached — then its number, its title, and the one thing it is waiting on (`checks running`, `blocked by #36`, `ready — waiting for your approval`, `approved — waiting for a free engine to squash-merge it`). A line that is only waiting its turn for an engine says nothing, since its stratum already does. At the end of the line a small mark says the same at a glance:
+  - *three points in orbit* — its PR's GitHub Actions checks are queued or running, which is why no engine is working it
   - *blinking eye* — its PR is ready for review
+  - *person* — its PR is labelled `manual`, so Yoke leaves it to you
+  - *check* — approved and waiting for its merge (green), or merged
+  - *cross* — its checks are failing; *barred circle* — it is blocked by other issues
 
-  When more than one applies, the first in that list wins. Pills in none of these states show no icon.
+- **Engines.** The header of the top stratum says how many engines of the pool are burning. The ones that are not sit on *the bench* under the reactors: a small ring with the engine's number, and what it is waiting on — the time to its next cycle, or the limit that is parking it. An engine keeps its place: reactors are set in engine order, in columns fixed by the size of the pool, so a reactor never changes width because the engine beside it stopped.
 
-  A pill whose PR is parked by the [`review` label](#the-review-label) — ready, self-reviewed clean, and waiting on a human — has an **Approve** button just left of its icon. Click it — one click; there is no confirming second one — and Yoke squash-merges that PR the way it would have without the label: as a normal `squash-merge` action on an engine cylinder, which shows in the engine pane, waits out any usage-limit hold, and starts within a few seconds if an engine is free. Some details:
-  - The approval covers that one PR. The `review` label stays where it is, so the issue's other PRs still wait for a human.
-  - It never merges over failing checks: the button is greyed out while they fail. If the checks are still running, it approves a merge that waits for them to pass.
-  - Once approved, a PR stays approved until it merges. If it needs work first — checks that fail after you approve, merge conflicts, or a re-review after new comments or a return to draft — Yoke does that work and then squash-merges it, without asking for approval again.
-  - Yoke records the approval in its session store and comments on the PR (`Approved on the yoke dashboard…`), so it shows on GitHub too.
-  - From the instant you click, the button reads **Queued**: the approval is waiting for an engine to pick it up. It stays Queued while Yoke reads the PR from GitHub and waits for an engine to finish planning, and — once Yoke has recorded the approval and the PR reads **APPROVED** instead of READY — until an engine is free to carry it out, however long that takes. The moment one starts, it reads **Approving** — while the engine squash-merges the PR, or fixes it first (failing checks, merge conflicts, new comments) — then **Merged**. The pill follows Yoke's own reports, never a timer. A line on the PR half of the pill, after its **PR** label, says what it is waiting on: `queued — sent to yoke…`, `queued — reconnecting to yoke…`, `queued — yoke is reading PR #630 from GitHub…`, `queued — waiting for an engine to finish planning…`, `approved — waiting for a free engine to squash-merge it`, `approved — an engine squash-merges it once its checks pass`, `approving — an engine is squash-merging it`, `approving — an engine is resolving its merge conflicts, then it squash-merges`. A dashboard approval goes ahead of every engine's queued planning pass, so it waits for at most the one already under way.
-  - A click never falls back to **Approve** as if it had not happened, and never gives up on its own. Until Yoke answers it stays **Queued**: a click made while the Dashboard is not connected, or sent and not answered before the connection dropped, is sent again when it reconnects (`queued — reconnecting to yoke…`), and one with no answer ten seconds on reads `queued — sent to yoke, no answer yet…`. If Yoke does not approve it, the button reads **Retry** and the line says why, for as long as the pill is there: `not approved: its checks are failing`, or `approval failed: …` for an unexpected error. Click Retry to send it again. A long line is cut short; hover over it to read it all.
-  - Pressing again while an approval is under way starts no second one, and a press that finds the PR already approved, or an engine already working on it because of its approval, reads as approved, not as a refusal. Every open Dashboard shows an approval in progress, wherever it was pressed, and a page opened or reloaded meanwhile still shows it; how another Dashboard's approval ended shows for a minute.
-  - Every request and its outcome, including refusals and why, is also written to the event log, with how long it took and how long it waited for the planner.
-  - Only the Dashboard's own page can approve. A request from a page on any other site, or from the Dashboard opened by a name other than an IP address, `localhost` or the host it listens on, is refused, and that page alone is told why.
-  - There is no Approve button in Project SDLC, where every PR waits for a human on GitHub.
+- **Colour says which, and how hot.** Each piece of work is drawn in its issue's own stable colour — derived from the issue number, so an issue keeps the same colour forever — and its inbox card, its engine's ring, and its lines in the event log use that same colour. Work for a PR that closes no issue takes the PR number's own colour. How *saturated* the colour is shows how much token burn the work stands for right now, judged by its state, not by measured usage: full saturation while an engine burns on it, strong when queued, muted when waiting, faint when cold. The hue still tells you *which* issue, and the saturation *how hot* it is, and the same level is the same colour wherever it is drawn. Even the faint level keeps a trace of the issue's hue, so finished work never reads as trim.
 
-  Once a graceful shutdown is requested, every pill goes dark, like the shut-down cylinder rows: it dims, takes on their orange accent at its left edge, and stops pulsing — a planned implementation reads *shut down* instead of *implementing…* — and its status icon, if it had one, freezes in place: it stays the icon the pill had when the shutdown was requested, even as the engines finish their in-flight work. No engine starts new work after the request, and nothing will keep the pills live, so whatever they show is no longer current.
+  Everything else on the Dashboard is plain gray with no hue at all: the field's ground and rules, its labels, the instruments along its top, the inbox's surfaces, idle engines. Saturated colour is kept for the work engines burn tokens on, and gray never stands for any of it. The only other colours are alerts and outcomes: red for an error or a lost connection, orange for a hold or a shutdown, amber for a warning, and green for an approval going through. The canvas paints with the same colour tokens as the stylesheet, so the rule holds for what is painted as well as for what is styled.
 
-- **Implementation / Review / Broadcast Feed** panels showing live orchestrator logs and GitHub activity.
+- **Things move when their state does.** A piece of work is the same thing wherever it is drawn, so when its checks pass it slides up a stratum, and when an engine takes it the engine's ring swings out from the bench to it, and back when the action is done. A ring spreads from the mark of any piece of work whose state has just changed. Nothing moves otherwise: an open Dashboard repaints only the comets and the few marks in motion, and nothing at all while no engine is burning. If your system asks for reduced motion, nothing loops and nothing glides.
 
-- **Claude usage gauge**: in the top-right cluster, beside the cycle number and countdown, a gauge reads how much of your Claude account's rolling 5-hour usage window is used (**CLAUDE 5H**, with a meter that turns amber at 70% and red at 90%) and how long until that window resets (**RESETS IN**) — so you can plan work against the capacity that is left *before* a usage-limit hold parks every cylinder. Yoke reads it from Anthropic's usage endpoint once a minute with the login the Claude CLI already uses (or with `anthropic_usage_token`, when set), and every open Dashboard is updated with each reading. The startup banner says which, and the log gets a `Claude usage:` line for the first reading and whenever it changes — another 10% of the window used, a new window, or no reading and why. When the Claude CLI is not logged in to a Claude account and no token is set, the gauge reads **OFF**. When a read fails after a good one — Anthropic is overloaded (HTTP 529), rate-limits the read, cannot be reached or rejects the token — the gauge keeps showing the last good numbers until a read succeeds again or their window resets, rather than blinking out for a minute; hover over it to see when they were read and why the latest read failed. Whenever there is no reading it can trust — before the first one arrives, when reads fail before any has succeeded, after the window resets, or once readings have stopped arriving for more than five minutes — it goes dark and reads **—** rather than showing a number that may be wrong. While a Claude usage limit is parking the cylinders, the gauge reads **LIMIT** in red and **RESETS IN** counts down to the reset time the Claude CLI gave, whatever the last reading said. Hover over the gauge to see why.
+- **Instruments** run along the top: the Dashboard's title, the cycle number, the countdown to the next cycle, the Claude usage gauge, and the keep-awake lamp.
 
-- **Keep-awake lamp**: the **ON** light in the top-right corner is not a CSS animation — it is a tiny looping, muted video, playing for as long as the Dashboard is open. An actively playing video is the one thing observed to stop a locked-down laptop sleeping or locking mid-run, so the Dashboard plays one itself instead of you parking a full-screen YouTube video next to it. There is nothing to switch on: it runs whenever the Dashboard is open, not only while cylinders are working, and the Screen Wake Lock API is requested alongside it wherever the browser allows. If the browser refuses to autoplay the loop, the lamp turns amber and reads **CLICK** — one click or keypress anywhere on the page starts it. The lamp is sized to the height of the header's own text, so it lights the corner without making the header bar taller.
+  - **Claude usage gauge**: a ring that fills as your Claude account's rolling 5-hour usage window is used (**CLAUDE 5H**; it turns amber at 70% and red at 90%), with the time until that window resets (**RESETS IN**) — so you can plan work against the capacity that is left *before* a usage-limit hold parks every engine. Yoke reads it from Anthropic's usage endpoint once a minute with the login the Claude CLI already uses (or with `anthropic_usage_token`, when set), and every open Dashboard is updated with each reading. The startup banner says which, and the log gets a `Claude usage:` line for the first reading and whenever it changes — another 10% of the window used, a new window, or no reading and why. When the Claude CLI is not logged in to a Claude account and no token is set, the gauge reads **OFF**. When a read fails after a good one — Anthropic is overloaded (HTTP 529), rate-limits the read, cannot be reached or rejects the token — the gauge keeps showing the last good numbers until a read succeeds again or their window resets, rather than blinking out for a minute. Whenever there is no reading it can trust — before the first one arrives, when reads fail before any has succeeded, after the window resets, or once readings have stopped arriving for more than five minutes — it goes dark and reads **—** rather than showing a number that may be wrong. While a Claude usage limit is parking the engines, the gauge reads **LIMIT** in red and **RESETS IN** counts down to the reset time the Claude CLI gave, whatever the last reading said. Tap the gauge to read why it shows what it shows.
+
+  - **Keep-awake lamp**: the **ON** light at the top right of the field is not a drawing — it is a tiny looping, muted video, playing for as long as the Dashboard is open. An actively playing video is the one thing observed to stop a locked-down laptop sleeping or locking mid-run, so the Dashboard plays one itself instead of you parking a full-screen YouTube video next to it. There is nothing to switch on: it runs whenever the Dashboard is open, not only while engines are working, and the Screen Wake Lock API is requested alongside it wherever the browser allows. If the browser refuses to autoplay the loop, the lamp turns amber and reads **CLICK**, and a card at the top of the inbox offers to start it — one tap there, or a click or keypress anywhere on the page, does.
+
+- **A hold** on the whole pool — a Claude usage limit, a GitHub rate limit — is said across the top of the field: what is being waited on, how much is left, and the wall-clock time it ends, in your browser's own time zone. It is replayed to a browser that connects mid-hold, so a reload never makes a parked run look merely idle.
+
+- **The last lines of the event log** run along the bottom of the field. Tap them — or **Log**, at the foot of the inbox — to draw up the activity drawer: the whole event log, and the feed of GitHub activity beside it.
+
+- **Tap anything** on the field — a piece of work, an engine, the usage gauge, a hold — and a card at the foot of the inbox says the rest: the whole title, where it stands, and links to the issue and the PR on GitHub. (A touch screen has nothing to hover with, so nothing on the Dashboard depends on hovering.)
+
+Everything the field draws is also there as ordinary markup, out of sight, for a screen reader and the keyboard: the engines, each stratum, and every piece of work as a link to GitHub. Tabbing through it moves a focus ring across the canvas.
+
+### The inbox
+
+The inbox is every interaction the Dashboard offers, in one place: down the right-hand edge of the screen, top to bottom — where the hand of someone using a touch screen right-handed already is, and where reaching for it never puts an arm across the picture. Every target on it is at least 44 pixels tall, and the one button a card exists for is 56. With nothing in it, it folds away to a strip — a count, and the Log button — and gives its room to the field; on a screen too narrow to share, the field keeps the strip's width and the open inbox lies over it instead (tap the count to open and close it). The browser tab's title carries the count too, for when the Dashboard is not the tab in front.
+
+It is federated: each kind of thing that needs a person comes from its own source, and they are listed together, the most pressing kind first and, within a kind, the longest-waiting on top:
+
+- **Keep awake** — the browser refused to start the keep-awake loop; one tap starts it.
+- **Approve to merge** — a PR parked by the [`review` label](#the-review-label), with an **Approve** button (below).
+- **Ready for your review** — in [Project SDLC](#project-sdlc-human-in-the-loop), a PR Yoke has asked a person to review on GitHub, with a button that opens it there.
+- **Failed …** — an action an engine ran that failed, with the first line of why. Yoke retries a failed action by itself, so there is nothing you must do; the card is there because a failure used to be one red line scrolling out of the log. It leaves when an engine takes the work up again, or when you dismiss it.
+- **Manual — yours** — a PR labelled `manual`, which Yoke leaves to you, with a button that opens it on GitHub.
+
+A card about a piece of work is edged in that work's colour and joined to it by a line across the field, so you can see what a card is about without reading it. The line runs out from the work to a gutter beside the inbox and up or down it to the card — never across the text — and a point travels along it: towards the card while the work waits on you, and back from it, in green, once you have acted.
+
+The list never moves a button under your finger. A card stays where it is however it changes, a new one lands below the others of its kind, and for a moment after a card has arrived or moved — when the card above it has left, say — its button takes no press.
+
+**Approve.** A PR parked by the `review` label — ready, self-reviewed clean, and waiting on a human — has a card with an **Approve** button. Press it — one press; there is no confirming second one — and Yoke squash-merges that PR the way it would have without the label: as a normal `squash-merge` action on an engine, which shows on the field as a reactor, waits out any usage-limit hold, and starts within a few seconds if an engine is free. Some details:
+
+- The approval covers that one PR. The `review` label stays where it is, so the issue's other PRs still wait for a human.
+- It never merges over failing checks: the button is greyed out while they fail. If the checks are still running, it approves a merge that waits for them to pass.
+- Once approved, a PR stays approved until it merges. If it needs work first — checks that fail after you approve, merge conflicts, or a re-review after new comments or a return to draft — Yoke does that work and then squash-merges it, without asking for approval again.
+- Yoke records the approval in its session store and comments on the PR (`Approved on the yoke dashboard…`), so it shows on GitHub too.
+- From the instant you press, the button reads **Queued**: the approval is waiting for an engine to pick it up. It stays Queued while Yoke reads the PR from GitHub and waits for an engine to finish planning, and — once Yoke has recorded the approval — until an engine is free to carry it out, however long that takes. The moment one starts, it reads **Approving** — while the engine squash-merges the PR, or fixes it first (failing checks, merge conflicts, new comments) — then **Merged**. The card follows Yoke's own reports, never a timer, and the button is the same size in every step, so nothing moves as it changes. A line under the button says what it is waiting on: `queued — sent to yoke…`, `queued — reconnecting to yoke…`, `queued — yoke is reading PR #630 from GitHub…`, `queued — waiting for an engine to finish planning…`, `approved — waiting for a free engine to squash-merge it`, `approved — an engine squash-merges it once its checks pass`, `approving — an engine is squash-merging it`, `approving — an engine is resolving its merge conflicts, then it squash-merges`. A dashboard approval goes ahead of every engine's queued planning pass, so it waits for at most the one already under way.
+- A press never falls back to **Approve** as if it had not happened, and never gives up on its own. Until Yoke answers it stays **Queued**: a press made while the Dashboard is not connected, or sent and not answered before the connection dropped, is sent again when it reconnects (`queued — reconnecting to yoke…`), and one with no answer ten seconds on reads `queued — sent to yoke, no answer yet…`. If Yoke does not approve it, the button reads **Retry** and the line says why, for as long as the card is there: `not approved: its checks are failing`, or `approval failed: …` for an unexpected error. Press Retry to send it again.
+- Pressing again while an approval is under way starts no second one, and a press that finds the PR already approved, or an engine already working on it because of its approval, reads as approved, not as a refusal. Every open Dashboard shows an approval in progress, wherever it was pressed, and a page opened or reloaded meanwhile still shows it; how another Dashboard's approval ended shows for a minute.
+- Every request and its outcome, including refusals and why, is also written to the event log, with how long it took and how long it waited for the planner.
+- Only the Dashboard's own page can approve. A request from a page on any other site, or from the Dashboard opened by a name other than an IP address, `localhost` or the host it listens on, is refused, and that page alone is told why.
+- There is no Approve button in Project SDLC, where every PR waits for a human on GitHub: there the inbox lists it as **Ready for your review** instead.
+
+### Shutting down
+
+Once a graceful shutdown is requested, the field goes cold: every piece of work sinks to the bottom stratum at its faintest, and its mark, if it had one, freezes in place — it stays the mark the work had when the shutdown was requested. An engine still finishing its action goes on burning beside its work, since it is; when it stops, its ring goes back to the bench in orange and reads *shut down*. The instruments say **STOPPING**, then **SHUT DOWN**. No engine starts new work after the request, and nothing will keep the field live, so whatever it shows from then on is no longer current.
 
 To prevent the Dashboard from opening automatically, pass `--no-browser`:
 
@@ -364,7 +390,7 @@ unattended.
 - A parked PR does not count against `max_concurrency`.
 - Converting the PR back to draft, or commenting on it, re-queues it: Yoke addresses the feedback, self-reviews, and requests review again.
 - Removing the label from both the issue and the PR returns the PR to the normal auto-merge flow.
-- To merge it without leaving the Dashboard, press **Approve** on its pill (see [Dashboard](#dashboard)): Yoke squash-merges that PR exactly as it would have without the label, carrying it through any fixes, conflict resolution and re-review it needs first without asking again.
+- To merge it without leaving the Dashboard, press **Approve** on its card in the inbox (see [The inbox](#the-inbox)): Yoke squash-merges that PR exactly as it would have without the label, carrying it through any fixes, conflict resolution and re-review it needs first without asking again.
 
 Yoke creates the `review` label in the repository on startup if it does not already exist.
 
@@ -384,6 +410,14 @@ GitHub sub-issues are understood natively. A parent issue is automatically block
 npm test
 npm run build
 ```
+
+To work on the Dashboard without a token, a backlog, or an hour of waiting for something to happen, run it against a stand-in engine pool:
+
+```bash
+npm run demo:dashboard
+```
+
+That starts the real Dashboard server at `http://localhost:3000` and feeds it the events a real run emits, from a small simulation of the loop over a made-up backlog — an Approve press on the page is answered the way Yoke answers one, and nothing touches GitHub or Claude. `-- --scene=hold` (or `quiet`, `single`, `crowded`, `review`), `-- --shutdown-after=20`, `-- --fail=0.5`, `-- --speed=4` and `-- --port=4000` show it in other states; Ctrl+C once shuts it down gracefully, the way Yoke does, and twice exits. The screenshot at the top of this page is of `npm run demo:dashboard`.
 
 The Dashboard's keep-awake loop (`src/dashboard/assets/keep-awake.{webm,mp4}`) is committed, so a normal build needs nothing extra. To change how the lamp looks, edit and re-run `tools/generate-keep-awake-video.py` — it needs Pillow and GStreamer, neither of which Yoke itself depends on — then commit the regenerated files.
 

@@ -243,13 +243,35 @@ test("the keep-awake lamp plays both bundled sources", () => {
   assert.match(component, /\bplaysinline\b/, "the video must play inline, not fullscreen");
 });
 
-test("the Dashboard mounts the keep-awake lamp whenever it is open", () => {
-  const header = readFileSync(join(ROOT, "src", "dashboard", "components", "yoke-header.ts"), "utf-8");
-  assert.match(
-    header,
-    /<keep-awake-light><\/keep-awake-light>/,
-    "the lamp is unconditional — the Dashboard keeps the machine awake whenever it is open (#246)",
-  );
+test("the Dashboard mounts the keep-awake lamp whenever it is open", async () => {
+  const { YokeApp } = await import("../src/dashboard/components/yoke-app.js");
+  const { initialState } = await import("../src/dashboard/store/dashboard-store.js");
+  const { flatten } = await import("./dashboard-helpers.js");
+
+  // Whatever yoke is doing — running, held, shutting down, out of reach.
+  const running = { ...initialState(), connection: "connected" as const };
+  for (const [description, state] of [
+    ["running", running],
+    ["held", { ...running, hold: { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs: Date.now() + 3_600_000 } }],
+    ["shut down", { ...running, shutdownRequested: true, appShutdown: true }],
+    ["disconnected", { ...running, connection: "disconnected" as const }],
+  ] as const) {
+    const app = new YokeApp();
+    Object.assign(app, { _state: state });
+    const markup = flatten(app.render());
+    assert.match(
+      markup,
+      /<keep-awake-light\b[\s\S]*?><\/keep-awake-light>/,
+      `${description}: the lamp is unconditional — the Dashboard keeps the machine awake whenever it is open (#246)`,
+    );
+  }
+});
+
+test("the keep-awake lamp sits at the top right of the field, clear of the inbox however wide that is", () => {
+  const scope = rule(".keep-awake");
+  assert.match(decl(scope, "position"), /absolute/);
+  assert.match(decl(scope, "right"), /calc\(var\(--rail-w, 0px\) \+ \d+px\)/, "it moves with the inbox's edge");
+  assert.doesNotMatch(scope, /display:\s*none|visibility:\s*hidden|opacity:\s*0\b/, "a video the browser cannot see playing holds nothing awake");
 });
 
 // ── The lamp's footprint (#250) ───────────────────────────────────────────────

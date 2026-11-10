@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   APPROVAL_OUTCOME_SHOW_MS,
@@ -13,9 +16,10 @@ import {
   type ApprovalView,
 } from "../src/dashboard/shared/pill-approval.js";
 import { pillActivity, type PillActivity } from "../src/dashboard/shared/pill-activity.js";
-import { LifecyclePill } from "../src/dashboard/components/lifecycle-pill.js";
+import { YokeInbox } from "../src/dashboard/components/yoke-inbox.js";
 import { DashboardStore, recordApprovalPress, initialState } from "../src/dashboard/store/dashboard-store.js";
-import type { ApprovalPress, LifecyclePair, PullRequestApprovalStatus } from "../src/dashboard/store/types.js";
+import type { ApprovalPress, DashboardState, LifecyclePair, PullRequestApprovalStatus } from "../src/dashboard/store/types.js";
+import { click, cylinder, flatten, renderInbox, stateWith } from "./dashboard-helpers.js";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,49 +35,50 @@ function parkedPair(overrides: Partial<LifecyclePair> = {}, pr: Record<string, u
   };
 }
 
-interface Template {
-  strings: readonly string[];
-  values: readonly unknown[];
+const INBOX_CSS = readFileSync(
+  join(fileURLToPath(new URL(".", import.meta.url)), "..", "src", "dashboard", "styles", "inbox.css"),
+  "utf-8",
+).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+
+/** What the inbox is drawn from besides the PR's own lifecycle. */
+interface CardProps {
+  /** An engine is running this action on the PR. */
+  workingAction?: string;
+  approvalStatus?: PullRequestApprovalStatus;
+  approvalPress?: ApprovalPress | null;
+  connected?: boolean;
+  /** Yoke is shutting down. */
+  dark?: boolean;
 }
 
-function isTemplate(value: unknown): value is Template {
-  return typeof value === "object" && value !== null && "strings" in value && "values" in value;
-}
-
-function flatten(value: unknown): string {
-  if (value === null || value === undefined || typeof value === "symbol") return "";
-  if (Array.isArray(value)) return value.map(flatten).join("");
-  if (isTemplate(value)) {
-    return value.strings.reduce((out, s, i) => out + s + (i < value.values.length ? flatten(value.values[i]) : ""), "");
+/** The dashboard's state with `pair` as its one piece of work, and `props` applied. */
+function stateFor(pair: LifecyclePair, props: CardProps = {}): DashboardState {
+  const key = `${pair.repo ?? ""}#${pair.pr?.number ?? 0}`;
+  let state = stateWith([pair], pair.repo ?? "");
+  if (props.workingAction !== undefined) {
+    state = { ...state, cylinders: [cylinder({ actionType: props.workingAction, repo: pair.repo ?? null, issueNumber: pair.issue?.number ?? null, prNumber: pair.pr?.number ?? null })] };
   }
-  return String(value);
+  if (props.approvalStatus) state = { ...state, approvals: new Map([[key, props.approvalStatus]]) };
+  if (props.approvalPress) state = { ...state, approvalPresses: new Map([[key, props.approvalPress]]) };
+  if (props.connected === false) state = { ...state, connection: "disconnected" };
+  if (props.dark) state = { ...state, shutdownRequested: true };
+  return state;
 }
 
-/** The Approve button's template in a rendered pill, if it has one. */
-function findApproveButton(value: unknown): Template | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findApproveButton(item);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  if (!isTemplate(value)) return undefined;
-  if (value.strings.join("").includes('class="pill-approve')) return value;
-  return findApproveButton([...value.values]);
+/**
+ * The inbox card for `pair`'s PR, built and drawn the way the app does it:
+ * its markup, and its Approve button if it has one.
+ */
+function renderCard(pair: LifecyclePair, props: CardProps = {}, inbox = new YokeInbox()) {
+  const rendered = renderInbox(stateFor(pair, props), { inbox });
+  const card = rendered.card();
+  return { inbox, cards: rendered.cards, html: flatten(card), button: rendered.approveButton() };
 }
 
-function renderPill(pair: LifecyclePair, props: Record<string, unknown> = {}, pill = new LifecyclePill()) {
-  Object.assign(pill, { pair, activity: pillActivity(pair, []), ...props });
-  return { pill, html: flatten(pill.render()), button: findApproveButton(pill.render()) };
-}
-
-/** Click the rendered Approve button, as the browser would. */
-function click(button: Template | undefined): void {
-  assert.ok(button, "the pill shows an Approve button");
-  const handler = button.values.find((value) => typeof value === "function") as ((event: Event) => void) | undefined;
-  assert.ok(handler, "the button has a click handler");
-  handler(new Event("click"));
+/** The status line of a card, saying `text`. */
+function statusLine(text: string, tone: string = ""): RegExp {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`class="inbox-line${tone ? ` ${tone}` : "[^\"]*"}" role="status" aria-live="polite">${escaped}</p>`);
 }
 
 // ── when a pill offers Approve ───────────────────────────────────────────────
@@ -136,137 +141,151 @@ test("pillActivity: an approved PR no longer reads as waiting on a reviewer", ()
   );
 });
 
-// ── the pill ─────────────────────────────────────────────────────────────────
+// ── the inbox card ───────────────────────────────────────────────────────────
 
 /**
- * Do with the pill's presses what yoke-app and the store do: record each one,
- * sent unless `sent` is false, and hand it back to the pill. Returns the PRs
- * pressed, in order.
+ * Do with the inbox's presses what yoke-app and the store do: record each one,
+ * sent unless `sent` is false. `pressed` is the PRs pressed, in order, and
+ * `press()` the press now on record for PR #10, to draw the inbox from again.
  */
-function actLikeTheApp(pill: LifecyclePill, sent = true): unknown[] {
+function actLikeTheApp(inbox: YokeInbox, sent = true) {
   let state = initialState();
   const pressed: unknown[] = [];
-  pill.addEventListener("pill-approve", (event) => {
+  inbox.addEventListener("inbox-approve", (event) => {
     const target = (event as CustomEvent<{ repo: string; pullRequestNumber: number }>).detail;
     pressed.push(target);
     state = recordApprovalPress(state, target, sent, Date.now());
-    pill.approvalPress = approvalPressFor(state.approvalPresses, pill.pair!);
   });
-  return pressed;
+  return { pressed, press: () => approvalPressFor(state.approvalPresses, parkedPair()) };
 }
 
-test("lifecycle pill: a parked PR's pill shows an Approve button over its PR half", () => {
-  const { html, button } = renderPill(parkedPair());
+test("inbox card: a parked PR has a card in the inbox with an Approve button", () => {
+  const { html, button, cards } = renderCard(parkedPair());
 
+  assert.equal(cards.length, 1, "one card for the one parked PR");
   assert.ok(button, "an Approve button");
-  assert.match(html, /class="lifecycle-pill has-status has-approve"/);
-  assert.match(flatten(button), /class="pill-approve idle"/);
+  assert.match(html, /class="inbox-card source-approval accent-work step-idle"/);
+  assert.match(html, /data-card="approval:o\/a#10"/);
+  assert.match(html, /<span class="inbox-eyebrow">Approve to merge<\/span>/);
+  assert.match(html, /<h3 class="inbox-title">Add the thing<\/h3>/);
+  assert.match(flatten(button), /class="inbox-action approve idle"/);
   assert.match(flatten(button), />Approve<\/button>/);
   assert.match(flatten(button), /title="Approve PR #10: yoke squash-merges it"/);
   assert.match(flatten(button), /\?disabled=false/);
-  assert.match(html, /READY/);
 });
 
-test("lifecycle pill: failing checks render the button disabled", () => {
-  const { button } = renderPill(parkedPair({}, { checksStatus: "failure" }));
+test("inbox card: it links to the PR and to the issue it closes, each a target of its own", () => {
+  const { html } = renderCard(parkedPair());
+
+  assert.match(html, /class="inbox-link"\s+href="https:\/\/github\.com\/o\/a\/pull\/10"\s+target="_blank"\s+rel="noopener noreferrer"/);
+  assert.match(html, /class="inbox-link"\s+href="https:\/\/github\.com\/o\/a\/issues\/1"/);
+  assert.match(html, /<span class="inbox-facts">checks passing<\/span>/);
+});
+
+test("inbox card: failing checks render the button disabled", () => {
+  const { button, html } = renderCard(parkedPair({}, { checksStatus: "failure" }));
 
   assert.match(flatten(button), /\?disabled=true/);
+  assert.match(flatten(button), /title="Checks are failing on PR #10/);
+  assert.match(html, /<span class="inbox-facts">checks failing<\/span>/);
 });
 
-test("lifecycle pill: an approved PR's pill reads APPROVED, its button Queued until an engine picks it up", () => {
-  const { html, button } = renderPill(parkedPair({ approval: "approved" }));
+test("inbox card: an approved PR's card says so, its button Queued until an engine picks it up", () => {
+  const { html, button } = renderCard(parkedPair({ approval: "approved" }));
 
   assert.match(flatten(button), />Queued<\/button>/);
   assert.match(flatten(button), /\?disabled=true/);
-  assert.match(html, /APPROVED/);
-  assert.ok(!html.includes(">READY<"));
-  assert.match(html, statusLine("approved — waiting for a free engine to squash-merge it"));
+  assert.match(html, /<span class="inbox-eyebrow">Approval queued<\/span>/);
+  assert.match(html, statusLine("approved — waiting for a free engine to squash-merge it", "approved"));
 });
 
-test("lifecycle pill: one press approves — it asks yoke once and reads Queued at once (#278)", () => {
-  const pill = new LifecyclePill();
-  const pressed = actLikeTheApp(pill);
-  try {
-    click(renderPill(parkedPair(), {}, pill).button);
-    assert.deepEqual(pressed, [{ repo: "o/a", pullRequestNumber: 10 }], "no confirming second click");
+test("inbox card: one press approves — it asks yoke once and reads Queued at once (#278)", () => {
+  const inbox = new YokeInbox();
+  const app = actLikeTheApp(inbox);
 
-    const { html, button } = renderPill(parkedPair(), {}, pill);
-    assert.match(flatten(button), /class="pill-approve queued"/);
-    assert.match(flatten(button), />Queued<\/button>/);
-    assert.match(flatten(button), /\?disabled=true/, "and cannot be sent twice");
-    assert.match(html, statusLine("queued — sent to yoke…"));
+  click(renderCard(parkedPair(), {}, inbox).button);
+  assert.deepEqual(app.pressed, [{ repo: "o/a", pullRequestNumber: 10 }], "no confirming second click");
 
-    click(button);
-    assert.equal(pressed.length, 1);
-  } finally {
-    pill.disconnectedCallback();
-  }
+  const { html, button } = renderCard(parkedPair(), { approvalPress: app.press() }, inbox);
+  assert.match(flatten(button), /class="inbox-action approve queued"/);
+  assert.match(flatten(button), />Queued<\/button>/);
+  assert.match(flatten(button), /\?disabled=true/, "and cannot be sent twice");
+  assert.match(html, statusLine("queued — sent to yoke…", "progress"));
+
+  click(button);
+  assert.equal(app.pressed.length, 1);
 });
 
-test("lifecycle pill: there is no confirm step left anywhere", () => {
-  const css = LifecyclePill.styles.toString();
-
+test("inbox card: there is no confirm step left anywhere", () => {
   assert.ok(!Object.values(APPROVE_BUTTON_LABELS).some((label) => /confirm/i.test(label)));
-  assert.ok(!/\.confirm\b/.test(css), "nor its styling");
+  assert.ok(!/\.confirm\b/.test(INBOX_CSS), "nor its styling");
 });
 
-test("lifecycle pill: a press made while not connected reads Queued, waiting to be sent, and is not pressed twice (#278)", () => {
-  const pill = new LifecyclePill();
-  const pressed = actLikeTheApp(pill, false);
-  try {
-    click(renderPill(parkedPair(), {}, pill).button);
-    const { html, button } = renderPill(parkedPair(), { connected: false }, pill);
-    assert.match(flatten(button), />Queued<\/button>/, "never back to Approve, and never an error to give up on");
-    assert.match(flatten(button), /\?disabled=true/);
-    assert.match(html, statusLine("queued — reconnecting to yoke…"));
+test("inbox card: a press made while not connected reads Queued, waiting to be sent, and is not pressed twice (#278)", () => {
+  const inbox = new YokeInbox();
+  const app = actLikeTheApp(inbox, false);
 
-    click(button);
-    assert.equal(pressed.length, 1, "the store sends it when the connection is back");
-  } finally {
-    pill.disconnectedCallback();
-  }
+  click(renderCard(parkedPair(), {}, inbox).button);
+  const { html, button } = renderCard(parkedPair(), { approvalPress: app.press(), connected: false }, inbox);
+  assert.match(flatten(button), />Queued<\/button>/, "never back to Approve, and never an error to give up on");
+  assert.match(flatten(button), /\?disabled=true/);
+  assert.match(html, statusLine("queued — reconnecting to yoke…", "progress"));
+
+  click(button);
+  assert.equal(app.pressed.length, 1, "the store sends it when the connection is back");
 });
 
-test("lifecycle pill: a press follows its PR, not the element that drew it", () => {
+test("inbox card: a press shows on its own PR's card, and on no other", () => {
   const press: ApprovalPress = { repo: "o/a", pullRequestNumber: 10, atMs: Date.now(), sent: true };
-  const pill = new LifecyclePill();
-  try {
-    assert.match(flatten(renderPill(parkedPair(), { approvalPress: press }, pill).button), />Queued<\/button>/);
+  const other = parkedPair({ issue: { number: 2, title: "Other", state: "open" } }, { number: 11 });
+  const state = { ...stateWith([parkedPair(), other]), approvalPresses: new Map([["o/a#10", press]]) };
+  const rendered = renderInbox(state);
 
-    pill.disconnectedCallback();
-    assert.match(flatten(renderPill(parkedPair(), {}, pill).button), />Queued<\/button>/, "reconnected, it still shows");
+  assert.deepEqual(rendered.cards.map((card) => card.id), ["approval:o/a#10", "approval:o/a#11"], "a card is known by its PR");
+  assert.match(flatten(rendered.approveButton(10)), />Queued<\/button>/);
+  assert.match(flatten(rendered.approveButton(11)), />Approve<\/button>/, "PR #11 was not pressed");
+});
 
-    const other = parkedPair({ issue: { number: 2, title: "Other", state: "open" } }, { number: 11 });
-    assert.match(flatten(renderPill(other, {}, pill).button), />Approve<\/button>/, "reused for PR #11, it starts idle");
+test("inbox card: the button is one size in every step, so pressing it and following the approval never move anything", () => {
+  const rule = /\.inbox-action \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "";
+  assert.match(rule, /width: 100%;/, "as wide as its card");
+  assert.match(rule, /min-height: 56px;/, "and as tall in every step");
+  assert.match(rule, /white-space: nowrap;/);
 
-    // The list hands each pill its own PR's press, whichever element draws it.
-    const fresh = renderPill(parkedPair(), { approvalPress: press });
-    assert.match(flatten(fresh.button), />Queued<\/button>/, "and a new element drawing PR #10 shows it");
-    fresh.pill.disconnectedCallback();
-  } finally {
-    pill.disconnectedCallback();
+  for (const step of Object.keys(APPROVE_BUTTON_LABELS)) {
+    const rules = [...INBOX_CSS.matchAll(new RegExp(`\\.inbox-action\\.approve[^{]*\\.${step}[^{]*\\{([^}]*)\\}`, "g"))];
+    assert.ok(rules.length > 0, `${step} is styled`);
+    for (const [, body] of rules) {
+      assert.doesNotMatch(body!, /(?:^|[\s;])(?:width|height|min-height|padding|margin|font-size|letter-spacing|border-width)\s*:/, `${step} changes no size`);
+    }
   }
 });
 
-test("lifecycle pill: the button keeps both halves the same width, so the seams line up", () => {
-  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
-
-  const button = /\.pill-approve \{([^}]*)\}/.exec(css)?.[1] ?? "";
-  assert.match(button, /position: absolute;/, "laid over the PR half, out of the flow");
-  assert.match(button, /width: 60px;/, "one width for every step");
-  assert.match(css, /\.lifecycle-pill\.has-approve \.pill-pr-half \.pill-row \{ padding-right: 64px; \}/);
-  assert.match(css, /\.lifecycle-pill\.has-approve\.has-status \.pill-pr-half \.pill-row \{ padding-right: 88px; \}/);
-  assert.ok(!/has-approve \.pill-pr-half \{/.test(css), "the PR half itself is never resized");
+test("inbox card: a pressed button stays lit; only Approve and Retry grey out when they cannot be pressed", () => {
+  assert.match(INBOX_CSS, /\.inbox-action\.approve:is\(\.idle, \.retry\):disabled \{[^}]*color: rgba\(255, 255, 255, 0\.36\);/);
+  assert.ok(!/\.inbox-action:disabled \{[^}]*(?:color|background)\s*:/.test(INBOX_CSS), "no grey for every disabled step");
+  assert.match(/\.inbox-action\.approve\.queued \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "", /border-color: var\(--color-green\);/, "Queued is lit");
+  assert.match(/\.inbox-action\.approve\.queued \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "", /animation: approvalQueued/, "and breathing");
+  assert.match(/\.inbox-action\.approve\.approving \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "", /animation: approvalCarriedOut/);
 });
 
-test("lifecycle pill: a pressed button stays lit; only Approve and Retry grey out when they cannot be pressed", () => {
-  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
+test("inbox card: Approve is trim until it is pressed, and green only while the approval goes through (#280)", () => {
+  const idle = /\.inbox-action\.approve\.idle, \.inbox-action\.wake \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "";
+  assert.match(idle, /background: var\(--trim-bright\);/);
+  assert.doesNotMatch(idle, /--color-/, "no status color on a button nobody has pressed");
+});
 
-  assert.match(css, /\.pill-approve:is\(\.idle, \.retry\):disabled \{ border-color: rgba\(255, 255, 255, 0\.2\);/);
-  assert.ok(!/\.pill-approve:disabled \{[^}]*color/.test(css), "no grey for every disabled step");
-  assert.match(/\.pill-approve\.queued \{([^}]*)\}/.exec(css)?.[1] ?? "", /border-color: var\(--color-green\);/, "Queued is lit");
-  assert.match(/\.pill-approve\.queued \{([^}]*)\}/.exec(css)?.[1] ?? "", /animation: approvalQueued/, "and breathing");
-  assert.match(/\.pill-approve\.approving \{([^}]*)\}/.exec(css)?.[1] ?? "", /animation: approvalCarriedOut/);
+test("inbox: every target is big enough for a finger", () => {
+  const px = (selector: string, property: string): number => {
+    const rule = new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`).exec(INBOX_CSS)?.[1] ?? "";
+    return Number(new RegExp(`(?:^|[\\s;])${property}: ([\\d.]+)px;`).exec(rule)?.[1]);
+  };
+  assert.ok(px(".inbox-action", "min-height") >= 56, "the one thing a card does");
+  assert.ok(px(".inbox-link", "min-height") >= 44);
+  assert.ok(px(".inbox-dismiss", "width") >= 44 && px(".inbox-dismiss", "height") >= 44);
+  assert.ok(px(".inbox-badge", "height") >= 44);
+  assert.ok(px(".inbox-log", "min-height") >= 44);
+  assert.ok(!/:hover[^{]*\{[^}]*(?:display|visibility)\s*:/.test(INBOX_CSS), "and nothing is revealed only by hovering");
 });
 
 // ── what the pill shows of an approval (#276, #278) ──────────────────────────
@@ -308,12 +327,6 @@ function view(opts: {
     connected: opts.connected ?? true,
     nowMs: opts.nowMs,
   });
-}
-
-/** Matches the pill's approval line: visible text in its live region. */
-function statusLine(text: string): RegExp {
-  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`role="status"\\s+aria-live="polite"\\s*> · ${escaped}</span>`);
 }
 
 test("approvalView: one press reads Queued at once, before yoke has said a word", () => {
@@ -671,89 +684,82 @@ test("approvalPressFor finds this dashboard's press of a pill's PR by project an
   assert.equal(approvalPressFor(presses, parkedPair({ pr: null, prPhase: "absent" })), null);
 });
 
-// ── the pill following yoke and the engines ──────────────────────────────────
+// ── the card following yoke and the engines ──────────────────────────────────
 
-test("lifecycle pill: after one press it follows yoke and the engines, not a timer, from Queued to Merged", (t) => {
+test("inbox card: after one press it follows yoke and the engines, not a timer, from Queued to Merged", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: NOW });
-  const pill = new LifecyclePill();
-  actLikeTheApp(pill);
-  try {
-    click(renderPill(parkedPair(), {}, pill).button);
-    let rendered = renderPill(parkedPair(), {}, pill);
-    assert.match(flatten(rendered.button), />Queued<\/button>/, "Queued the instant it is pressed");
-    assert.match(rendered.html, statusLine("queued — sent to yoke…"));
+  const inbox = new YokeInbox();
+  const app = actLikeTheApp(inbox);
 
-    t.mock.timers.tick(50);
-    rendered = renderPill(parkedPair(), { approvalStatus: approvalStatus("loading", Date.now()) }, pill);
-    assert.match(flatten(rendered.button), />Queued<\/button>/);
-    assert.match(rendered.html, statusLine("queued — yoke is reading PR #10 from GitHub…"));
+  click(renderCard(parkedPair(), {}, inbox).button);
+  const press = app.press();
+  let rendered = renderCard(parkedPair(), { approvalPress: press }, inbox);
+  assert.match(flatten(rendered.button), />Queued<\/button>/, "Queued the instant it is pressed");
+  assert.match(rendered.html, statusLine("queued — sent to yoke…"));
 
-    t.mock.timers.tick(40_000);
-    rendered = renderPill(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now() - 39_000) }, pill);
-    assert.match(flatten(rendered.button), />Queued<\/button>/, "no fallback timer");
-    assert.match(rendered.html, statusLine("queued — waiting for an engine to finish planning…"));
+  t.mock.timers.tick(50);
+  rendered = renderCard(parkedPair(), { approvalPress: press, approvalStatus: approvalStatus("loading", Date.now()) }, inbox);
+  assert.match(flatten(rendered.button), />Queued<\/button>/);
+  assert.match(rendered.html, statusLine("queued — yoke is reading PR #10 from GitHub…"));
 
-    const approved = approvalStatus("approved", Date.now(), { checksPending: false });
-    rendered = renderPill(parkedPair({ approval: "approved" }), { approvalStatus: approved }, pill);
-    assert.match(flatten(rendered.button), />Queued<\/button>/, "approved, waiting for an engine");
-    assert.match(rendered.html, /APPROVED/);
-    assert.match(rendered.html, statusLine("approved — waiting for a free engine to squash-merge it"));
+  t.mock.timers.tick(40_000);
+  rendered = renderCard(parkedPair(), { approvalPress: press, approvalStatus: approvalStatus("waiting", Date.now() - 39_000) }, inbox);
+  assert.match(flatten(rendered.button), />Queued<\/button>/, "no fallback timer");
+  assert.match(rendered.html, statusLine("queued — waiting for an engine to finish planning…"));
 
-    t.mock.timers.tick(5_000);
-    rendered = renderPill(parkedPair(), { activity: "working", workingAction: "squash-merge" }, pill);
-    assert.match(flatten(rendered.button), />Approving<\/button>/, "an engine picked it up");
-    assert.match(rendered.html, /APPROVED/);
-    assert.match(rendered.html, statusLine("approving — an engine is squash-merging it"));
+  const approved = approvalStatus("approved", Date.now(), { checksPending: false });
+  rendered = renderCard(parkedPair({ approval: "approved" }), { approvalPress: press, approvalStatus: approved }, inbox);
+  assert.match(flatten(rendered.button), />Queued<\/button>/, "approved, waiting for an engine");
+  assert.match(rendered.html, /<span class="inbox-eyebrow">Approval queued<\/span>/);
+  assert.match(rendered.html, statusLine("approved — waiting for a free engine to squash-merge it"));
 
-    t.mock.timers.tick(90_000);
-    pill.approvalPress = { ...pill.approvalPress!, merged: true };
-    rendered = renderPill(parkedPair(), { activity: null, workingAction: null }, pill);
-    assert.match(flatten(rendered.button), />Merged<\/button>/);
+  t.mock.timers.tick(5_000);
+  rendered = renderCard(parkedPair(), { approvalPress: press, approvalStatus: approved, workingAction: "squash-merge" }, inbox);
+  assert.match(flatten(rendered.button), />Approving<\/button>/, "an engine picked it up");
+  assert.match(rendered.html, /<span class="inbox-eyebrow">Approving<\/span>/);
+  assert.match(rendered.html, statusLine("approving — an engine is squash-merging it"));
 
-    rendered = renderPill(parkedPair({ prPhase: "completed" }), {}, pill);
-    assert.equal(rendered.button, undefined, "the pill's MERGED says the rest");
-    assert.match(rendered.html, /MERGED/);
-  } finally {
-    pill.disconnectedCallback();
-  }
+  t.mock.timers.tick(90_000);
+  const merged = { ...press!, merged: true };
+  rendered = renderCard(parkedPair(), { approvalPress: merged, approvalStatus: approved }, inbox);
+  assert.match(flatten(rendered.button), />Merged<\/button>/);
+  assert.match(rendered.html, /<span class="inbox-eyebrow">Merged<\/span>/);
+
+  rendered = renderCard(parkedPair({ prPhase: "completed" }), { approvalPress: merged }, inbox);
+  assert.equal(rendered.cards.length, 0, "merged and done: nothing is left waiting on anyone");
 });
 
-test("lifecycle pill: no answer within APPROVE_ACK_MS stays Queued, saying so", (t) => {
+test("inbox card: no answer within APPROVE_ACK_MS stays Queued, saying so", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: NOW });
-  const pill = new LifecyclePill();
-  actLikeTheApp(pill);
-  try {
-    click(renderPill(parkedPair(), {}, pill).button);
-    t.mock.timers.tick(APPROVE_ACK_MS);
-    const { html, button } = renderPill(parkedPair(), {}, pill);
-    assert.match(flatten(button), />Queued<\/button>/);
-    assert.match(flatten(button), /\?disabled=true/);
-    assert.match(html, statusLine("queued — sent to yoke, no answer yet…"));
-  } finally {
-    pill.disconnectedCallback();
-  }
+  const inbox = new YokeInbox();
+  const app = actLikeTheApp(inbox);
+
+  click(renderCard(parkedPair(), {}, inbox).button);
+  t.mock.timers.tick(APPROVE_ACK_MS);
+  const { html, button } = renderCard(parkedPair(), { approvalPress: app.press() }, inbox);
+  assert.match(flatten(button), />Queued<\/button>/);
+  assert.match(flatten(button), /\?disabled=true/);
+  assert.match(html, statusLine("queued — sent to yoke, no answer yet…"));
 });
 
-test("lifecycle pill: another dashboard's approval shows as Queued here", () => {
-  const { html, button } = renderPill(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now()) });
+test("inbox card: another dashboard's approval shows as Queued here", () => {
+  const { html, button } = renderCard(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now()) });
 
   assert.match(flatten(button), />Queued<\/button>/);
   assert.match(html, statusLine("queued — waiting for an engine to finish planning…"));
 });
 
-test("lifecycle pill: a reused element never shows another PR's status", () => {
-  const pill = new LifecyclePill();
-  renderPill(parkedPair(), { approvalStatus: approvalStatus("waiting", Date.now()) }, pill);
+test("inbox card: a card never shows another PR's status", () => {
   const other = parkedPair({ issue: { number: 2, title: "Other", state: "open" } }, { number: 11 });
-  // Even should PR #10's status still be set on it.
-  const { html, button } = renderPill(other, {}, pill);
+  // PR #10's status is on record, but PR #10 is not in the inbox.
+  const state = { ...stateWith([other]), approvals: new Map([["o/a#10", approvalStatus("waiting", Date.now())]]) };
+  const rendered = renderInbox(state);
 
-  assert.match(flatten(button), />Approve<\/button>/);
-  assert.ok(!html.includes("queued —"));
-  pill.disconnectedCallback();
+  assert.match(flatten(rendered.approveButton(11)), />Approve<\/button>/);
+  assert.ok(!rendered.html.includes("queued —"));
 });
 
-test("DashboardStore.approvePullRequest records the press, sent or not, so the pill follows it", () => {
+test("DashboardStore.approvePullRequest records the press, sent or not, so the card follows it", () => {
   const store = new DashboardStore();
   try {
     // No live connection: nothing can be sent.
@@ -761,7 +767,7 @@ test("DashboardStore.approvePullRequest records the press, sent or not, so the p
     const press = approvalPressFor(store.getState().approvalPresses, parkedPair());
     assert.equal(press?.sent, false);
 
-    const { html, button } = renderPill(parkedPair(), { approvalPress: press, connected: false });
+    const { html, button } = renderCard(parkedPair(), { approvalPress: press, connected: false });
     assert.match(flatten(button), />Queued<\/button>/);
     assert.match(html, statusLine("queued — reconnecting to yoke…"));
   } finally {
@@ -769,37 +775,26 @@ test("DashboardStore.approvePullRequest records the press, sent or not, so the p
   }
 });
 
-test("lifecycle pill: the approval line is a live region on the PR half's label, even when empty", () => {
-  const { html } = renderPill(parkedPair());
+test("inbox card: the approval line is a live region, there even when it is empty", () => {
+  const { html } = renderCard(parkedPair());
 
-  assert.match(html, /<div class="pill-label" title="">PR<span\s+class="pill-approval-line"\s+role="status"\s+aria-live="polite"\s*><\/span><\/div>/);
+  assert.match(html, /<p class="inbox-line" role="status" aria-live="polite"><\/p>/);
 });
 
-test("lifecycle pill: the approval line changes neither the pill's nor the PR half's width", () => {
-  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
-
-  const label = /\.pill-pr-half \.pill-label \{([^}]*)\}/.exec(css)?.[1] ?? "";
-  assert.match(label, /overflow: hidden;/, "a long line is cut short…");
-  assert.match(label, /text-overflow: ellipsis;/, "…with an ellipsis");
-  assert.match(/\.pill-label \{([^}]*)\}/.exec(css)?.[1] ?? "", /white-space: nowrap;/, "on one line");
-  const half = /\.pill-pr-half \{([^}]*)\}/.exec(css)?.[1] ?? "";
-  assert.match(half, /flex: 1;/);
-  assert.match(half, /min-width: 0;/, "the half never grows to fit its text");
-  assert.match(half, /overflow: hidden;/);
-  assert.match(css, /\.lifecycle-pill\.has-status \.pill-pr-half \.pill-label \{ padding-right: 24px; \}/);
-  assert.match(css, /\.lifecycle-pill\.has-approve \.pill-pr-half \.pill-label \{ padding-right: 64px; \}/);
-  assert.match(css, /\.lifecycle-pill\.has-approve\.has-status \.pill-pr-half \.pill-label \{ padding-right: 88px; \}/);
-  assert.ok(!/\.pill-approval-line \{[^}]*(width|padding|margin)/.test(css), "the line itself takes no room of its own");
+test("inbox card: a long approval line wraps inside its card, and an empty one takes no room", () => {
+  const line = /\.inbox-line \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "";
+  assert.match(line, /overflow-wrap: anywhere;/, "a long reason breaks rather than widen the card");
+  assert.match(INBOX_CSS, /\.inbox-line:empty \{ display: none; \}/);
+  assert.match(/\.inbox-title \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "", /overflow-wrap: anywhere;/);
 });
 
-test("lifecycle pill: every Approve button label fits the fixed 60 px button", () => {
-  const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
-  const rule = /\.pill-approve \{([^}]*)\}/.exec(css)?.[1] ?? "";
+test("inbox card: every Approve button label fits the narrowest the button is ever drawn", () => {
+  const rule = /\.inbox-action \{([^}]*)\}/.exec(INBOX_CSS)?.[1] ?? "";
   const px = (property: string) => Number(new RegExp(`${property}: ([\\d.]+)px;`).exec(rule)?.[1]);
 
-  assert.match(rule, /font-family: 'IBM Plex Mono', monospace;/, "a monospace face: every glyph is 0.6em wide");
-  assert.match(rule, /padding: 0;/);
-  const room = px("width") - 2 * Number(/border: ([\d.]+)px/.exec(rule)?.[1]);
+  assert.match(rule, /font-family: var\(--font-mono\);/, "a monospace face: every glyph is 0.6em wide");
+  // The inbox is never narrower than 300 px, and its card's button never narrower than this.
+  const room = 200;
   const perGlyph = 0.6 * px("font-size") + px("letter-spacing");
   for (const label of Object.values(APPROVE_BUTTON_LABELS)) {
     assert.ok(label.length * perGlyph <= room, `${label} (${(label.length * perGlyph).toFixed(1)} px) fits in ${room} px`);

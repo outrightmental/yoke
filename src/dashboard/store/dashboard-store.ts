@@ -1,5 +1,5 @@
 import { issueColor, NEUTRAL_COLOR, workColor } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus } from './types.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus, ActionFailure } from './types.js';
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
 import { approvalStatusExpired, approveKey, approveRequestMessage, isApprovalOutcome, type ApproveTarget } from '../shared/pill-approval.js';
@@ -127,6 +127,7 @@ export function initialState(): DashboardState {
     usage: null,
     approvals: new Map(),
     approvalPresses: new Map(),
+    failures: new Map(),
     multiProject: false,
     owner: '',
     repo: '',
@@ -236,6 +237,8 @@ function applyIterationStart(state: DashboardState, data: Record<string, unknown
 
 function applyActionStart(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const idx = ((data['actionIndex'] as number) || 1) - 1;
+  const issueNumber = (data['issueNumber'] as number | undefined) ?? null;
+  const prNumber = (data['pullRequestNumber'] as number | undefined) ?? null;
 
   let cylinders = state.cylinders;
   let cylinderByIssue = state.cylinderByIssue;
@@ -247,8 +250,6 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>, 
     if (cyl.issueNumber !== null && cylinderByIssue.get(cyl.issueNumber) === idx) cylinderByIssue.delete(cyl.issueNumber);
     if (cyl.prNumber !== null && cylinderByPR.get(cyl.prNumber) === idx) cylinderByPR.delete(cyl.prNumber);
 
-    const issueNumber = (data['issueNumber'] as number | undefined) ?? null;
-    const prNumber = (data['pullRequestNumber'] as number | undefined) ?? null;
     if (issueNumber !== null) cylinderByIssue.set(issueNumber, idx);
     if (prNumber !== null) cylinderByPR.set(prNumber, idx);
 
@@ -281,8 +282,16 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>, 
   }
 
   const actionDesc = (data['description'] as string) || (data['type'] as string) || 'action';
+  // An engine is on this work again, so whatever failed on it last is history
+  // — whether it failed on this PR, or on the issue before it had one.
+  const startedRepo = (data['repo'] as string) || '';
+  const failures = withoutFailures(state.failures, atMs, (failure) =>
+    failure.repo === startedRepo && (
+      (prNumber !== null && failure.prNumber === prNumber) ||
+      (issueNumber !== null && failure.issueNumber === issueNumber)
+    ));
   return addToStream(
-    { ...state, cylinders, cylinderByIssue, cylinderByPR },
+    { ...state, cylinders, cylinderByIssue, cylinderByPR, failures },
     atMs,
     `▶ [${data['actionIndex'] as number}/${data['totalActions'] as number}] ${actionDesc}`,
     idx, 'info', (data['repo'] as string) || ''
@@ -300,15 +309,77 @@ function applyActionComplete(state: DashboardState, data: Record<string, unknown
   return addToStream({ ...withMergedPresses(state, cyl), cylinders }, atMs, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
 }
 
+/** How long a failed action stays in the inbox when nothing takes its work up
+ *  again. Yoke backs a failing action off for as long as an hour before it
+ *  tries again (`ACTION_FAILURE_BACKOFF_MS` in src/index.ts), and a failure
+ *  should not leave the inbox while its work is still parked because of it. */
+export const FAILURE_SHOW_MS = 90 * 60_000;
+/** At most this many failures are kept, newest first to stay. */
+const FAILURE_MAX = 24;
+
+/**
+ * The key a failed action's work is known by: its project, and the PR it was
+ * on — or, for an implementation, which has no PR yet, the issue. Null when
+ * the action named neither, and so nothing to point at.
+ */
+export function failureKey(repo: string, issueNumber: number | null, prNumber: number | null): string | null {
+  if (prNumber !== null) return `${repo}#pr-${prNumber}`;
+  if (issueNumber !== null) return `${repo}#issue-${issueNumber}`;
+  return null;
+}
+
+/** `failures` without the ones `over` picks out, and without any too old to show. */
+function withoutFailures(
+  failures: Map<string, ActionFailure>,
+  nowMs: number,
+  over: (failure: ActionFailure) => boolean,
+): Map<string, ActionFailure> {
+  let kept: Map<string, ActionFailure> | null = null;
+  for (const [key, failure] of failures) {
+    if (!over(failure) && nowMs - failure.atMs < FAILURE_SHOW_MS) continue;
+    kept ??= new Map(failures);
+    kept.delete(key);
+  }
+  return kept ?? failures;
+}
+
+/** The first line of an action's error. The rest is a stack trace, which the
+ *  event log keeps and an inbox card has no room for. */
+function firstLineOf(error: unknown): string {
+  const text = typeof error === 'string' ? error : error == null ? '' : String(error);
+  return text.split('\n')[0]?.trim() || 'unknown error';
+}
+
 function applyActionError(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
   const idx = ((data['actionIndex'] as number) || 1) - 1;
   let cylinders = state.cylinders;
+  let failures = state.failures;
   const cyl = cylinders[idx];
   if (cyl) {
     cylinders = [...cylinders];
     cylinders[idx] = { ...cyl, status: 'error', thinkingLines: [] };
+    const repo = cyl.repo ?? ((data['repo'] as string) || '');
+    const key = failureKey(repo, cyl.issueNumber, cyl.prNumber);
+    if (key !== null) {
+      failures = new Map(withoutFailures(failures, atMs, (failure) => failure.key === key));
+      failures.set(key, {
+        key,
+        repo,
+        actionType: cyl.actionType ?? 'action',
+        issueNumber: cyl.issueNumber,
+        prNumber: cyl.prNumber,
+        issueTitle: cyl.issueTitle,
+        prTitle: cyl.prTitle,
+        error: firstLineOf(data['error']),
+        atMs,
+        engineIndex: idx,
+      });
+      // Oldest out first: a Map keeps insertion order, and a re-failure was
+      // just re-inserted at the end.
+      while (failures.size > FAILURE_MAX) failures.delete(failures.keys().next().value!);
+    }
   }
-  return addToStream({ ...state, cylinders }, atMs, `✗ action [${data['actionIndex']}/${data['totalActions']}] failed: ${data['error'] ?? ''}`, idx, 'error', (data['repo'] as string) || '');
+  return addToStream({ ...state, cylinders, failures }, atMs, `✗ action [${data['actionIndex']}/${data['totalActions']}] failed: ${data['error'] ?? ''}`, idx, 'error', (data['repo'] as string) || '');
 }
 
 function applyClaudeThinking(state: DashboardState, data: Record<string, unknown>): DashboardState {
@@ -436,7 +507,35 @@ function applyLifecycleUpdate(state: DashboardState, data: Record<string, unknow
   const lastLifecyclePairs: LifecyclePair[] = [];
   for (const slice of lifecycleByRepo.values()) lastLifecyclePairs.push(...slice);
 
-  return { ...state, lifecycleByRepo, lastLifecyclePairs, approvalPresses: pressesStillListed(state.approvalPresses, repo, pairs) };
+  return {
+    ...state,
+    lifecycleByRepo,
+    lastLifecyclePairs,
+    approvalPresses: pressesStillListed(state.approvalPresses, repo, pairs),
+    failures: failuresStillListed(state.failures, repo, pairs),
+  };
+}
+
+/** The failures left once a project's lifecycle no longer lists their work —
+ *  merged, closed, or taken out of the queue by hand — since nothing is going
+ *  to retry it, and there is nothing left for a person to look at. */
+function failuresStillListed(
+  failures: Map<string, ActionFailure>,
+  repo: string,
+  pairs: readonly LifecyclePair[],
+): Map<string, ActionFailure> {
+  let kept: Map<string, ActionFailure> | null = null;
+  for (const [key, failure] of failures) {
+    if (failure.repo !== repo) continue;
+    const listed = pairs.some((pair) =>
+      failure.prNumber !== null
+        ? pair.pr?.number === failure.prNumber
+        : pair.issue?.number === failure.issueNumber);
+    if (listed) continue;
+    kept ??= new Map(failures);
+    kept.delete(key);
+  }
+  return kept ?? failures;
 }
 
 /** Action-type label for the feed — specific enough that types are
@@ -735,12 +834,22 @@ function applyWorkflowApproval(state: DashboardState, data: Record<string, unkno
 
 type Listener = (state: DashboardState) => void;
 
+/** What makes one event the same event when it arrives a second time: its
+ *  type, the server's stamp on it, and everything it says. */
+function eventIdentity(event: DashboardEvent): string {
+  return `${event.type}|${event.timestamp}|${JSON.stringify(event.data)}`;
+}
+
 export class DashboardStore {
   private _state: DashboardState;
   private _listeners: Set<Listener> = new Set();
   private _broadcastProcessing = false;
   private _wsClient: WsClient | null = null;
   private _notifyTimer: ReturnType<typeof setInterval> | null = null;
+  /** The events the last bootstrap already applied, by `eventIdentity`. The
+   *  server replays the same cache again down the socket when it opens, and
+   *  each of those is taken off here instead of being applied a second time. */
+  private _bootstrapped = new Set<string>();
 
   constructor() {
     this._state = initialState();
@@ -773,6 +882,10 @@ export class DashboardStore {
   }
 
   applyEvent(event: DashboardEvent) {
+    // The socket opens by replaying the cache the bootstrap was built from.
+    // The state can take an event twice, but the event log cannot: every
+    // replayed line was written out again under the one already there.
+    if (this._bootstrapped.size > 0 && this._bootstrapped.delete(eventIdentity(event))) return;
     this._setState(dashboardReducer(this._state, event));
     this._drainBroadcastQueue();
   }
@@ -815,6 +928,9 @@ export class DashboardStore {
       // This dashboard's presses outlive the rebuild (#278), so a reconnect
       // never makes one look as if it never happened.
       state.approvalPresses = this._state.approvalPresses;
+      // So do the failures it heard of: the server replays only each
+      // cylinder's latest event, and by then the failed one has gone idle.
+      state.failures = this._state.failures;
       state.owner = data.owner ?? '';
       state.repo = data.repo ?? '';
       state.title = data.dashboardTitle ?? data.repo ?? '';
@@ -823,9 +939,11 @@ export class DashboardStore {
         state.maxConcurrency = data.maxConcurrency;
         state.cylinders = initCylinders(data.maxConcurrency);
       }
-      for (const event of (data.cachedEvents ?? [])) {
+      const cachedEvents = data.cachedEvents ?? [];
+      for (const event of cachedEvents) {
         state = dashboardReducer(state, event);
       }
+      this._bootstrapped = new Set(cachedEvents.map(eventIdentity));
       state = { ...state, approvals: keepArrivalTimes(state.approvals, this._state.approvals, state.approvalPresses) };
       this._setState(state);
     } catch (err) {
