@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import type { CylinderState } from '../store/types.js';
 import { formatDuration, formatModelName } from '../shared/format.js';
-import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
+import { cylinderColor } from '../shared/burn-level.js';
 
 export class CylinderRow extends LitElement {
   static override styles = css`
@@ -229,11 +229,13 @@ export class CylinderRow extends LitElement {
     const dotClass = `cylinder-dot${isActive ? ' pulsing' : ''}`;
     const thinkingClass = `cylinder-thinking-stream${hasThinking ? ' active' : ''}`;
     const rowClass = `cylinder-row ${cyl.status}`;
+    // Its work's hue, at full saturation only while the action burns (#281).
+    const color = cylinderColor(cyl);
 
     return html`
       <div
         class="${rowClass}"
-        style="--cyl-color:${cyl.color ?? NEUTRAL_COLOR};--cyl-color-rgb:${cyl.colorRgb ?? NEUTRAL_COLOR_RGB}"
+        style="--cyl-color:${color.hex};--cyl-color-rgb:${color.rgb}"
       >
         <div class="${dotClass}"></div>
         <div class="cylinder-info">

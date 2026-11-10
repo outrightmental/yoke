@@ -3,7 +3,9 @@ import type { PillActivity } from '../shared/pill-activity.js';
 export interface CylinderState {
   index: number;
   /** Stable color of the issue this cylinder is working, or null when it has
-   *  no issue (idle) — colors belong to issues, not cylinders (issue #236). */
+   *  no issue (idle) — colors belong to issues, not cylinders (issue #236).
+   *  Always at full saturation: the row draws it at its status's burn level
+   *  (`cylinderColor` in shared/burn-level.ts, issue #281). */
   color: string | null;
   colorRgb: string | null;
   status: 'idle' | 'active' | 'done' | 'error' | 'shutdown';

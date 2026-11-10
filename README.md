@@ -196,6 +196,14 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
 
   Everything else on the Dashboard is plain gray with no hue at all: panel borders, headers, the status bar, scrollbars, labels, the keep-awake lamp, idle cylinders. Saturated colour is kept for the work engines burn tokens on, and gray never stands for any of it. The only other colours are alerts and outcomes: red for an error or a lost connection, orange for a hold or a shutdown, amber for a warning, and green for an approval going through.
 
+  How saturated that colour is shows how much token burn the work stands for right now, judged by its state, not by measured usage. The hue still tells you *which* issue, and the saturation tells you *how hot* it is. A cylinder and a pill at the same level are drawn in exactly the same colour:
+  - *full saturation* — an engine is running an action on it: an active cylinder, and the pill it is working
+  - *strong* — Yoke works it next, with nothing but its own pipeline in the way: the PR's checks are running, an approved PR waits for its squash-merge, or an open PR or ready issue waits for a free engine
+  - *muted* — it waits on someone else first: a PR ready for human review, or an issue blocked by other issues
+  - *faint* — nothing is coming: a cylinder whose action is done, failed or shut down, a `manual` PR, a merged PR, an issue out of the queue (Backlog, Done), and every pill once Yoke is shutting down
+
+  Even the faint level keeps a trace of the issue's hue, so finished work never reads as trim. Only what is no work at all, such as an idle cylinder or one parked by a rate or usage limit, is plain gray.
+
   Whatever its state, a pill that an engine cylinder is working on *right now* — through its issue or its pull request — has its border pulse brighter and darker in its colour, and stays at full opacity while every other pill is dimmed, so the pills being worked stand out. The pulse stops and the pill dims as soon as that cylinder's action finishes or fails, or the cylinder goes idle.
 
   At its far right, a pill also shows an animated icon saying what it is doing or waiting on, if anything:
