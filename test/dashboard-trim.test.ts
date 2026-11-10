@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CylinderState, EventLine, LifecyclePair } from "../src/dashboard/store/types.js";
+import type { BroadcastEventData, CylinderState, EventLine, LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { StatusBar } from "../src/dashboard/components/status-bar.js";
 import { LifecycleList } from "../src/dashboard/components/lifecycle-list.js";
 import { EventStream } from "../src/dashboard/components/event-stream.js";
+import { BroadcastEventCard } from "../src/dashboard/components/broadcast-event-card.js";
 
 // The dashboard's trim is hue-free gray and its saturated colors mean live
 // computing burn (issue #280). These guard the split: the trim tokens have no
@@ -164,4 +165,17 @@ test("an event-log line with no color of its own is trim, color emoji and all (#
   assert.deepEqual(classes, ["event-content plain", "event-content", "event-content"]);
   const css = (EventStream.styles as { cssText: string }).cssText;
   assert.match(css, /\.event-content\.plain\s*\{\s*filter:\s*grayscale\(1\);/);
+});
+
+test("a broadcast card's ✨ is card chrome, so gray (#280)", () => {
+  const card = new BroadcastEventCard();
+  Object.assign(card, {
+    event: {
+      id: "1", category: "ci", label: "WORKFLOW", stateBefore: "", changeHow: "", stateAfter: "",
+      excellence: "CI unblocked", atMs: 0, color: NEUTRAL_COLOR,
+    } satisfies BroadcastEventData,
+  });
+  assert.match(flatten(card.render()), /<span class="broadcast-event-sparkle">✨<\/span>/);
+  const css = (BroadcastEventCard.styles as { cssText: string }).cssText;
+  assert.match(css, /\.broadcast-event-sparkle\s*\{\s*filter:\s*grayscale\(1\);/);
 });

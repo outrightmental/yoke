@@ -155,6 +155,9 @@ export class BroadcastEventCard extends LitElement {
       line-height: 1.4;
     }
 
+    /* Card chrome, so gray like the rest of the trim (#280): the font draws ✨ in color. */
+    .broadcast-event-sparkle { filter: grayscale(1); }
+
     @keyframes broadcastEventEntry {
       0% { transform: translateX(50px) scale(0.88); opacity: 0; filter: brightness(4) blur(4px); }
       20% { transform: translateX(-6px) scale(1.05); opacity: 1; filter: brightness(2.5) blur(0); }
@@ -228,7 +231,7 @@ export class BroadcastEventCard extends LitElement {
         </div>
         ${ev.excellence ? html`
           <div class="broadcast-event-excellence">
-            ✨ ${unsafeHTML(linkifyTextHtml(ev.excellence, baseUrl, ctx))}
+            <span class="broadcast-event-sparkle">✨</span> ${unsafeHTML(linkifyTextHtml(ev.excellence, baseUrl, ctx))}
           </div>
         ` : ''}
       </div>
