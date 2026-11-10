@@ -1,5 +1,6 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import type { ApprovalPress, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
+import { burnColor, pillBurnLevel } from '../shared/burn-level.js';
 import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 import type { PillActivity } from '../shared/pill-activity.js';
 import {
@@ -147,12 +148,13 @@ export class LifecyclePill extends LitElement {
       box-shadow: inset 0 0 14px rgba(var(--pill-rgb), 0.2);
     }
 
+    /* Manual: trim-gray dashes and dimmed, its text left at the pill's cold
+       level like the rest of the pill rather than grayed below it (#281). */
     .pill-pr-half.disabled {
       border: 2px dashed rgba(var(--trim-rgb), 0.35);
       background: rgba(var(--trim-rgb), 0.05);
       box-shadow: none;
       opacity: 0.45;
-      filter: grayscale(1);
       animation: none;
     }
 
@@ -304,7 +306,7 @@ export class LifecyclePill extends LitElement {
 
     /* The animated status icon at the pill's far right (issue #262), sized
        like the engine cylinder's spinner. It sits over the PR half rather than
-       inside it, so a manual PR's greyed-out half doesn't grey it out too. The
+       inside it, so a manual PR's dimmed half doesn't dim it too. The
        room for it is kept inside the PR half's row, not its padding, so both
        halves stay the same width and the seams of all pills line up. */
     .lifecycle-pill.has-status .pill-pr-half .pill-row { padding-right: 24px; }
@@ -512,6 +514,8 @@ export class LifecyclePill extends LitElement {
   };
 
   pair: LifecyclePair | null = null;
+  /** The stable color of the pill's work at full saturation; the pill draws
+   *  it at the saturation its state burns at (#281). */
   color = NEUTRAL_COLOR;
   colorRgb = NEUTRAL_COLOR_RGB;
   /** What this pill is doing or waiting on right now, if anything. */
@@ -691,7 +695,9 @@ export class LifecyclePill extends LitElement {
     if (!pair) return html``;
 
     const baseUrl = this._baseUrl();
-    const style = `--pill-color:${this.color};--pill-rgb:${this.colorRgb};--pill-glow:rgba(${this.colorRgb},0.3)`;
+    // Hue says which issue; saturation, how hot its work burns (#281).
+    const color = burnColor({ hex: this.color, rgb: this.colorRgb }, pillBurnLevel(pair, this.activity, this.dark));
+    const style = `--pill-color:${color.hex};--pill-rgb:${color.rgb};--pill-glow:rgba(${color.rgb},0.3)`;
     const projectChip = this.multiProject && pair.repo
       ? html`<span class="pill-project">${pair.repo}</span>`
       : '';
