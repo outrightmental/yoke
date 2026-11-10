@@ -207,12 +207,15 @@ test("failure: a failed implementation is history once an engine is on the PR th
 
 test("failure: an action on other work, or in another project, leaves it listed", () => {
   let state = withFailure(stateWith([ready(1, 10), ready(2, 20)]), { type: "self-review", pullRequestNumber: 10 });
+  // At NOW, not the wall clock: a failure older than FAILURE_SHOW_MS is dropped
+  // as stale by whatever event comes next.
+  const at = new Date(NOW).toISOString();
   state = dashboardReducer(state, makeEvent("action-start", {
     actionIndex: 1, totalActions: 3, repo: "o/a", type: "self-review", pullRequestNumber: 20, description: "d",
-  }));
+  }, at));
   state = dashboardReducer(state, makeEvent("action-start", {
     actionIndex: 2, totalActions: 3, repo: "o/b", type: "self-review", pullRequestNumber: 10, description: "d",
-  }));
+  }, at));
   assert.deepEqual([...state.failures.keys()], ["o/a#pr-10"]);
 });
 
