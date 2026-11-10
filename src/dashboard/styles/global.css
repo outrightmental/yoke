@@ -134,6 +134,8 @@ keep-awake-light { display: contents; }
   letter-spacing: 3px;
   color: var(--trim-bright);
   text-shadow: 0 0 10px rgba(var(--trim-rgb), 0.5);
+  /* Trim is gray (#280), and that includes the ⚡ the font draws in color. */
+  filter: grayscale(1);
 }
 
 .header-title span {
@@ -427,6 +429,8 @@ keep-awake-light { display: contents; }
   text-shadow: 0 0 8px rgba(var(--trim-rgb), 0.5);
   flex-shrink: 0;
   background: rgba(var(--trim-rgb), 0.03);
+  /* Gray emoji too (⚡ 📡 📋): a panel header is trim (#280). */
+  filter: grayscale(1);
 }
 
 .panel-b .panel-header span {

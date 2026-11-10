@@ -17,8 +17,10 @@ export class StatusBar extends LitElement {
 
   private _connectionText(): string {
     if (this.appShutdown) return '⏹ SHUTDOWN';
-    if (this.connection === 'connected') return '🟢 Connected';
-    if (this.connection === 'disconnected') return '🔴 Disconnected';
+    // A plain dot in the pill's own color — trim gray while connected, red
+    // once disconnected — not a color emoji that is green whatever (#280).
+    if (this.connection === 'connected') return '● Connected';
+    if (this.connection === 'disconnected') return '● Disconnected';
     return 'Connecting...';
   }
 
