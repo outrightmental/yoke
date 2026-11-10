@@ -4,11 +4,16 @@
 // number (golden-angle spacing), so the same issue renders identically across
 // engines, reloads, restarts, and browsers — and consecutive issue numbers get
 // visually distant hues instead of colliding on a small palette.
+//
+// These are the engine colors: every one is fully saturated, because a gray
+// engine just looks inactive (issue #280). Saturation on the dashboard means
+// live computing burn; everything else is hue-free trim gray.
 
-/** Neutral gray used for anything not tied to an issue (idle cylinders,
- *  commits, CI/workflow events, orphan PRs, log chrome). */
-export const NEUTRAL_COLOR = '#8a8f98';
-export const NEUTRAL_COLOR_RGB = '138,143,152';
+/** Hue-free trim gray (`--trim-dim` in styles/tokens.css) for anything that
+ *  is not work an engine can take on: idle cylinders, commits, CI/workflow
+ *  events, log chrome. */
+export const NEUTRAL_COLOR = '#8c8c8c';
+export const NEUTRAL_COLOR_RGB = '140,140,140';
 
 const GOLDEN_ANGLE_DEG = 137.508;
 const SATURATION = 1;
@@ -40,4 +45,19 @@ export function issueColor(issueNumber: number): IssueColor {
   const b = hslChannel(h, SATURATION, LIGHTNESS, 4);
   const hex = `#${[r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('')}`;
   return { hex, rgb: `${r},${g},${b}` };
+}
+
+/**
+ * The stable color of a piece of work: its issue's, or — for a PR that closes
+ * no issue — the PR's own number's, so an engine working an orphan PR is never
+ * gray (issue #280). GitHub numbers a repository's issues and PRs from one
+ * sequence, so a PR's color never collides with an issue's. Null when there is
+ * neither, and so nothing to work.
+ */
+export function workColor(
+  issueNumber: number | null | undefined,
+  prNumber: number | null | undefined,
+): IssueColor | null {
+  const n = issueNumber ?? prNumber;
+  return n != null ? issueColor(n) : null;
 }

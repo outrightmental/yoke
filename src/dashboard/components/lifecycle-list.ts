@@ -1,6 +1,6 @@
 import { LitElement, html } from 'lit';
 import type { ApprovalPress, CylinderState, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
-import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
+import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB, workColor } from '../shared/issue-colors.js';
 import { pillActivity, pillKey, type PillActivity } from '../shared/pill-activity.js';
 import { approvalPressFor, approvalStatusFor } from '../shared/pill-approval.js';
 import { withWorkedPairs } from '../shared/worked-pairs.js';
@@ -35,14 +35,11 @@ function compareLifecyclePairs(
   return aNum - bNum;
 }
 
-function resolvePillColor(issueNumber: number | null | undefined): { hex: string; rgb: string } {
-  // Every issue keeps its own stable color forever; pills without an issue
-  // (orphan PRs) stay neutral gray (issue #236).
-  if (issueNumber != null) {
-    const c = issueColor(issueNumber);
-    return { hex: c.hex, rgb: c.rgb };
-  }
-  return { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
+function resolvePillColor(pair: LifecyclePair): { hex: string; rgb: string } {
+  // Every issue keeps its own stable color forever (issue #236); a pill
+  // without an issue (an orphan PR) takes its PR's, the same color as the
+  // cylinder working it, rather than a gray that reads as inactive (#280).
+  return workColor(pair.issue?.number, pair.pr?.number) ?? { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
 }
 
 export class LifecycleList extends LitElement {
@@ -104,8 +101,7 @@ export class LifecycleList extends LitElement {
             ${sorted.length === 0
               ? html`<div class="lifecycle-empty">Connecting to yoke…</div>`
               : sorted.map((pair) => {
-                  const issueNum = pair.issue?.number ?? null;
-                  const color = resolvePillColor(issueNum);
+                  const color = resolvePillColor(pair);
                   // Key includes the repo so pills from different projects that
                   // happen to share an issue/PR number don't collide in the DOM.
                   const key = pillKey(pair);

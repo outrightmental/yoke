@@ -1,5 +1,6 @@
 import { LitElement, html, css, type TemplateResult } from 'lit';
 import type { ApprovalPress, LifecyclePair, PullRequestApprovalStatus } from '../store/types.js';
+import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from '../shared/issue-colors.js';
 import type { PillActivity } from '../shared/pill-activity.js';
 import {
   approvalView,
@@ -135,7 +136,7 @@ export class LifecyclePill extends LitElement {
     }
 
     .pill-pr-half.inactive {
-      border: 2px dashed rgba(120, 120, 135, 0.4);
+      border: 2px dashed rgba(var(--trim-rgb), 0.3);
       opacity: 0.55;
     }
 
@@ -147,8 +148,8 @@ export class LifecyclePill extends LitElement {
     }
 
     .pill-pr-half.disabled {
-      border: 2px dashed rgba(150, 150, 160, 0.4);
-      background: rgba(150, 150, 160, 0.06);
+      border: 2px dashed rgba(var(--trim-rgb), 0.35);
+      background: rgba(var(--trim-rgb), 0.05);
       box-shadow: none;
       opacity: 0.45;
       filter: grayscale(1);
@@ -156,7 +157,7 @@ export class LifecyclePill extends LitElement {
     }
 
     .pill-pr-half.absent.blocked {
-      border: 2px dashed rgba(255, 100, 80, 0.35);
+      border: 2px dashed rgba(var(--color-coral-rgb), 0.35);
       opacity: 0.75;
     }
 
@@ -203,7 +204,7 @@ export class LifecyclePill extends LitElement {
        edge — and every pulse stops. The status icon stays, frozen in place. */
     .lifecycle-pill.shutdown { opacity: 0.5; }
 
-    .lifecycle-pill.shutdown .pill-issue-half { border-left-color: #ff6600; }
+    .lifecycle-pill.shutdown .pill-issue-half { border-left-color: var(--color-orange); }
 
     .lifecycle-pill.shutdown .pill-issue-half,
     .lifecycle-pill.shutdown .pill-pr-half { animation: none; }
@@ -241,9 +242,9 @@ export class LifecyclePill extends LitElement {
       letter-spacing: 0.3px;
     }
 
-    .pill-approval-line.approved { color: #00ff88; }
+    .pill-approval-line.approved { color: var(--color-green); }
 
-    .pill-approval-line.problem { color: rgba(255, 130, 110, 1); }
+    .pill-approval-line.problem { color: var(--color-coral); }
 
     .pill-row {
       display: flex;
@@ -279,13 +280,13 @@ export class LifecyclePill extends LitElement {
     }
 
     .pill-badge-blocked {
-      border-color: rgba(255, 100, 80, 0.7);
-      color: rgba(255, 130, 110, 1);
+      border-color: rgba(var(--color-coral-rgb), 0.7);
+      color: var(--color-coral);
     }
 
     .pill-badge-inactive {
-      border-color: rgba(160, 160, 175, 0.55);
-      color: rgba(185, 185, 200, 0.85);
+      border-color: rgba(var(--trim-rgb), 0.5);
+      color: var(--trim);
     }
 
     .pill-project {
@@ -394,7 +395,8 @@ export class LifecyclePill extends LitElement {
     }
 
     /* The Approve button on a PR parked by the review label (#274), in the
-       engine cylinder's Cancel-button style but green. Like the status icon it
+       engine cylinder's Cancel-button style: trim gray until it is pressed,
+       then green while the approval goes through (#280). Like the status icon it
        sits over the PR half, just left of the icon, with the room for it kept
        inside the PR half's row — so both halves stay the same width and the
        seams of all pills line up. It is the same width in every step —
@@ -412,8 +414,8 @@ export class LifecyclePill extends LitElement {
       margin-top: -9px;
       box-sizing: border-box;
       background: transparent;
-      border: 1px solid rgba(0, 255, 136, 0.45);
-      color: rgba(0, 255, 136, 0.85);
+      border: 1px solid rgba(var(--trim-rgb), 0.45);
+      color: var(--trim);
       font-family: 'IBM Plex Mono', monospace;
       font-size: 9px;
       font-weight: 600;
@@ -431,9 +433,9 @@ export class LifecyclePill extends LitElement {
     .lifecycle-pill.has-status .pill-approve { right: 38px; }
 
     .pill-approve.idle:hover:not(:disabled) {
-      background: rgba(0, 255, 136, 0.15);
-      border-color: #00ff88;
-      color: #00ff88;
+      background: rgba(var(--trim-rgb), 0.15);
+      border-color: var(--trim-bright);
+      color: var(--trim-bright);
     }
 
     .pill-approve:disabled { cursor: not-allowed; }
@@ -448,39 +450,39 @@ export class LifecyclePill extends LitElement {
     /* Pressed, and waiting for an engine to carry it out: lit at once, and
        breathing slowly for as long as it waits. */
     .pill-approve.queued {
-      background: rgba(0, 255, 136, 0.12);
-      border-color: #00ff88;
-      color: #00ff88;
+      background: rgba(var(--color-green-rgb), 0.12);
+      border-color: var(--color-green);
+      color: var(--color-green);
       cursor: default;
       animation: approvalQueued 2.4s ease-in-out infinite;
     }
 
     /* An engine is carrying it out. */
     .pill-approve.approving {
-      background: rgba(0, 255, 136, 0.28);
-      border-color: #00ff88;
-      color: #00ff88;
+      background: rgba(var(--color-green-rgb), 0.28);
+      border-color: var(--color-green);
+      color: var(--color-green);
       cursor: default;
-      box-shadow: 0 0 8px rgba(0, 255, 136, 0.45);
+      box-shadow: 0 0 8px rgba(var(--color-green-rgb), 0.45);
       animation: approvalCarriedOut 1s ease-in-out infinite;
     }
 
     .pill-approve.merged {
-      background: rgba(0, 255, 136, 0.4);
-      border-color: #00ff88;
+      background: rgba(var(--color-green-rgb), 0.4);
+      border-color: var(--color-green);
       color: #ffffff;
       cursor: default;
     }
 
     /* Yoke refused the press, or it failed: the line says why. */
     .pill-approve.retry:not(:disabled) {
-      border-color: rgba(255, 130, 110, 0.7);
-      color: rgba(255, 130, 110, 1);
+      border-color: rgba(var(--color-coral-rgb), 0.7);
+      color: var(--color-coral);
     }
 
     .pill-approve.retry:hover:not(:disabled) {
-      background: rgba(255, 130, 110, 0.15);
-      border-color: rgba(255, 130, 110, 1);
+      background: rgba(var(--color-coral-rgb), 0.15);
+      border-color: var(--color-coral);
     }
 
     @keyframes approvalQueued {
@@ -510,8 +512,8 @@ export class LifecyclePill extends LitElement {
   };
 
   pair: LifecyclePair | null = null;
-  color = '#555577';
-  colorRgb = '85,85,119';
+  color = NEUTRAL_COLOR;
+  colorRgb = NEUTRAL_COLOR_RGB;
   /** What this pill is doing or waiting on right now, if anything. */
   activity: PillActivity | null = null;
   /** Yoke is shutting down, so this pill has gone dark (issue #268). */

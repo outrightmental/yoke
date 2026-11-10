@@ -41,14 +41,16 @@ export class YokeHeader extends LitElement {
    * showing "NEXT 1m" while every engine is parked for three hours is the
    * single most misleading thing the header can say.
    */
-  private _countdown(): { label: string; value: string } | null {
+  private _countdown(): { label: string; value: string; held: boolean } | null {
     const target = this.holdUntilMs ?? this.nextCycleAtMs;
     if (target === null) return null;
     const ms = target - Date.now();
     if (ms <= 0) return null;
+    const held = this.holdUntilMs !== null;
     return {
-      label: this.holdUntilMs !== null ? 'WAITING' : 'NEXT',
+      label: held ? 'WAITING' : 'NEXT',
       value: formatDuration(ms),
+      held,
     };
   }
 
@@ -78,7 +80,7 @@ export class YokeHeader extends LitElement {
           </div>
         ` : ''}
         ${countdown !== null ? html`
-          <div class="countdown state-waiting">
+          <div class="countdown${countdown.held ? ' state-waiting' : ''}">
             <div class="countdown-label">${countdown.label}</div>
             <div class="countdown-timer">${countdown.value}</div>
           </div>

@@ -23,13 +23,8 @@ export class StatusBar extends LitElement {
   }
 
   private _connectionClass(): string {
-    if (this.appShutdown) return 'connection-status disconnected';
+    if (this.appShutdown) return 'connection-status shutdown';
     return this.connection === 'disconnected' ? 'connection-status disconnected' : 'connection-status';
-  }
-
-  private _connectionStyle(): string {
-    if (this.appShutdown) return 'background:rgba(255,102,0,0.12);border-color:#ff6600;color:#ff6600;';
-    return '';
   }
 
   override render() {
@@ -49,7 +44,7 @@ export class StatusBar extends LitElement {
             <span class="stat-value">${this.sessionCount}</span>
           </div>
         </div>
-        <div class="${this._connectionClass()}" style="${this._connectionStyle()}">
+        <div class="${this._connectionClass()}">
           ${this._connectionText()}
         </div>
       </div>

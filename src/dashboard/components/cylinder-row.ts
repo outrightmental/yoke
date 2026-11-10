@@ -17,13 +17,13 @@ export class CylinderRow extends LitElement {
       padding: 10px 12px;
       min-height: 40px;
       overflow: hidden;
-      border-bottom: 1px solid rgba(0, 255, 136, 0.08);
+      border-bottom: 1px solid rgba(var(--trim-rgb), 0.08);
       transition: background 0.3s ease, border-color 0.3s ease;
     }
 
     .cylinder-row.active {
-      background: rgba(var(--cyl-color-rgb, 0, 255, 136), 0.06);
-      border-left: 3px solid var(--cyl-color, #00ff88);
+      background: rgba(var(--cyl-color-rgb, var(--trim-rgb)), 0.06);
+      border-left: 3px solid var(--cyl-color, var(--trim-dim));
       padding-left: 9px;
       box-shadow: inset 0 0 20px rgba(0,0,0,0.2);
     }
@@ -31,13 +31,13 @@ export class CylinderRow extends LitElement {
     .cylinder-row.done   { opacity: 0.65; }
 
     .cylinder-row.error {
-      border-left: 3px solid #ff0055;
+      border-left: 3px solid var(--color-red);
       padding-left: 9px;
     }
 
     .cylinder-row.shutdown {
       opacity: 0.5;
-      border-left: 3px solid #ff6600;
+      border-left: 3px solid var(--color-orange);
       padding-left: 9px;
     }
 
@@ -45,8 +45,8 @@ export class CylinderRow extends LitElement {
       width: 10px;
       height: 10px;
       border-radius: 50%;
-      background: var(--cyl-color, #00ff88);
-      box-shadow: 0 0 6px var(--cyl-color, #00ff88);
+      background: var(--cyl-color, var(--trim-dim));
+      box-shadow: 0 0 6px var(--cyl-color, var(--trim-dim));
       flex-shrink: 0;
       opacity: 0.45;
       margin-top: 2px;
@@ -58,15 +58,15 @@ export class CylinderRow extends LitElement {
     .cylinder-dot.pulsing { animation: cylPulse 1.2s ease-in-out infinite; }
 
     @keyframes cylPulse {
-      0%, 100% { box-shadow: 0 0 6px var(--cyl-color, #00ff88); opacity: 1; }
-      50%       { box-shadow: 0 0 18px var(--cyl-color, #00ff88), 0 0 30px var(--cyl-color, #00ff88); opacity: 0.8; }
+      0%, 100% { box-shadow: 0 0 6px var(--cyl-color, var(--trim-dim)); opacity: 1; }
+      50%       { box-shadow: 0 0 18px var(--cyl-color, var(--trim-dim)), 0 0 30px var(--cyl-color, var(--trim-dim)); opacity: 0.8; }
     }
 
     .cylinder-spinner {
       width: 14px;
       height: 14px;
-      border: 2px solid rgba(var(--cyl-color-rgb, 0, 255, 136), 0.2);
-      border-top-color: var(--cyl-color, #00ff88);
+      border: 2px solid rgba(var(--cyl-color-rgb, var(--trim-rgb)), 0.2);
+      border-top-color: var(--cyl-color, var(--trim-dim));
       border-radius: 50%;
       flex-shrink: 0;
       opacity: 0;
@@ -94,8 +94,8 @@ export class CylinderRow extends LitElement {
     .cylinder-label {
       font-size: 10px;
       font-weight: 700;
-      color: var(--cyl-color, #00ff88);
-      text-shadow: 0 0 5px var(--cyl-color, rgba(0,255,136,0.5));
+      color: var(--cyl-color, var(--trim-dim));
+      text-shadow: 0 0 5px var(--cyl-color, var(--trim-dim));
       letter-spacing: 0.5px;
     }
 
@@ -129,17 +129,19 @@ export class CylinderRow extends LitElement {
       overflow-x: hidden;
       font-size: 9px;
       font-family: monospace;
-      color: rgba(0, 255, 136, 0.25);
+      color: rgba(var(--trim-rgb), 0.3);
       line-height: 1.4;
       word-break: break-word;
       white-space: pre-wrap;
     }
 
-    .cylinder-thinking-stream.active { color: rgba(0, 255, 136, 0.65); }
+    /* The engine's live output is burn, so it is drawn in the engine's color;
+       what is left of it once the action ends is trim (issue #280). */
+    .cylinder-thinking-stream.active { color: rgba(var(--cyl-color-rgb, var(--trim-rgb)), 0.75); }
 
     .cylinder-thinking-stream::-webkit-scrollbar { width: 3px; }
     .cylinder-thinking-stream::-webkit-scrollbar-thumb {
-      background: rgba(0, 255, 136, 0.3);
+      background: rgba(var(--trim-rgb), 0.3);
       border-radius: 2px;
     }
 

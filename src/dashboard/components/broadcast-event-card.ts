@@ -37,7 +37,7 @@ export class BroadcastEventCard extends LitElement {
     .broadcast-event {
       padding: 12px 14px;
       margin: 8px 0;
-      border-left: 3px solid var(--event-color, #8a8f98);
+      border-left: 3px solid var(--trim-dim);
       border-radius: 2px;
       animation: broadcastEventEntry 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
       position: relative;

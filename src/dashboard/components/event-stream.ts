@@ -59,7 +59,7 @@ export class EventStream extends LitElement {
 
     .event-stream::-webkit-scrollbar { width: 4px; }
     .event-stream::-webkit-scrollbar-thumb {
-      background: rgba(0, 255, 136, 0.3);
+      background: rgba(var(--trim-rgb), 0.3);
       border-radius: 2px;
     }
   `;
@@ -94,9 +94,9 @@ export class EventStream extends LitElement {
 
   private _contentStyle(line: EventLine): string {
     if (line.color) return `color:${line.color}`;
-    if (line.level === 'error') return 'color:#ff0055';
-    if (line.level === 'success') return 'color:#00ff88';
-    if (line.level === 'warning') return 'color:#ffaa00';
+    if (line.level === 'error') return 'color:var(--color-red)';
+    if (line.level === 'success') return 'color:var(--color-green)';
+    if (line.level === 'warning') return 'color:var(--color-yellow)';
     return '';
   }
 }
