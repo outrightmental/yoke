@@ -1,4 +1,4 @@
-import { issueColor, NEUTRAL_COLOR } from '../shared/issue-colors.js';
+import { issueColor, NEUTRAL_COLOR, workColor } from '../shared/issue-colors.js';
 import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus } from './types.js';
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
@@ -253,9 +253,11 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>, 
     if (prNumber !== null) cylinderByPR.set(prNumber, idx);
 
     // The cylinder adopts the stable color of the issue it's working on —
-    // resolved through the PR when the action targets a PR (issue #236).
-    const colorIssue = issueNumber ?? (prNumber !== null ? resolveIssueForPR(state, prNumber) : undefined) ?? null;
-    const ic = colorIssue !== null ? issueColor(colorIssue) : null;
+    // resolved through the PR when the action targets a PR (issue #236) — or
+    // of the PR itself when it closes no issue, so a working cylinder is never
+    // gray (issue #280).
+    const colorIssue = issueNumber ?? (prNumber !== null ? resolveIssueForPR(state, prNumber) : undefined);
+    const ic = workColor(colorIssue, prNumber);
 
     cylinders = [...cylinders];
     cylinders[idx] = {

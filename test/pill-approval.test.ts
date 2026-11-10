@@ -264,7 +264,7 @@ test("lifecycle pill: a pressed button stays lit; only Approve and Retry grey ou
 
   assert.match(css, /\.pill-approve:is\(\.idle, \.retry\):disabled \{ border-color: rgba\(255, 255, 255, 0\.2\);/);
   assert.ok(!/\.pill-approve:disabled \{[^}]*color/.test(css), "no grey for every disabled step");
-  assert.match(/\.pill-approve\.queued \{([^}]*)\}/.exec(css)?.[1] ?? "", /border-color: #00ff88;/, "Queued is lit");
+  assert.match(/\.pill-approve\.queued \{([^}]*)\}/.exec(css)?.[1] ?? "", /border-color: var\(--color-green\);/, "Queued is lit");
   assert.match(/\.pill-approve\.queued \{([^}]*)\}/.exec(css)?.[1] ?? "", /animation: approvalQueued/, "and breathing");
   assert.match(/\.pill-approve\.approving \{([^}]*)\}/.exec(css)?.[1] ?? "", /animation: approvalCarriedOut/);
 });

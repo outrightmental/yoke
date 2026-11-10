@@ -339,6 +339,7 @@ test("yoke-header shows LIMIT and the reset countdown while a Claude usage-limit
     },
   });
   assert.match(markup, /<div class="countdown-label">WAITING<\/div>/);
+  assert.match(markup, /class="countdown state-waiting"/, "a hold colors the countdown; the time to the next cycle is trim (#280)");
   assert.match(markup, /class="usage-gauge tone-critical"/);
   assert.match(markup, /<div class="usage-gauge-value">LIMIT<\/div>/);
   assert.match(markup, /--usage-fill:100%/);
@@ -354,7 +355,7 @@ test("yoke-header puts the gauge in the upper-right cluster, before the keep-awa
     usage: okReading(37, { fetchedAtMs: now, resetsAtMs: now + HOUR }),
   });
   const cycle = markup.indexOf('class="iteration-info"');
-  const countdown = markup.indexOf('class="countdown state-waiting"');
+  const countdown = markup.indexOf('class="countdown"');
   const gauge = markup.indexOf('class="usage-gauge tone-ok"');
   const lamp = markup.indexOf("<keep-awake-light></keep-awake-light>");
   assert.ok(cycle >= 0 && countdown >= 0 && gauge >= 0 && lamp >= 0, markup);

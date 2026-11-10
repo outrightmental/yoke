@@ -81,6 +81,24 @@ test("reducer: the same issue keeps its color on whichever engine works it", () 
   assert.equal(first, issueColor(7).hex);
 });
 
+test("reducer: a cylinder working a PR takes its issue's color, or the PR's own when it closes none — never gray (#280)", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("snapshot-update", {
+    issueCount: 1, prCount: 2, sessionCount: 0,
+    issues: [{ number: 7, title: "X", state: "open" }],
+    pullRequests: [
+      { number: 10, title: "Fix", state: "open", closingIssueNumbers: [7], linkedIssueNumbers: [] },
+      { number: 300, title: "Orphan", state: "open", closingIssueNumbers: [], linkedIssueNumbers: [] },
+    ],
+  }));
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 1, totalActions: 2, type: "self-review", issueNumber: null, pullRequestNumber: 10, description: "d" }));
+  s = dashboardReducer(s, makeEvent("action-start", { actionIndex: 2, totalActions: 2, type: "address-failing-checks", issueNumber: null, pullRequestNumber: 300, description: "d" }));
+
+  assert.equal(s.cylinders[0]?.color, issueColor(7).hex, "a PR that closes an issue works in the issue's color");
+  assert.equal(s.cylinders[1]?.color, issueColor(300).hex, "an orphan PR works in its own number's color, not neutral gray");
+  assert.equal(s.cylinders[1]?.colorRgb, issueColor(300).rgb);
+});
+
 // ── action-start ──────────────────────────────────────────────────────────────
 
 test("reducer: action-start sets cylinder to active", () => {
@@ -1169,7 +1187,7 @@ test("lifecycle pill: a dark pill renders dimmed and still, keeping its frozen i
 
   const css = LifecyclePill.styles.toString().replace(/\s+/g, " ");
   assert.match(css, /\.lifecycle-pill\.shutdown \{ opacity: 0\.5; \}/, "the shut-down cylinder row's opacity");
-  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: #ff6600; \}/, "and its orange accent");
+  assert.match(css, /\.lifecycle-pill\.shutdown \.pill-issue-half \{ border-left-color: var\(--color-orange\); \}/, "and its orange accent");
   assert.match(css, /\.lifecycle-pill\.shutdown \.pill-status \* \{ animation-play-state: paused; \}/, "icons freeze in place");
 });
 

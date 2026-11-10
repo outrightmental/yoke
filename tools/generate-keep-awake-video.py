@@ -32,16 +32,18 @@ SIZE = 160
 FPS = 20
 FRAMES = 40  # 2 s — one full breath of the pulse
 
-BACKGROUND = (10, 12, 11)
-GLOW = (0, 255, 136)     # --color-green
-CORE = (190, 255, 224)   # near-white heart of the lamp
+# Hue-free like the rest of the Dashboard's trim (issue #280): the lamp shows
+# the page is awake, not that an engine is burning tokens, so it has no color.
+BACKGROUND = (14, 14, 14)  # --bg-dark
+GLOW = (180, 180, 180)     # --trim
+CORE = (240, 240, 240)     # near-white heart of the lamp
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / "src" / "dashboard" / "assets"
 
 
 def _palette() -> list[int]:
-    """256-entry intensity → RGB ramp: background → glow green → near-white."""
+    """256-entry intensity → RGB ramp: background → glow gray → near-white."""
     ramp: list[int] = []
     for v in range(256):
         i = v / 255.0

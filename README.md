@@ -192,7 +192,9 @@ Yoke loads `env.yaml` from the current working directory and works every reposit
   - *solid outline, ready* — PR is open and ready for review
   - *completed (full fill)* — PR is merged/closed
 
-  Each pill is colour-coded to its issue's own stable colour — derived from the issue number, so an issue keeps the same colour forever — and the broadcast feed uses that same colour for everything pertaining to the issue.
+  Each pill is colour-coded to its issue's own stable colour — derived from the issue number, so an issue keeps the same colour forever — and the broadcast feed uses that same colour for everything pertaining to the issue. A pill for a PR that closes no issue takes the PR number's own colour. Every one of these colours is fully saturated, and an engine cylinder takes on the colour of whatever it is working, so a working engine never shows up gray.
+
+  Everything else on the Dashboard is plain gray with no hue at all: panel borders, headers, the status bar, scrollbars, labels, the keep-awake lamp, idle cylinders. Saturated colour is kept for the work engines burn tokens on, and gray never stands for any of it. The only other colours are alerts and outcomes: red for an error or a lost connection, orange for a hold or a shutdown, amber for a warning, and green for an approval going through.
 
   Whatever its state, a pill that an engine cylinder is working on *right now* — through its issue or its pull request — has its border pulse brighter and darker in its colour, and stays at full opacity while every other pill is dimmed, so the pills being worked stand out. The pulse stops and the pill dims as soon as that cylinder's action finishes or fails, or the cylinder goes idle.
 

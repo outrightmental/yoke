@@ -17,19 +17,16 @@ export class StatusBar extends LitElement {
 
   private _connectionText(): string {
     if (this.appShutdown) return '⏹ SHUTDOWN';
-    if (this.connection === 'connected') return '🟢 Connected';
-    if (this.connection === 'disconnected') return '🔴 Disconnected';
+    // A plain dot in the pill's own color — trim gray while connected, red
+    // once disconnected — not a color emoji that is green whatever (#280).
+    if (this.connection === 'connected') return '● Connected';
+    if (this.connection === 'disconnected') return '● Disconnected';
     return 'Connecting...';
   }
 
   private _connectionClass(): string {
-    if (this.appShutdown) return 'connection-status disconnected';
+    if (this.appShutdown) return 'connection-status shutdown';
     return this.connection === 'disconnected' ? 'connection-status disconnected' : 'connection-status';
-  }
-
-  private _connectionStyle(): string {
-    if (this.appShutdown) return 'background:rgba(255,102,0,0.12);border-color:#ff6600;color:#ff6600;';
-    return '';
   }
 
   override render() {
@@ -49,7 +46,7 @@ export class StatusBar extends LitElement {
             <span class="stat-value">${this.sessionCount}</span>
           </div>
         </div>
-        <div class="${this._connectionClass()}" style="${this._connectionStyle()}">
+        <div class="${this._connectionClass()}">
           ${this._connectionText()}
         </div>
       </div>
