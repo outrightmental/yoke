@@ -1,4 +1,4 @@
-import type { AccountUsage, WorkHold } from '../store/types.js';
+import type { AccountUsage, UsageWindow, WorkHold } from '../store/types.js';
 import { formatClockTime, formatDuration } from './format.js';
 
 /** Needle color of the usage gauge: green, amber, red — or dark when it has no reading. */
@@ -6,7 +6,12 @@ export type UsageTone = 'ok' | 'warn' | 'critical' | 'unknown';
 
 export interface UsageGaugeView {
   tone: UsageTone;
-  /** Share of the 5-hour window used, e.g. "37%"; "LIMIT" while a usage-limit
+  /** The gauge's caption: "CLAUDE 5H" or "CLAUDE 7D" for the window whose
+   *  share it shows, plain "CLAUDE" while it shows none. */
+  label: string;
+  /** What the gauge is of, e.g. "The weekly usage window", as a heading. */
+  heading: string;
+  /** Share of the window used, e.g. "37%"; "LIMIT" while a usage-limit
    *  hold parks the pool; "OFF" or "—" without a reading. */
   percentText: string;
   /** How full the meter bar is drawn, 0–100. */
@@ -25,8 +30,19 @@ export const USAGE_STALE_AFTER_MS = 5 * 60_000;
 
 const NO_VALUE = '—';
 
+/** How the gauge names each window, in a sentence and in its caption. */
+const WINDOW_NAMES: Readonly<Record<UsageWindow, string>> = { five_hour: '5-hour', seven_day: 'weekly' };
+const WINDOW_CAPTIONS: Readonly<Record<UsageWindow, string>> = { five_hour: '5H', seven_day: '7D' };
+
+const NO_WINDOW = { label: 'CLAUDE', heading: 'The usage window' } as const;
+
 function noReading(percentText: string, title: string): UsageGaugeView {
-  return { tone: 'unknown', percentText, fillPercent: 0, resetText: NO_VALUE, title };
+  return { tone: 'unknown', ...NO_WINDOW, percentText, fillPercent: 0, resetText: NO_VALUE, title };
+}
+
+/** "the weekly window", or plain "the window" when a reading does not say which. */
+function theWindow(window: UsageWindow | null): string {
+  return window === null ? 'the window' : `the ${WINDOW_NAMES[window]} window`;
 }
 
 /** When `hold` lifts, if it is the Claude usage limit (and not, say, GitHub's). */
@@ -38,7 +54,7 @@ export function usageLimitUntilMs(hold: WorkHold | null): number | null {
  *  a failed read. Null when it has none. */
 function percentToShow(usage: AccountUsage): number | null {
   return usage.status === 'ok' || (usage.status === 'unavailable' && usage.heldFromMs !== undefined)
-    ? usage.fiveHourPercent
+    ? usage.usedPercent
     : null;
 }
 
@@ -48,7 +64,7 @@ function readingNote(usage: AccountUsage | null, nowMs: number): string {
   const percent = percentToShow(usage);
   if (percent !== null && nowMs - usage.fetchedAtMs <= USAGE_STALE_AFTER_MS) {
     const asOf = usage.heldFromMs !== undefined ? ` at ${formatClockTime(usage.heldFromMs)}` : '';
-    return ` · Anthropic last reported ${Math.round(percent)}% of the 5-hour window used${asOf}`;
+    return ` · Anthropic last reported ${Math.round(percent)}% of ${theWindow(usage.window)} used${asOf}`;
   }
   return usage.reason ? ` · usage reading: ${usage.reason}` : '';
 }
@@ -64,8 +80,8 @@ function readingNote(usage: AccountUsage | null, nowMs: number): string {
  * `limitUntilMs` is when a Claude usage-limit hold lifts, if one is parking the
  * pool. The CLI has then said in so many words that nothing more can run until
  * that time, so the gauge reads LIMIT and counts down to it whatever the last
- * reading said — the reading may be unavailable, stale, or of the 5-hour window
- * while it was a weekly limit that ran out.
+ * reading said — the reading may be unavailable, stale, or of one window
+ * while it was the other that ran out.
  */
 export function usageGaugeView(
   usage: AccountUsage | null,
@@ -75,6 +91,7 @@ export function usageGaugeView(
   if (limitUntilMs !== null && limitUntilMs > nowMs) {
     return {
       tone: 'critical',
+      ...NO_WINDOW,
       percentText: 'LIMIT',
       fillPercent: 100,
       resetText: formatDuration(limitUntilMs - nowMs),
@@ -96,7 +113,7 @@ export function usageGaugeView(
     return noReading(NO_VALUE, `Claude usage: the last reading is ${formatDuration(ageMs)} old`);
   }
   if (usage.resetsAtMs !== null && usage.resetsAtMs <= nowMs) {
-    return noReading(NO_VALUE, 'Claude usage: the 5-hour window has reset — waiting for the next reading');
+    return noReading(NO_VALUE, `Claude usage: ${theWindow(usage.window)} has reset — waiting for the next reading`);
   }
 
   const percent = Math.min(100, Math.max(0, percentRead));
@@ -105,9 +122,12 @@ export function usageGaugeView(
   const resets = usage.resetsAtMs === null
     ? 'no window open yet'
     : `resets ${formatClockTime(usage.resetsAtMs)}`;
-  const used = `${Math.round(percent)}% of the 5-hour window used`;
+  const used = `${Math.round(percent)}% of ${theWindow(usage.window)} used`;
   return {
     tone,
+    ...(usage.window === null
+      ? NO_WINDOW
+      : { label: `CLAUDE ${WINDOW_CAPTIONS[usage.window]}`, heading: `The ${WINDOW_NAMES[usage.window]} usage window` }),
     percentText: `${Math.round(percent)}%`,
     fillPercent: percent,
     resetText: usage.resetsAtMs === null ? NO_VALUE : formatDuration(usage.resetsAtMs - nowMs),

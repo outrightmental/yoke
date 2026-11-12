@@ -707,22 +707,24 @@ test("reducer: usage-update stores the latest reading without logging it", () =>
   const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
   let s = dashboardReducer(initialState(), makeEvent("usage-update", {
     status: "ok",
-    fiveHourPercent: 37,
+    window: "five_hour",
+    usedPercent: 37,
     resetsAtMs,
     fetchedAtMs: 1_000,
     reason: "",
   }));
-  assert.deepEqual(s.usage, { status: "ok", fiveHourPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "" });
+  assert.deepEqual(s.usage, { status: "ok", window: "five_hour", usedPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "" });
 
   // A new reading every minute only moves the gauge — never the event log.
   s = dashboardReducer(s, makeEvent("usage-update", {
     status: "ok",
-    fiveHourPercent: 41,
+    window: "five_hour",
+    usedPercent: 41,
     resetsAtMs,
     fetchedAtMs: 61_000,
     reason: "",
   }));
-  assert.equal(s.usage?.fiveHourPercent, 41);
+  assert.equal(s.usage?.usedPercent, 41);
   assert.equal(s.eventStream.length, 0);
   assert.equal(s.eventCount, 0);
 });
@@ -730,7 +732,7 @@ test("reducer: usage-update stores the latest reading without logging it", () =>
 test("reducer: usage-update keeps the gauge's unconfigured and unavailable states", () => {
   let s = dashboardReducer(initialState(), makeEvent("usage-update", {
     status: "unconfigured",
-    fiveHourPercent: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: 1_000,
     reason: "set anthropic_usage_token in env.yaml to show live Claude usage",
@@ -740,14 +742,15 @@ test("reducer: usage-update keeps the gauge's unconfigured and unavailable state
 
   s = dashboardReducer(s, makeEvent("usage-update", {
     status: "unavailable",
-    fiveHourPercent: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: 2_000,
     reason: "Anthropic is rate-limiting usage reads (HTTP 429)",
   }));
   assert.deepEqual(s.usage, {
     status: "unavailable",
-    fiveHourPercent: null,
+    window: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: 2_000,
     reason: "Anthropic is rate-limiting usage reads (HTTP 429)",
@@ -757,11 +760,12 @@ test("reducer: usage-update keeps the gauge's unconfigured and unavailable state
 test("reducer: a failed usage-update that holds the last good numbers keeps them on the gauge (#261)", () => {
   const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
   let s = dashboardReducer(initialState(), makeEvent("usage-update", {
-    status: "ok", fiveHourPercent: 15, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+    status: "ok", window: "five_hour", usedPercent: 15, resetsAtMs, fetchedAtMs: 1_000, reason: "",
   }));
   s = dashboardReducer(s, makeEvent("usage-update", {
     status: "unavailable",
-    fiveHourPercent: 15,
+    window: "five_hour",
+    usedPercent: 15,
     resetsAtMs,
     fetchedAtMs: 61_000,
     reason: "Anthropic is overloaded (HTTP 529)",
@@ -769,7 +773,8 @@ test("reducer: a failed usage-update that holds the last good numbers keeps them
   }));
   assert.deepEqual(s.usage, {
     status: "unavailable",
-    fiveHourPercent: 15,
+    window: "five_hour",
+    usedPercent: 15,
     resetsAtMs,
     fetchedAtMs: 61_000,
     reason: "Anthropic is overloaded (HTTP 529)",
@@ -779,26 +784,27 @@ test("reducer: a failed usage-update that holds the last good numbers keeps them
 
 test("reducer: heldFromMs is dropped from readings that hold nothing over", () => {
   const ok = dashboardReducer(initialState(), makeEvent("usage-update", {
-    status: "ok", fiveHourPercent: 15, resetsAtMs: null, fetchedAtMs: 1_000, reason: "", heldFromMs: 500,
+    status: "ok", window: "five_hour", usedPercent: 15, resetsAtMs: null, fetchedAtMs: 1_000, reason: "", heldFromMs: 500,
   }));
   assert.ok(ok.usage !== null && !("heldFromMs" in ok.usage));
 
   const noNumbers = dashboardReducer(initialState(), makeEvent("usage-update", {
-    status: "unavailable", fiveHourPercent: null, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x", heldFromMs: 500,
+    status: "unavailable", usedPercent: null, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x", heldFromMs: 500,
   }));
   assert.equal(noNumbers.usage?.resetsAtMs, null);
   assert.ok(noNumbers.usage !== null && !("heldFromMs" in noNumbers.usage));
 
   const numbersWithoutHold = dashboardReducer(initialState(), makeEvent("usage-update", {
-    status: "unavailable", fiveHourPercent: 15, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x",
+    status: "unavailable", window: "five_hour", usedPercent: 15, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x",
   }));
-  assert.equal(numbersWithoutHold.usage?.fiveHourPercent, null);
+  assert.equal(numbersWithoutHold.usage?.window, null);
+  assert.equal(numbersWithoutHold.usage?.usedPercent, null);
   assert.equal(numbersWithoutHold.usage?.resetsAtMs, null);
 
   const unconfigured = dashboardReducer(initialState(), makeEvent("usage-update", {
-    status: "unconfigured", fiveHourPercent: 15, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x", heldFromMs: 500,
+    status: "unconfigured", window: "five_hour", usedPercent: 15, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "x", heldFromMs: 500,
   }));
-  assert.equal(unconfigured.usage?.fiveHourPercent, null);
+  assert.equal(unconfigured.usage?.usedPercent, null);
   assert.ok(unconfigured.usage !== null && !("heldFromMs" in unconfigured.usage));
 });
 
@@ -806,7 +812,8 @@ test("DashboardStore.bootstrap() restores held usage numbers from the replayed r
   const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
   const usageEvent = makeEvent("usage-update", {
     status: "unavailable",
-    fiveHourPercent: 15,
+    window: "seven_day",
+    usedPercent: 15,
     resetsAtMs,
     fetchedAtMs: 61_000,
     reason: "Anthropic is overloaded (HTTP 529)",
@@ -815,7 +822,8 @@ test("DashboardStore.bootstrap() restores held usage numbers from the replayed r
   await withMockFetch({ ...MOCK_STATE_RESPONSE, cachedEvents: [usageEvent] }, async () => {
     const store = new DashboardStore();
     await store.bootstrap();
-    assert.equal(store.getState().usage?.fiveHourPercent, 15);
+    assert.equal(store.getState().usage?.window, "seven_day");
+    assert.equal(store.getState().usage?.usedPercent, 15);
     assert.equal(store.getState().usage?.heldFromMs, 1_000);
   });
 });
@@ -823,22 +831,42 @@ test("DashboardStore.bootstrap() restores held usage numbers from the replayed r
 test("reducer: a malformed usage-update degrades to unavailable rather than a bogus number", () => {
   const unknownStatus = dashboardReducer(initialState(), makeEvent("usage-update", {
     status: "bogus",
-    fiveHourPercent: 50,
+    window: "five_hour",
+    usedPercent: 50,
     fetchedAtMs: 1_000,
   }));
   assert.equal(unknownStatus.usage?.status, "unavailable");
-  assert.equal(unknownStatus.usage?.fiveHourPercent, null);
+  assert.equal(unknownStatus.usage?.usedPercent, null);
 
   const okWithoutNumber = dashboardReducer(initialState(), makeEvent("usage-update", {
     status: "ok",
-    fiveHourPercent: "37",
+    window: "five_hour",
+    usedPercent: "37",
     resetsAtMs: "soon",
     fetchedAtMs: 1_000,
   }));
   assert.equal(okWithoutNumber.usage?.status, "unavailable");
-  assert.equal(okWithoutNumber.usage?.fiveHourPercent, null);
+  assert.equal(okWithoutNumber.usage?.usedPercent, null);
   assert.equal(okWithoutNumber.usage?.resetsAtMs, null);
   assert.equal(okWithoutNumber.usage?.reason, "");
+
+  // A number that does not say which window it is of is no reading either.
+  for (const window of [undefined, null, "monthly"]) {
+    const okWithoutWindow = dashboardReducer(initialState(), makeEvent("usage-update", {
+      status: "ok", window, usedPercent: 37, resetsAtMs: 5_000, fetchedAtMs: 1_000, reason: "",
+    }));
+    assert.equal(okWithoutWindow.usage?.status, "unavailable", String(window));
+    assert.equal(okWithoutWindow.usage?.window, null);
+    assert.equal(okWithoutWindow.usage?.usedPercent, null);
+  }
+});
+
+test("reducer: usage-update stores a reading of the weekly window", () => {
+  const resetsAtMs = Date.now() + 2 * 24 * 60 * 60 * 1000;
+  const s = dashboardReducer(initialState(), makeEvent("usage-update", {
+    status: "ok", window: "seven_day", usedPercent: 7, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+  }));
+  assert.deepEqual(s.usage, { status: "ok", window: "seven_day", usedPercent: 7, resetsAtMs, fetchedAtMs: 1_000, reason: "" });
 });
 
 // ── pills being worked by an engine cylinder (issue #262) ─────────────────────
@@ -1341,7 +1369,7 @@ test("reducer: a usage reason with no usable clockTimes keeps the server's text"
   const reason = "the Claude CLI login expired at Oct 18, 6:45 PM — claude renews it the next time it runs";
   for (const clockTimes of [undefined, "Oct 18, 6:45 PM", [null, { text: "Oct 18, 6:45 PM" }, { text: "Oct 18, 6:45 PM", atMs: Number.NaN }]]) {
     const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("usage-update", {
-      status: "unavailable", fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: 1_000, reason,
+      status: "unavailable", usedPercent: null, resetsAtMs: null, fetchedAtMs: 1_000, reason,
       ...(clockTimes !== undefined ? { clockTimes } : {}),
     })));
     assert.equal(s.usage?.reason, reason);
@@ -1361,7 +1389,7 @@ test("reducer: a usage reason that names a time shows it in the viewer's zone", 
   const served = formatClockTime(expiredAtMs, "America/New_York");
   const s = asViewerIn("Asia/Tokyo", () => dashboardReducer(initialState(), makeEvent("usage-update", {
     status: "unavailable",
-    fiveHourPercent: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: 1_000,
     reason: `the Claude CLI login expired at ${served} — claude renews it the next time it runs`,

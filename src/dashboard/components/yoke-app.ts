@@ -144,6 +144,7 @@ export class YokeApp extends LitElement {
     const inspection = selectedCard ? null : inspect(selection, {
       works,
       engines: [...model.reactors.map((reactor) => reactor.engine), ...model.bench],
+      usageHeading: model.vitals.usage.heading,
       usageTitle: model.vitals.usage.title,
       hold: model.vitals.hold,
     });

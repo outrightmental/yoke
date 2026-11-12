@@ -631,17 +631,20 @@ function finiteOrNull(value: unknown): number | null {
 /** A fresh usage reading replaces the last one. Arrives every minute, so it
  *  only moves the header gauge — it would just be noise in the event log. */
 function applyUsageUpdate(state: DashboardState, data: Record<string, unknown>): DashboardState {
-  const fiveHourPercent = finiteOrNull(data['fiveHourPercent']);
+  const window = data['window'] === 'five_hour' || data['window'] === 'seven_day' ? data['window'] : null;
+  // A number without the window it is of says nothing the gauge can show.
+  const usedPercent = window !== null ? finiteOrNull(data['usedPercent']) : null;
   let status: AccountUsage['status'] =
     data['status'] === 'ok' || data['status'] === 'unconfigured' ? data['status'] : 'unavailable';
   // "ok" without a number to show is not a reading the gauge can trust.
-  if (status === 'ok' && fiveHourPercent === null) status = 'unavailable';
+  if (status === 'ok' && usedPercent === null) status = 'unavailable';
   // A failed read may carry the last good numbers, so the gauge holds them.
-  const heldFromMs = status === 'unavailable' && fiveHourPercent !== null ? finiteOrNull(data['heldFromMs']) : null;
+  const heldFromMs = status === 'unavailable' && usedPercent !== null ? finiteOrNull(data['heldFromMs']) : null;
   const hasNumbers = status === 'ok' || heldFromMs !== null;
   const usage: AccountUsage = {
     status,
-    fiveHourPercent: hasNumbers ? fiveHourPercent : null,
+    window: hasNumbers ? window : null,
+    usedPercent: hasNumbers ? usedPercent : null,
     resetsAtMs: hasNumbers ? finiteOrNull(data['resetsAtMs']) : null,
     fetchedAtMs: finiteOrNull(data['fetchedAtMs']) ?? Date.now(),
     // A reason can name a time ("the Claude CLI login expired at …"), rendered

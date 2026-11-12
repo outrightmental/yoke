@@ -11,9 +11,9 @@ import type { EventEmitter } from "./event-emitter.js";
 // ─── Live Claude account usage (#254) ────────────────────────────────────────
 //
 // A `"claude-usage-limit"` work hold says the subscription quota ran out after
-// the fact. This is the other side of it: how much of the rolling 5-hour window
-// is already used and when it resets, read once a minute for the gauge in the
-// Dashboard header, so work can be planned against what is left.
+// the fact. This is the other side of it: how much of the account's usage
+// window is already used and when it resets, read once a minute for the gauge
+// in the Dashboard header, so work can be planned against what is left.
 
 /** Anthropic's report of a Claude account's rolling usage windows. */
 export const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -24,9 +24,26 @@ const ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20";
 /** How often the gauge is refreshed. The endpoint rate-limits per token. */
 export const USAGE_POLL_INTERVAL_MS = 60_000;
 
-/** The length of the rolling usage window. No reading older than this can
- *  describe the window that is open now. */
-const USAGE_WINDOW_MS = 5 * 60 * 60_000;
+/**
+ * The usage windows a Claude account can report, by their key in the
+ * response: the rolling 5-hour window and the weekly one.
+ */
+export type UsageWindow = "five_hour" | "seven_day";
+
+const USAGE_WINDOWS: readonly UsageWindow[] = ["five_hour", "seven_day"];
+
+/** How log lines and reasons name each window, e.g. "41% of the weekly window used". */
+export const USAGE_WINDOW_NAMES: Readonly<Record<UsageWindow, string>> = {
+  five_hour: "5-hour",
+  seven_day: "weekly",
+};
+
+/** The length of each usage window. No reading older than this can describe
+ *  the window that is open now. */
+const USAGE_WINDOW_MS: Readonly<Record<UsageWindow, number>> = {
+  five_hour: 5 * 60 * 60_000,
+  seven_day: 7 * 24 * 60 * 60_000,
+};
 
 /** A request still hanging after this is given up on until the next poll. */
 const USAGE_REQUEST_TIMEOUT_MS = 15_000;
@@ -47,10 +64,12 @@ export type UsageStatus = "ok" | "unconfigured" | "unavailable";
 /** One reading, exactly as it is sent to the Dashboard. Never holds the token. */
 export interface UsageReading {
   status: UsageStatus;
-  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok",
+  /** Which window the numbers are of; null whenever `usedPercent` is. */
+  window: UsageWindow | null;
+  /** Percent (0–100) of that window consumed; null unless status is "ok",
    *  or an "unavailable" reading holds over the last good one's (see `heldFromMs`). */
-  fiveHourPercent: number | null;
-  /** Epoch millis the 5-hour window resets; null when unknown or none is open. */
+  usedPercent: number | null;
+  /** Epoch millis that window resets; null when unknown or none is open. */
   resetsAtMs: number | null;
   /** Epoch millis this reading was taken. */
   fetchedAtMs: number;
@@ -71,27 +90,46 @@ export interface UsageReading {
 }
 
 /**
- * The 5-hour window out of a usage response:
- * `{ "five_hour": { "utilization": 37.0, "resets_at": "2026-…+00:00" }, … }`.
- * `utilization` is already a percentage. `resets_at` is null while no window is
- * open. Returns null when the response has no usable 5-hour window.
+ * One window of a usage response, e.g. `{ "utilization": 37.0, "resets_at":
+ * "2026-…+00:00" }`. `utilization` is already a percentage. `resets_at` is null
+ * while no window is open. Null when the window is absent or malformed.
  */
-export function parseUsageResponse(
-  body: unknown,
-): { fiveHourPercent: number; resetsAtMs: number | null } | null {
-  if (typeof body !== "object" || body === null) return null;
-  const window = (body as Record<string, unknown>)["five_hour"];
-  if (typeof window !== "object" || window === null) return null;
-  const utilization = (window as Record<string, unknown>)["utilization"];
+function parseUsageWindow(value: unknown): { usedPercent: number; resetsAtMs: number | null } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const utilization = (value as Record<string, unknown>)["utilization"];
   if (typeof utilization !== "number" || !Number.isFinite(utilization)) return null;
-  const resetsAt = (window as Record<string, unknown>)["resets_at"];
+  const resetsAt = (value as Record<string, unknown>)["resets_at"];
   const resetsAtMs =
     resetsAt === null ? null : typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
   if (resetsAtMs !== null && !Number.isFinite(resetsAtMs)) return null;
   return {
-    fiveHourPercent: Math.min(100, Math.max(0, utilization)),
+    usedPercent: Math.min(100, Math.max(0, utilization)),
     resetsAtMs,
   };
+}
+
+/**
+ * The window the gauge shows, out of a usage response:
+ * `{ "five_hour": { … }, "seven_day": { … }, … }`. A window the account does
+ * not have is null — since Oct 31, 2026 the endpoint has answered
+ * `"five_hour": null` for a Max account that still has a weekly window, which
+ * left the gauge with no reading at all for as long as only the 5-hour window
+ * was read. Of the windows reported, the most used one is shown, because it is
+ * the one that will stop work first; on a tie, the 5-hour one. Returns null
+ * when the response has no usable window.
+ */
+export function parseUsageResponse(
+  body: unknown,
+): { window: UsageWindow; usedPercent: number; resetsAtMs: number | null } | null {
+  if (typeof body !== "object" || body === null) return null;
+  let shown: { window: UsageWindow; usedPercent: number; resetsAtMs: number | null } | null = null;
+  for (const window of USAGE_WINDOWS) {
+    const parsed = parseUsageWindow((body as Record<string, unknown>)[window]);
+    if (parsed !== null && (shown === null || parsed.usedPercent > shown.usedPercent)) {
+      shown = { window, ...parsed };
+    }
+  }
+  return shown;
 }
 
 /**
@@ -127,7 +165,8 @@ function readingWithoutNumbers(
 ): UsageReading {
   return {
     status,
-    fiveHourPercent: null,
+    window: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: nowMs,
     reason,
@@ -135,7 +174,7 @@ function readingWithoutNumbers(
   };
 }
 
-/** Read the account's 5-hour window once. Never throws: a failure is a reading too. */
+/** Read the account's usage once. Never throws: a failure is a reading too. */
 export async function fetchAnthropicUsage(
   token: string,
   options: FetchUsageOptions = {},
@@ -177,7 +216,7 @@ export async function fetchAnthropicUsage(
   }
 
   const parsed = parseUsageResponse(body);
-  if (parsed === null) return unavailable("the account reports no 5-hour usage window");
+  if (parsed === null) return unavailable("the account reports no 5-hour or weekly usage window");
   return { status: "ok", ...parsed, fetchedAtMs: clock(), reason: "" };
 }
 
@@ -240,13 +279,14 @@ export async function readClaudeLoginToken(
  */
 export function formatUsageLine(reading: UsageReading): string {
   if (reading.status === "unconfigured") return `Claude usage: off — ${reading.reason}`;
-  if (reading.status !== "ok" || reading.fiveHourPercent === null) {
-    const held = reading.heldFromMs !== undefined && reading.fiveHourPercent !== null
-      ? ` · still showing ${Math.round(reading.fiveHourPercent)}% from ${formatLocalTime(reading.heldFromMs)}`
+  if (reading.status !== "ok" || reading.usedPercent === null || reading.window === null) {
+    const held = reading.heldFromMs !== undefined && reading.usedPercent !== null && reading.window !== null
+      ? ` · still showing ${Math.round(reading.usedPercent)}% of the ${USAGE_WINDOW_NAMES[reading.window]} window` +
+        ` from ${formatLocalTime(reading.heldFromMs)}`
       : "";
     return `Claude usage: unavailable — ${reading.reason}${held}`;
   }
-  const used = `${Math.round(reading.fiveHourPercent)}% of the 5-hour window used`;
+  const used = `${Math.round(reading.usedPercent)}% of the ${USAGE_WINDOW_NAMES[reading.window]} window used`;
   if (reading.resetsAtMs === null) return `Claude usage: ${used} · no window open yet`;
   return (
     `Claude usage: ${used} · resets in ${formatWaitRemaining(reading.resetsAtMs - reading.fetchedAtMs)}` +
@@ -255,20 +295,20 @@ export function formatUsageLine(reading: UsageReading): string {
 }
 
 function usageDecile(reading: UsageReading): number | null {
-  return reading.fiveHourPercent === null ? null : Math.floor(reading.fiveHourPercent / 10);
+  return reading.usedPercent === null ? null : Math.floor(reading.usedPercent / 10);
 }
 
 /** Two readings of one window can disagree on its reset by a fraction of a second. */
-function sameWindow(a: number | null, b: number | null): boolean {
+function sameReset(a: number | null, b: number | null): boolean {
   return a === null || b === null ? a === b : Math.abs(a - b) < 60_000;
 }
 
 /**
  * The line to log for `reading`, or null when it says nothing new since
  * `previous`. A reading arrives every minute, so the log hears about the first
- * one, about every change of status or reason, and — while readings are live —
- * about each further 10% of the window used and each new window; not about
- * every poll.
+ * one, about every change of status, reason or window shown, and — while
+ * readings are live — about each further 10% of the window used and each new
+ * window; not about every poll.
  */
 export function describeUsageChange(
   previous: UsageReading | null,
@@ -278,8 +318,9 @@ export function describeUsageChange(
     previous !== null &&
     previous.status === reading.status &&
     previous.reason === reading.reason &&
+    previous.window === reading.window &&
     usageDecile(previous) === usageDecile(reading) &&
-    sameWindow(previous.resetsAtMs, reading.resetsAtMs);
+    sameReset(previous.resetsAtMs, reading.resetsAtMs);
   return unchanged ? null : formatUsageLine(reading);
 }
 
@@ -382,12 +423,14 @@ export class AnthropicUsageMonitor {
       return reading;
     }
     const last = this.lastOk;
-    if (last === null || (last.resetsAtMs ?? last.fetchedAtMs + USAGE_WINDOW_MS) <= reading.fetchedAtMs) {
+    if (last === null || last.window === null) return reading;
+    if ((last.resetsAtMs ?? last.fetchedAtMs + USAGE_WINDOW_MS[last.window]) <= reading.fetchedAtMs) {
       return reading;
     }
     return {
       ...reading,
-      fiveHourPercent: last.fiveHourPercent,
+      window: last.window,
+      usedPercent: last.usedPercent,
       resetsAtMs: last.resetsAtMs,
       heldFromMs: last.fetchedAtMs,
     };

@@ -24,7 +24,7 @@ export type DashboardEventType =
   // its lifting. Emitted once per hold, not once per engine.
   | "work-hold"
   | "work-hold-cleared"
-  // The latest reading of the Claude account's 5-hour usage window, for the
+  // The latest reading of the Claude account's usage window, for the
   // header's usage gauge. Re-emitted on every poll, so the cache holds one.
   | "usage-update"
   | "shutdown-requested"

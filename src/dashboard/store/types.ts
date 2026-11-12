@@ -43,17 +43,27 @@ export interface WorkHold {
 }
 
 /**
- * The latest reading of the Claude account's rolling 5-hour usage window, for
- * the usage gauge (mirrors `UsageReading` in src/anthropic-usage.ts).
+ * A Claude account's usage windows, by their key in Anthropic's response: the
+ * rolling 5-hour window and the weekly one (mirrors `UsageWindow` in
+ * src/anthropic-usage.ts).
+ */
+export type UsageWindow = 'five_hour' | 'seven_day';
+
+/**
+ * The latest reading of the Claude account's usage — of whichever window is
+ * nearest its limit — for the usage gauge (mirrors `UsageReading` in
+ * src/anthropic-usage.ts).
  */
 export interface AccountUsage {
   /** "ok": live numbers; "unconfigured": no token to read with, so the gauge
    *  is OFF; "unavailable": there is a token but the reading could not be taken. */
   status: 'ok' | 'unconfigured' | 'unavailable';
-  /** Percent (0–100) of the 5-hour window consumed; null unless status is "ok",
+  /** Which window the numbers are of; null whenever `usedPercent` is. */
+  window: UsageWindow | null;
+  /** Percent (0–100) of that window consumed; null unless status is "ok",
    *  or an "unavailable" reading holds over the last good one's (see `heldFromMs`). */
-  fiveHourPercent: number | null;
-  /** Epoch millis the 5-hour window resets; null when unknown or none is open. */
+  usedPercent: number | null;
+  /** Epoch millis that window resets; null when unknown or none is open. */
   resetsAtMs: number | null;
   /** Epoch millis the reading was taken. */
   fetchedAtMs: number;
