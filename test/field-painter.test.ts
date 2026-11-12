@@ -360,7 +360,7 @@ test("the painter: with no work to draw it says so, and still draws the instrume
   const painted = paint({ ...initialState(), title: "Outright Mental" });
   assert.ok(painted.texts.includes("Connecting to yoke…"));
   assert.ok(painted.texts.includes("OUTRIGHT MENTAL"));
-  assert.ok(painted.texts.includes("CLAUDE 5H"));
+  assert.ok(painted.texts.includes("CLAUDE"), "the usage gauge, which names no window until it has read one");
 });
 
 // ── tethers ──────────────────────────────────────────────────────────────────

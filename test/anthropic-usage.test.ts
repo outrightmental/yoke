@@ -23,6 +23,29 @@ const OK_BODY = {
   five_hour: { utilization: 37, resets_at: RESETS_AT },
   seven_day: { utilization: 12, resets_at: null },
 };
+const WEEKLY_RESETS_AT = "2026-10-14T13:59:59.528390+00:00";
+/**
+ * What the endpoint has answered for a Max account since Oct 31, 2026: no
+ * 5-hour window at all, the weekly one, and a good deal else (trimmed here).
+ */
+const WEEKLY_ONLY_BODY = {
+  five_hour: null,
+  seven_day: {
+    utilization: 7.0,
+    resets_at: WEEKLY_RESETS_AT,
+    limit_dollars: null,
+    used_dollars: null,
+    remaining_dollars: null,
+    locked_reason: null,
+  },
+  seven_day_oauth_apps: null,
+  seven_day_opus: null,
+  seven_day_sonnet: null,
+  extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null },
+  limits: [
+    { kind: "weekly_all", group: "weekly", percent: 7, severity: "normal", resets_at: WEEKLY_RESETS_AT, scope: null, is_active: true },
+  ],
+};
 
 interface FetchCall {
   url: string;
@@ -90,19 +113,46 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 
 test("parseUsageResponse reads the 5-hour window's utilization and reset time", () => {
   assert.deepEqual(parseUsageResponse(OK_BODY), {
-    fiveHourPercent: 37,
+    window: "five_hour",
+    usedPercent: 37,
     resetsAtMs: Date.parse(RESETS_AT),
   });
 });
 
+test("parseUsageResponse reads the weekly window when the account reports no 5-hour one", () => {
+  assert.deepEqual(parseUsageResponse(WEEKLY_ONLY_BODY), {
+    window: "seven_day",
+    usedPercent: 7,
+    resetsAtMs: Date.parse(WEEKLY_RESETS_AT),
+  });
+  const brokenFiveHour = { ...WEEKLY_ONLY_BODY, five_hour: { utilization: "37", resets_at: RESETS_AT } };
+  assert.equal(parseUsageResponse(brokenFiveHour)?.window, "seven_day");
+});
+
+test("parseUsageResponse shows whichever window is nearest its limit", () => {
+  const body = (fiveHour: number, sevenDay: number) => ({
+    five_hour: { utilization: fiveHour, resets_at: RESETS_AT },
+    seven_day: { utilization: sevenDay, resets_at: WEEKLY_RESETS_AT },
+  });
+  assert.equal(parseUsageResponse(body(30, 85))?.window, "seven_day");
+  assert.equal(parseUsageResponse(body(85, 30))?.window, "five_hour");
+  assert.equal(parseUsageResponse(body(40, 40))?.window, "five_hour", "a tie goes to the 5-hour window");
+  // No 5-hour window open says nothing about the week.
+  assert.deepEqual(
+    parseUsageResponse({ five_hour: { utilization: 0, resets_at: null }, seven_day: { utilization: 7, resets_at: WEEKLY_RESETS_AT } }),
+    { window: "seven_day", usedPercent: 7, resetsAtMs: Date.parse(WEEKLY_RESETS_AT) },
+  );
+});
+
 test("parseUsageResponse clamps utilization to 0–100", () => {
-  assert.equal(parseUsageResponse({ five_hour: { utilization: 112.5, resets_at: RESETS_AT } })?.fiveHourPercent, 100);
-  assert.equal(parseUsageResponse({ five_hour: { utilization: -3, resets_at: RESETS_AT } })?.fiveHourPercent, 0);
+  assert.equal(parseUsageResponse({ five_hour: { utilization: 112.5, resets_at: RESETS_AT } })?.usedPercent, 100);
+  assert.equal(parseUsageResponse({ five_hour: { utilization: -3, resets_at: RESETS_AT } })?.usedPercent, 0);
 });
 
 test("parseUsageResponse reports no reset time when no window is open", () => {
   assert.deepEqual(parseUsageResponse({ five_hour: { utilization: 0, resets_at: null } }), {
-    fiveHourPercent: 0,
+    window: "five_hour",
+    usedPercent: 0,
     resetsAtMs: null,
   });
 });
@@ -113,11 +163,12 @@ test("parseUsageResponse rejects missing or malformed reset times", () => {
   assert.equal(parseUsageResponse({ five_hour: { utilization: 37, resets_at: "not a date" } }), null);
 });
 
-test("parseUsageResponse returns null without a usable 5-hour window", () => {
+test("parseUsageResponse returns null without a usable 5-hour or weekly window", () => {
   assert.equal(parseUsageResponse(null), null);
   assert.equal(parseUsageResponse("nope"), null);
   assert.equal(parseUsageResponse({}), null);
   assert.equal(parseUsageResponse({ five_hour: null }), null);
+  assert.equal(parseUsageResponse({ ...WEEKLY_ONLY_BODY, seven_day: null }), null, "the limits list is not read");
   assert.equal(parseUsageResponse({ five_hour: { utilization: "37", resets_at: RESETS_AT } }), null);
   assert.equal(parseUsageResponse({ five_hour: { utilization: Number.NaN } }), null);
 });
@@ -139,8 +190,21 @@ test("fetchAnthropicUsage GETs the usage endpoint with the OAuth token and beta 
 
   assert.deepEqual(reading, {
     status: "ok",
-    fiveHourPercent: 37,
+    window: "five_hour",
+    usedPercent: 37,
     resetsAtMs: Date.parse(RESETS_AT),
+    fetchedAtMs: NOW,
+    reason: "",
+  });
+});
+
+test("fetchAnthropicUsage reads an account that has only a weekly window", async () => {
+  const { fetchImpl } = fakeFetch(() => jsonResponse(WEEKLY_ONLY_BODY));
+  assert.deepEqual(await fetchAnthropicUsage(TOKEN, { fetchImpl, clock: () => NOW }), {
+    status: "ok",
+    window: "seven_day",
+    usedPercent: 7,
+    resetsAtMs: Date.parse(WEEKLY_RESETS_AT),
     fetchedAtMs: NOW,
     reason: "",
   });
@@ -159,7 +223,8 @@ test("fetchAnthropicUsage explains HTTP failures without echoing the response", 
     const { fetchImpl } = fakeFetch(() => jsonResponse({ error: { message: `bad token ${TOKEN}` } }, status));
     const reading = await fetchAnthropicUsage(TOKEN, { fetchImpl, clock: () => NOW });
     assert.equal(reading.status, "unavailable", `HTTP ${status}`);
-    assert.equal(reading.fiveHourPercent, null);
+    assert.equal(reading.window, null);
+    assert.equal(reading.usedPercent, null);
     assert.equal(reading.resetsAtMs, null);
     assert.equal(reading.fetchedAtMs, NOW);
     assert.match(reading.reason, expected);
@@ -199,10 +264,10 @@ test("fetchAnthropicUsage reports unreadable or unexpected bodies as unavailable
   assert.equal(unreadable.status, "unavailable");
   assert.match(unreadable.reason, /unreadable JSON/);
 
-  const noWindow = fakeFetch(() => jsonResponse({ seven_day: { utilization: 12, resets_at: null } }));
+  const noWindow = fakeFetch(() => jsonResponse({ five_hour: null, seven_day: null }));
   const missing = await fetchAnthropicUsage(TOKEN, { fetchImpl: noWindow.fetchImpl, clock: () => NOW });
   assert.equal(missing.status, "unavailable");
-  assert.match(missing.reason, /no 5-hour usage window/);
+  assert.equal(missing.reason, "the account reports no 5-hour or weekly usage window");
 
   for (const body of [
     { five_hour: { utilization: 37 } },
@@ -238,7 +303,7 @@ test("AnthropicUsageMonitor with no token and no Claude login reports the gauge 
     assert.equal(calls.length, 0, `token ${JSON.stringify(token)} triggered a fetch`);
     for (const event of events) {
       assert.equal(event.data["status"], "unconfigured");
-      assert.equal(event.data["fiveHourPercent"], null);
+      assert.equal(event.data["usedPercent"], null);
       assert.match(event.data["reason"] as string, /log in with `claude`, or set anthropic_usage_token/);
     }
   }
@@ -256,7 +321,7 @@ test("AnthropicUsageMonitor without a token reads usage with the Claude CLI's ow
   assert.equal(calls.length, 1);
   assert.equal(new Headers(calls[0]!.init?.headers).get("authorization"), "Bearer " + TOKEN);
   assert.equal(reading.status, "ok");
-  assert.equal(reading.fiveHourPercent, 37);
+  assert.equal(reading.usedPercent, 37);
   assert.ok(!JSON.stringify(events).includes(TOKEN), "a usage-update event leaked the login token");
   assert.ok(!JSON.stringify(events).includes("refresh-token-do-not-leak"), "a usage-update event leaked the refresh token");
 });
@@ -356,7 +421,8 @@ test("AnthropicUsageMonitor reads at once, then on every interval, until stopped
   await waitFor(() => events.length >= 3);
   assert.deepEqual(events[0]!.data, {
     status: "ok",
-    fiveHourPercent: 37,
+    window: "five_hour",
+    usedPercent: 37,
     resetsAtMs: Date.parse(RESETS_AT),
     fetchedAtMs: NOW,
     reason: "",
@@ -435,7 +501,8 @@ test("AnthropicUsageMonitor holds the last good numbers through failed reads, so
   now += 60_000;
   assert.deepEqual(await monitor.poll(), {
     status: "unavailable",
-    fiveHourPercent: 15,
+    window: "five_hour",
+    usedPercent: 15,
     resetsAtMs,
     fetchedAtMs: NOW + 60_000,
     reason: "Anthropic is overloaded (HTTP 529)",
@@ -445,19 +512,20 @@ test("AnthropicUsageMonitor holds the last good numbers through failed reads, so
   now += 60_000;
   const unreachable = await monitor.poll();
   assert.equal(unreachable.status, "unavailable");
-  assert.equal(unreachable.fiveHourPercent, 15);
+  assert.equal(unreachable.usedPercent, 15);
   assert.equal(unreachable.heldFromMs, NOW, "held from the last good reading, not the last failed one");
   assert.match(unreachable.reason, /could not reach/);
 
   now += 60_000;
   assert.deepEqual(await monitor.poll(), {
     status: "ok",
-    fiveHourPercent: 18,
+    window: "five_hour",
+    usedPercent: 18,
     resetsAtMs,
     fetchedAtMs: NOW + 180_000,
     reason: "",
   });
-  assert.deepEqual(events.map((e) => e.data["fiveHourPercent"]), [15, 15, 15, 18], "the Dashboard never loses the number");
+  assert.deepEqual(events.map((e) => e.data["usedPercent"]), [15, 15, 15, 18], "the Dashboard never loses the number");
 });
 
 test("AnthropicUsageMonitor holds nothing before its first good reading", async () => {
@@ -467,7 +535,7 @@ test("AnthropicUsageMonitor holds nothing before its first good reading", async 
 
   const reading = await monitor.poll();
   assert.equal(reading.status, "unavailable");
-  assert.equal(reading.fiveHourPercent, null);
+  assert.equal(reading.usedPercent, null);
   assert.equal(reading.resetsAtMs, null);
   assert.ok(!("heldFromMs" in reading));
 });
@@ -482,11 +550,11 @@ test("AnthropicUsageMonitor lets held numbers go once their window resets", asyn
 
   await monitor.poll();
   now = resetsAtMs - 1;
-  assert.equal((await monitor.poll()).fiveHourPercent, 37);
+  assert.equal((await monitor.poll()).usedPercent, 37);
   now = resetsAtMs;
   const afterReset = await monitor.poll();
   assert.equal(afterReset.status, "unavailable");
-  assert.equal(afterReset.fiveHourPercent, null);
+  assert.equal(afterReset.usedPercent, null);
   assert.equal(afterReset.resetsAtMs, null);
   assert.ok(!("heldFromMs" in afterReset));
 });
@@ -502,13 +570,34 @@ test("AnthropicUsageMonitor holds a reading with no open window for one window's
   await monitor.poll();
   now = NOW + 5 * 60 * 60_000 - 1;
   const held = await monitor.poll();
-  assert.equal(held.fiveHourPercent, 0);
+  assert.equal(held.usedPercent, 0);
   assert.equal(held.heldFromMs, NOW);
   // A window may have opened and filled since: 0% is no longer worth showing.
   now = NOW + 5 * 60 * 60_000;
   const letGo = await monitor.poll();
   assert.equal(letGo.status, "unavailable");
-  assert.equal(letGo.fiveHourPercent, null);
+  assert.equal(letGo.usedPercent, null);
+  assert.ok(!("heldFromMs" in letGo));
+});
+
+test("AnthropicUsageMonitor holds a weekly reading with no open window for a week, not five hours", async () => {
+  const emitter = new EventEmitter();
+  let n = 0;
+  const { fetchImpl } = fakeFetch(() =>
+    n++ === 0 ? jsonResponse({ five_hour: null, seven_day: { utilization: 0, resets_at: null } }) : jsonResponse({}, 429));
+  let now = NOW;
+  const monitor = new AnthropicUsageMonitor({ token: TOKEN, emitter, fetchImpl, clock: () => now });
+
+  await monitor.poll();
+  now = NOW + 6 * 60 * 60_000;
+  const held = await monitor.poll();
+  assert.equal(held.window, "seven_day");
+  assert.equal(held.usedPercent, 0);
+  assert.equal(held.heldFromMs, NOW);
+  now = NOW + 7 * 24 * 60 * 60_000;
+  const letGo = await monitor.poll();
+  assert.equal(letGo.window, null);
+  assert.equal(letGo.usedPercent, null);
   assert.ok(!("heldFromMs" in letGo));
 });
 
@@ -525,13 +614,13 @@ test("AnthropicUsageMonitor lets held numbers go when the Claude login is gone",
   loggedIn = false;
   const loggedOut = await monitor.poll();
   assert.equal(loggedOut.status, "unconfigured");
-  assert.equal(loggedOut.fiveHourPercent, null);
+  assert.equal(loggedOut.usedPercent, null);
 
   // Whoever logs in next may be another account: 37% was not theirs.
   loggedIn = true;
   const failed = await monitor.poll();
   assert.equal(failed.status, "unavailable");
-  assert.equal(failed.fiveHourPercent, null);
+  assert.equal(failed.usedPercent, null);
   assert.ok(!("heldFromMs" in failed));
 });
 
@@ -599,10 +688,11 @@ test("readClaudeLoginToken passes over an expiry it cannot read, and refuses one
 
 // ── Narrating readings to the log ────────────────────────────────────────────
 
-function ok(fiveHourPercent: number, overrides: Partial<UsageReading> = {}): UsageReading {
+function ok(usedPercent: number, overrides: Partial<UsageReading> = {}): UsageReading {
   return {
     status: "ok",
-    fiveHourPercent,
+    window: "five_hour",
+    usedPercent,
     resetsAtMs: Date.parse(RESETS_AT),
     fetchedAtMs: NOW,
     reason: "",
@@ -611,7 +701,7 @@ function ok(fiveHourPercent: number, overrides: Partial<UsageReading> = {}): Usa
 }
 
 function without(status: "unconfigured" | "unavailable", reason: string): UsageReading {
-  return { status, fiveHourPercent: null, resetsAtMs: null, fetchedAtMs: NOW, reason };
+  return { status, window: null, usedPercent: null, resetsAtMs: null, fetchedAtMs: NOW, reason };
 }
 
 test("formatUsageLine says what the gauge shows, in one line", () => {
@@ -621,6 +711,10 @@ test("formatUsageLine says what the gauge shows, in one line", () => {
   );
   assert.equal(formatUsageLine(ok(0, { resetsAtMs: null })), "Claude usage: 0% of the 5-hour window used · no window open yet");
   assert.equal(
+    formatUsageLine(ok(7, { window: "seven_day", resetsAtMs: Date.parse(WEEKLY_RESETS_AT) })),
+    `Claude usage: 7% of the weekly window used · resets in 47h 30m (${formatLocalTime(Date.parse(WEEKLY_RESETS_AT))})`,
+  );
+  assert.equal(
     formatUsageLine(without("unavailable", "could not reach the Anthropic usage endpoint")),
     "Claude usage: unavailable — could not reach the Anthropic usage endpoint",
   );
@@ -628,15 +722,16 @@ test("formatUsageLine says what the gauge shows, in one line", () => {
   assert.equal(
     formatUsageLine({
       ...without("unavailable", "Anthropic is overloaded (HTTP 529)"),
-      fiveHourPercent: 41.4,
+      window: "five_hour",
+      usedPercent: 41.4,
       resetsAtMs: Date.parse(RESETS_AT),
       heldFromMs: NOW - 60_000,
     }),
-    `Claude usage: unavailable — Anthropic is overloaded (HTTP 529) · still showing 41% from ${formatLocalTime(NOW - 60_000)}`,
+    `Claude usage: unavailable — Anthropic is overloaded (HTTP 529) · still showing 41% of the 5-hour window from ${formatLocalTime(NOW - 60_000)}`,
   );
 });
 
-test("describeUsageChange speaks up for the first reading, each further 10%, a new window and any change of status", () => {
+test("describeUsageChange speaks up for the first reading, each further 10%, a new window, the other window and any change of status", () => {
   const first = ok(41);
   assert.match(describeUsageChange(null, first) ?? "", /^Claude usage: 41% /);
 
@@ -647,6 +742,11 @@ test("describeUsageChange speaks up for the first reading, each further 10%, a n
   const nextWindow = ok(3, { resetsAtMs: first.resetsAtMs! + 5 * 60 * 60_000 });
   assert.match(describeUsageChange(ok(5), nextWindow) ?? "", /^Claude usage: 3% /);
   assert.match(describeUsageChange(ok(41, { resetsAtMs: null }), first) ?? "", /^Claude usage: 41% .* resets in/);
+  assert.match(
+    describeUsageChange(first, ok(41, { window: "seven_day" })) ?? "",
+    /^Claude usage: 41% of the weekly window used/,
+    "the gauge moving to the other window",
+  );
 
   const unreachable = without("unavailable", "could not reach the Anthropic usage endpoint");
   assert.equal(describeUsageChange(first, unreachable), "Claude usage: unavailable — could not reach the Anthropic usage endpoint");
@@ -680,7 +780,7 @@ test("AnthropicUsageMonitor logs the first reading and changes, not every poll, 
     "Claude usage: 41% of the 5-hour window used",
     "Claude usage: 71% of the 5-hour window used",
     "Claude usage: unavailable — Anthropic rejected the Claude CLI login (HTTP 401) — it may have expired" +
-      ` · still showing 71% from ${formatLocalTime(NOW)}`,
+      ` · still showing 71% of the 5-hour window from ${formatLocalTime(NOW)}`,
   ]);
   assert.ok(!logged.join("\n").includes(TOKEN), "the log leaked the token");
 });

@@ -435,6 +435,7 @@ export function inspect(
   context: {
     works: readonly WorkView[];
     engines: ReadonlyArray<{ index: number; line: string; model: string | null; iteration: number; repo: string; color: IssueColor; hasWork: boolean }>;
+    usageHeading: string;
     usageTitle: string;
     hold: { remaining: string; deadline: string; reason: string } | null;
   },
@@ -466,7 +467,7 @@ export function inspect(
     case 'usage':
       return {
         workKey: null, color: null, eyebrow: 'Claude usage', repo: '',
-        title: 'The 5-hour usage window', facts: [], body: [context.usageTitle], links: [],
+        title: context.usageHeading, facts: [], body: [context.usageTitle], links: [],
       };
     case 'hold':
       if (!context.hold) return null;

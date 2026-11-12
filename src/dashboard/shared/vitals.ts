@@ -34,7 +34,7 @@ export interface Vitals {
   countdown: { label: 'NEXT' | 'WAITING'; value: string; held: boolean } | null;
   /** The hold parking every engine, or null when work is free to run. */
   hold: HoldView | null;
-  /** The Claude account's 5-hour usage window (#254). */
+  /** The Claude account's usage window nearest its limit (#254). */
   usage: UsageGaugeView;
   connection: DashboardState['connection'];
   phase: RunPhase;

@@ -366,7 +366,8 @@ function emitSnapshot(project: DemoProject): void {
 function emitUsage(): void {
   emitter.emit("usage-update", {
     status: "ok",
-    fiveHourPercent: Math.min(100, usagePercent),
+    window: "five_hour",
+    usedPercent: Math.min(100, usagePercent),
     resetsAtMs: usageResetsAtMs,
     fetchedAtMs: Date.now(),
     reason: "",

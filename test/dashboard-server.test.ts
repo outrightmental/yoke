@@ -166,10 +166,10 @@ test("WS /api/ws replays the latest cached usage reading on connection", async (
 
   const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
   eventEmitter.emit("usage-update", {
-    status: "ok", fiveHourPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+    status: "ok", window: "five_hour", usedPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "",
   });
   eventEmitter.emit("usage-update", {
-    status: "ok", fiveHourPercent: 41, resetsAtMs, fetchedAtMs: 61_000, reason: "",
+    status: "ok", window: "five_hour", usedPercent: 41, resetsAtMs, fetchedAtMs: 61_000, reason: "",
   });
 
   const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 23}/api/ws`);
@@ -179,7 +179,7 @@ test("WS /api/ws replays the latest cached usage reading on connection", async (
 
   const readings = messages.filter((event) => event.type === "usage-update");
   assert.equal(readings.length, 1, "only the latest cached usage reading is replayed");
-  assert.equal(readings[0]?.data["fiveHourPercent"], 41);
+  assert.equal(readings[0]?.data["usedPercent"], 41);
   assert.equal(readings[0]?.data["resetsAtMs"], resetsAtMs);
 });
 
@@ -394,10 +394,10 @@ test("DashboardServer replays only the latest usage reading for the header gauge
 
   const resetsAtMs = Date.now() + 2 * 60 * 60 * 1000;
   globalEventEmitter.emit("usage-update", {
-    status: "ok", fiveHourPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "",
+    status: "ok", window: "five_hour", usedPercent: 37, resetsAtMs, fetchedAtMs: 1_000, reason: "",
   });
   globalEventEmitter.emit("usage-update", {
-    status: "ok", fiveHourPercent: 41, resetsAtMs, fetchedAtMs: 61_000, reason: "",
+    status: "ok", window: "five_hour", usedPercent: 41, resetsAtMs, fetchedAtMs: 61_000, reason: "",
   });
 
   // A browser opened between polls sees the gauge at once, not a minute later.
@@ -405,7 +405,7 @@ test("DashboardServer replays only the latest usage reading for the header gauge
   const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
   const readings = data.cachedEvents.filter((m) => m.type === "usage-update");
   assert.equal(readings.length, 1, "only the latest reading is replayed");
-  assert.equal(readings[0]?.data["fiveHourPercent"], 41);
+  assert.equal(readings[0]?.data["usedPercent"], 41);
   assert.equal(readings[0]?.data["resetsAtMs"], resetsAtMs);
 });
 

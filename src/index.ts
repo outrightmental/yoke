@@ -1393,7 +1393,7 @@ async function main(): Promise<void> {
     write(`dashboard: failed to start (check if port ${dashboardPort} is available)`);
   }
   write(
-    `claude usage: 5-hour window read every ${formatDuration(USAGE_POLL_INTERVAL_MS)} with ${usageMonitor.tokenLabel}`,
+    `claude usage: 5-hour and weekly windows read every ${formatDuration(USAGE_POLL_INTERVAL_MS)} with ${usageMonitor.tokenLabel}`,
   );
   const modeNotes: string[] = [];
   if (once) modeNotes.push("--once");

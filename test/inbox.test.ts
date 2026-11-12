@@ -415,7 +415,7 @@ test("the inbox element: the card about the work picked out on the field is mark
     cards: buildInbox(inputFor(state)),
     open: true,
     selectedCardId: "approval:o/a#10",
-    inspection: inspect({ kind: "work", key: "o/a#4" }, { works, engines: [], usageTitle: "", hold: null }),
+    inspection: inspect({ kind: "work", key: "o/a#4" }, { works, engines: [], usageHeading: "", usageTitle: "", hold: null }),
   });
   const html = flatten(inbox.render());
 
@@ -430,7 +430,7 @@ test("the inbox element: the card about the work picked out on the field is mark
 test("inspect: a piece of work is said in full — where it stands, its PR's own title, its links", () => {
   const pair = ready(1, 10, { prPhase: "active" }, { draft: true, title: "A different title", checksStatus: "pending" });
   const works = workViews(stateWith([pair]), NOW);
-  const said = inspect({ kind: "work", key: "o/a#1" }, { works, engines: [], usageTitle: "", hold: null });
+  const said = inspect({ kind: "work", key: "o/a#1" }, { works, engines: [], usageHeading: "", usageTitle: "", hold: null });
 
   assert.equal(said?.eyebrow, "Queued · draft");
   assert.equal(said?.title, "Issue 1");
@@ -442,13 +442,16 @@ test("inspect: a piece of work is said in full — where it stands, its PR's own
 
 test("inspect: an engine, an instrument and a hold each say their piece; something gone says nothing", () => {
   const engines = [{ index: 2, line: "reviewing PR #10 · 1m 4s", model: "Claude Opus 5.5", iteration: 12, repo: "o/a", color: { hex: "#000000", rgb: "0,0,0" }, hasWork: true }];
-  const context = { works: [], engines, usageTitle: "Claude usage: 41% of the 5-hour window used", hold: null };
+  const context = {
+    works: [], engines, usageHeading: "The 5-hour usage window", usageTitle: "Claude usage: 41% of the 5-hour window used", hold: null,
+  };
 
   const engine = inspect({ kind: "engine", index: 2 }, context);
   assert.equal(engine?.eyebrow, "Engine 3");
   assert.equal(engine?.title, "reviewing PR #10 · 1m 4s");
   assert.deepEqual(engine?.facts, ["Claude Opus 5.5", "cycle 12"]);
 
+  assert.equal(inspect({ kind: "usage" }, context)?.title, "The 5-hour usage window");
   assert.deepEqual(inspect({ kind: "usage" }, context)?.body, ["Claude usage: 41% of the 5-hour window used"]);
 
   const hold = { remaining: "2h 14m", deadline: "Sep 21, 8:50 AM", reason: "Claude usage limit" };

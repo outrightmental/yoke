@@ -153,7 +153,7 @@ test("the hold on the field: the deadline reads in the viewer's time zone", () =
       assert.ok(flatten(field.render()).includes(`<span class="hold-deadline">${deadline}</span>`), `${zone}: in the markup`);
       // …and said again in full by the card a tap on it opens.
       const model = fieldModel(state, Date.now());
-      const said = inspect({ kind: "hold" }, { works: [], engines: [], usageTitle: "", hold: model.vitals.hold });
+      const said = inspect({ kind: "hold" }, { works: [], engines: [], usageHeading: "", usageTitle: "", hold: model.vitals.hold });
       assert.ok(said?.title.endsWith(`until ${deadline}`), `${zone}: in the inspector`);
     });
   }

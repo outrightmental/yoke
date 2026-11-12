@@ -733,7 +733,7 @@ export class Painter {
         const gauge = vitals.usage;
         const tone: Rgb = gauge.tone === 'critical' ? p.red : gauge.tone === 'warn' ? p.yellow : p.trimBright;
         const alpha = gauge.tone === 'unknown' ? 0.36 : 1;
-        // The gauge: a ring that fills as the 5-hour window is used up.
+        // The gauge: a ring that fills as the usage window is used up.
         const cx = x + 17;
         const cy = 33;
         const r = 14;
@@ -751,7 +751,7 @@ export class Painter {
           ctx.stroke();
         }
         const selected = frame.model.selection?.kind === 'usage' || frame.hover === 'usage';
-        label('CLAUDE 5H', x + 42, selected ? rgba(p.trimBright, 0.95) : undefined);
+        label(gauge.label, x + 42, selected ? rgba(p.trimBright, 0.95) : undefined);
         this._text(ctx, gauge.percentText, x + 42, valueY, HUD_VALUE_STYLE, rgba(tone, alpha));
         label('RESETS IN', x + 122);
         this._text(ctx, gauge.resetText, x + 122, valueY, HUD_SMALL_VALUE_STYLE, rgba(tone, alpha));

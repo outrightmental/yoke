@@ -16,10 +16,11 @@ const NOW = Date.parse("2026-10-12T14:30:00Z");
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
-function okReading(fiveHourPercent: number, overrides: Partial<AccountUsage> = {}): AccountUsage {
+function okReading(usedPercent: number, overrides: Partial<AccountUsage> = {}): AccountUsage {
   return {
     status: "ok",
-    fiveHourPercent,
+    window: "five_hour",
+    usedPercent,
     resetsAtMs: NOW + 2 * HOUR + 14 * MINUTE + 30_000,
     fetchedAtMs: NOW - 20_000,
     reason: "",
@@ -28,8 +29,8 @@ function okReading(fiveHourPercent: number, overrides: Partial<AccountUsage> = {
 }
 
 /** A failed read that still carries the numbers of the last good one. */
-function heldReading(fiveHourPercent: number, overrides: Partial<AccountUsage> = {}): AccountUsage {
-  return okReading(fiveHourPercent, {
+function heldReading(usedPercent: number, overrides: Partial<AccountUsage> = {}): AccountUsage {
+  return okReading(usedPercent, {
     status: "unavailable",
     reason: "Anthropic is overloaded (HTTP 529)",
     heldFromMs: NOW - 80_000,
@@ -51,6 +52,7 @@ function renderHud(props: Partial<DashboardState> = {}, nowMs = Date.now()) {
   const said = inspect({ kind: "usage" }, {
     works: painted.model.works,
     engines: painted.model.bench,
+    usageHeading: painted.model.vitals.usage.heading,
     usageTitle: painted.model.vitals.usage.title,
     hold: painted.model.vitals.hold,
   });
@@ -58,7 +60,7 @@ function renderHud(props: Partial<DashboardState> = {}, nowMs = Date.now()) {
   const sweeps = painted.calls
     .filter((call) => call.method === "arc" && call.args[2] === 14)
     .map((call) => (Number(call.args[4]) - Number(call.args[3])) / TAU);
-  return { ...painted, said: said?.body.join(" ") ?? "", filled: sweeps.find((sweep) => sweep < 0.9999) ?? (sweeps.length > 1 ? 1 : 0) };
+  return { ...painted, heading: said?.title ?? "", said: said?.body.join(" ") ?? "", filled: sweeps.find((sweep) => sweep < 0.9999) ?? (sweeps.length > 1 ? 1 : 0) };
 }
 
 /** Run `fn` as a browser whose time zone is `timeZone`: Node renders local times in process.env.TZ. */
@@ -78,6 +80,8 @@ function asViewerIn<T>(timeZone: string, fn: () => T): T {
 test("usageGaugeView: before the first reading the gauge is dark, not blank", () => {
   assert.deepEqual(usageGaugeView(null, NOW), {
     tone: "unknown",
+    label: "CLAUDE",
+    heading: "The usage window",
     percentText: "—",
     fillPercent: 0,
     resetText: "—",
@@ -88,7 +92,8 @@ test("usageGaugeView: before the first reading the gauge is dark, not blank", ()
 test("usageGaugeView: without a configured token the gauge reads OFF and says how to turn it on", () => {
   const view = usageGaugeView({
     status: "unconfigured",
-    fiveHourPercent: null,
+    window: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: NOW,
     reason: "set anthropic_usage_token in env.yaml to show live Claude usage",
@@ -103,7 +108,8 @@ test("usageGaugeView: without a configured token the gauge reads OFF and says ho
 test("usageGaugeView: an unavailable reading shows no number and explains why", () => {
   const view = usageGaugeView({
     status: "unavailable",
-    fiveHourPercent: null,
+    window: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: NOW,
     reason: "Anthropic rejected anthropic_usage_token (HTTP 401) — it may have expired",
@@ -121,6 +127,35 @@ test("usageGaugeView: a live reading shows percent used and time until reset", (
   assert.equal(view.fillPercent, 37);
   assert.equal(view.resetText, "2h 14m");
   assert.match(view.title, /37% of the 5-hour window used, resets /);
+  assert.equal(view.label, "CLAUDE 5H");
+  assert.equal(view.heading, "The 5-hour usage window");
+});
+
+test("usageGaugeView: a reading of the weekly window says so, in its caption and its words", () => {
+  const view = usageGaugeView(okReading(7, { window: "seven_day", resetsAtMs: NOW + 47 * HOUR + 30 * MINUTE }), NOW);
+  assert.equal(view.label, "CLAUDE 7D");
+  assert.equal(view.heading, "The weekly usage window");
+  assert.equal(view.percentText, "7%");
+  assert.equal(view.resetText, "47h 30m");
+  assert.match(view.title, /^Claude usage: 7% of the weekly window used, resets /);
+
+  const held = usageGaugeView(heldReading(7, { window: "seven_day" }), NOW);
+  assert.equal(held.label, "CLAUDE 7D");
+  assert.match(held.title, /^Claude usage: 7% of the weekly window used as of /);
+  assert.match(usageGaugeView(okReading(7, { window: "seven_day", resetsAtMs: NOW - 1 }), NOW).title, /the weekly window has reset/);
+  assert.match(usageGaugeView(heldReading(7, { window: "seven_day" }), NOW, NOW + HOUR).title, /Anthropic last reported 7% of the weekly window used at /);
+});
+
+test("usageGaugeView: a gauge that shows no window's share names none", () => {
+  const limitUntilMs = NOW + HOUR;
+  for (const view of [
+    usageGaugeView(okReading(7, { window: "seven_day", fetchedAtMs: NOW - USAGE_STALE_AFTER_MS - 1 }), NOW),
+    usageGaugeView(okReading(7, { window: "seven_day", resetsAtMs: NOW - 1 }), NOW),
+    usageGaugeView(okReading(7, { window: "seven_day" }), NOW, limitUntilMs),
+  ]) {
+    assert.equal(view.label, "CLAUDE", view.title);
+    assert.equal(view.heading, "The usage window");
+  }
 });
 
 test("usageGaugeView: the reset countdown is computed against the current time", () => {
@@ -231,7 +266,8 @@ test("usageGaugeView: a Claude usage-limit hold reads LIMIT and counts down to t
   const limitUntilMs = NOW + 1 * HOUR + 41 * MINUTE;
   const unavailable: AccountUsage = {
     status: "unavailable",
-    fiveHourPercent: null,
+    window: null,
+    usedPercent: null,
     resetsAtMs: null,
     fetchedAtMs: NOW,
     reason: "could not reach the Anthropic usage endpoint",
@@ -274,7 +310,7 @@ test("usageLimitUntilMs: only the Claude usage-limit hold reaches the usage gaug
 
 test("the field always draws the usage gauge, dark until the first reading", () => {
   const hud = renderHud();
-  assert.ok(hud.texts.includes("CLAUDE 5H"));
+  assert.ok(hud.texts.includes("CLAUDE"));
   assert.ok(hud.texts.includes("RESETS IN"));
   assert.equal(hud.texts.filter((text) => text === "—").length, 2, "no percent and no countdown, said so");
   assert.ok((hud.inkOf("—")?.alpha ?? 1) < 0.5, "dark, like an instrument with no power");
@@ -286,7 +322,8 @@ test("the field shows the gauge OFF when no usage token is configured", () => {
   const hud = renderHud({
     usage: {
       status: "unconfigured",
-      fiveHourPercent: null,
+      window: null,
+      usedPercent: null,
       resetsAtMs: null,
       fetchedAtMs: Date.now(),
       reason: "set anthropic_usage_token in env.yaml to show live Claude usage",
@@ -302,7 +339,8 @@ test("the field shows a live reading's percent, ring and reset countdown", () =>
   const hud = renderHud({
     usage: {
       status: "ok",
-      fiveHourPercent: 92,
+      window: "five_hour",
+      usedPercent: 92,
       resetsAtMs: now + 2 * HOUR + 14 * MINUTE + 30_000,
       fetchedAtMs: now,
       reason: "",
@@ -311,6 +349,19 @@ test("the field shows a live reading's percent, ring and reset countdown", () =>
   assert.deepEqual(hud.inkOf("92%"), { rgb: triplet(PALETTE.red), alpha: 1 }, "red past 90%");
   assert.ok(Math.abs(hud.filled - 0.92) < 0.001, "the ring is filled as far as the window is used");
   assert.ok(hud.texts.includes("2h 14m"));
+  assert.ok(hud.texts.includes("CLAUDE 5H"));
+  assert.equal(hud.heading, "The 5-hour usage window");
+});
+
+test("the field captions a weekly reading CLAUDE 7D, and a tap on it says it is the weekly window", () => {
+  const now = Date.now();
+  const hud = renderHud({ usage: okReading(7, { window: "seven_day", fetchedAtMs: now, resetsAtMs: now + 47 * HOUR + 30 * MINUTE }) });
+  assert.ok(hud.texts.includes("CLAUDE 7D"));
+  assert.ok(hud.texts.includes("7%"));
+  assert.ok(hud.texts.includes("47h 30m"));
+  assert.ok(Math.abs(hud.filled - 0.07) < 0.001);
+  assert.equal(hud.heading, "The weekly usage window");
+  assert.match(hud.said, /^Claude usage: 7% of the weekly window used, resets /);
 });
 
 test("the field's gauge turns amber at 70% and is plain trim below it", () => {
@@ -325,7 +376,8 @@ test("the field keeps showing the last good reading when the latest read failed 
   const hud = renderHud({
     usage: {
       status: "unavailable",
-      fiveHourPercent: 15,
+      window: "five_hour",
+      usedPercent: 15,
       resetsAtMs: now + 2 * HOUR + 14 * MINUTE + 30_000,
       fetchedAtMs: now,
       reason: "Anthropic is overloaded (HTTP 529)",
@@ -345,7 +397,8 @@ test("the field shows LIMIT and the reset countdown while a Claude usage-limit h
     hold: { kind: "claude-usage-limit", reason: "Claude usage limit", untilMs },
     usage: {
       status: "unavailable",
-      fiveHourPercent: null,
+      window: null,
+      usedPercent: null,
       resetsAtMs: null,
       fetchedAtMs: now,
       reason: "could not reach the Anthropic usage endpoint",
