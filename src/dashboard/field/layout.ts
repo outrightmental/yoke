@@ -162,6 +162,15 @@ export interface HeaderNode {
   count: number;
   /** For `burning`: the size of the pool. */
   total: number | null;
+  /**
+   * The bands of a stratum below the reactors: a box behind every other line
+   * of its work, counted down each column, so that two neighbouring lines —
+   * gray, with no hue to tell them apart (#286) — are always on two different
+   * grays. They belong to the stratum rather than to its lines, so they stay
+   * put while the lines slide past them, and move only when the stratum does.
+   * Empty for `burning`.
+   */
+  bands: Rect[];
 }
 
 export interface HoldNode {
@@ -216,7 +225,7 @@ function layoutContent(model: FieldModel, width: number, density: Density): { no
   if (engineCount > 0) {
     nodes.push({
       kind: 'header', id: 'header:burning', rect: rect(0, y, width, density.headerH),
-      level: 'burning', count: model.reactors.length, total: engineCount,
+      level: 'burning', count: model.reactors.length, total: engineCount, bands: [],
     });
     y += density.headerH;
   }
@@ -290,9 +299,10 @@ function layoutContent(model: FieldModel, width: number, density: Density): { no
   for (const stratum of model.strata) {
     const { level, works } = stratum;
     y += density.gap;
+    const bands: Rect[] = [];
     nodes.push({
       kind: 'header', id: `header:${level}`, rect: rect(0, y, width, density.headerH),
-      level, count: works.length, total: null,
+      level, count: works.length, total: null, bands,
     });
     y += density.headerH;
     // As many columns as fit, but never more than there is work to put in
@@ -308,11 +318,14 @@ function layoutContent(model: FieldModel, width: number, density: Density): { no
     // the ones under it close up by a line, and nothing else has to move.
     const rows = Math.ceil(works.length / cols);
     works.forEach((work, i) => {
+      const box = rect(Math.floor(i / rows) * (colW + COLUMN_GAP), y + (i % rows) * rowH, colW, rowH);
+      // The second line of each column is banded, and every other one after it.
+      if ((i % rows) % 2 === 1) bands.push({ ...box });
       nodes.push({
         kind: 'work',
         id: `work:${work.key}`,
         mode: 'row',
-        rect: rect(Math.floor(i / rows) * (colW + COLUMN_GAP), y + (i % rows) * rowH, colW, rowH),
+        rect: box,
         lines: density.rowLines[level],
         level,
         work,

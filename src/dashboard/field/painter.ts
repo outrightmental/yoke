@@ -1,4 +1,4 @@
-import { briefStatus, STAGES, workGlyph, type StatusTone, type WorkView } from '../shared/work-view.js';
+import { briefStatus, STAGES, workGlyph, type WorkSignal, type WorkStatus, type WorkView } from '../shared/work-view.js';
 import { PING_MS, type Ping, type PlacedNode } from './animator.js';
 import { inflate, rect, type Point, type Rect } from './geometry.js';
 import { drawComet, drawGlyph, drawTrack, glyphMoves, trackMarkX, trackWidth, type TrackStyle } from './glyphs.js';
@@ -74,12 +74,35 @@ const LEVEL_NOTES = {
   cold: 'nothing coming',
 } as const;
 
-/** How bright the text of a line of work is, by the stratum it is in. */
+/**
+ * How bright the gray text of a line of work is, by the stratum it is in:
+ * below the reactors heat is said in brightness, not in color (#286). Each is
+ * an alpha over the ground — the title of `--trim-bright`, its status of
+ * `--trim-dim`, its number of the work's gray — set so that on the darkest
+ * ground a title and a number keep 4.5:1 or more at every level, and a
+ * neutral status 3:1 or more (design/DASHBOARD.md, "Colour").
+ */
 const INK: Readonly<Record<StratumLevel, { title: number; meta: number; number: number }>> = {
   queued: { title: 0.9, meta: 0.78, number: 1 },
-  waiting: { title: 0.7, meta: 0.66, number: 0.95 },
-  cold: { title: 0.46, meta: 0.5, number: 0.9 },
+  waiting: { title: 0.7, meta: 0.7, number: 0.95 },
+  cold: { title: 0.54, meta: 0.66, number: 0.9 },
 };
+
+/**
+ * Below the reactors, every other line of a stratum lies on a band: the
+ * ground lifted by this much of `--trim-bright`. Two values of gray, ground
+ * and band, take over from the hue the work of telling one line from the next
+ * (#286). Enough to see — about 1.06:1 against the ground — and little enough
+ * that every word on a band keeps its contrast floor, the darkest signal
+ * (red, 4.7:1) included.
+ */
+const BAND_ALPHA = 0.035;
+/** How far a band reaches past its line on either side: as far as the wash
+ *  behind a line under the pointer, so the two line up. */
+const BAND_PAD_X = 8;
+const BAND_RADIUS = 4;
+/** A signal is drawn at full strength in every stratum: an alarm does not cool. */
+const SIGNAL_ALPHA = 1;
 
 /** The type a line of work is set in, by stratum. */
 const ROW_TYPE: Readonly<Record<StratumLevel, { number: TextStyle; title: TextStyle; meta: TextStyle }>> = {
@@ -175,14 +198,31 @@ export class Painter {
     ctx.fillText(text, x, y);
   }
 
-  private _toneColor(tone: StatusTone, alpha: number): string {
+  /** The status token a signal is drawn in (#286). */
+  private _signalColor(signal: WorkSignal): Rgb {
     const p = this._palette;
-    switch (tone) {
-      case 'approved': return rgba(p.green, alpha);
-      case 'problem': return rgba(p.coral, alpha);
-      case 'progress': return rgba(p.trimBright, alpha * 0.86);
-      default: return rgba(p.trimDim, alpha);
+    switch (signal) {
+      case 'error': return p.red;
+      case 'blocked': return p.orange;
+      case 'review': return p.yellow;
+      case 'approved': return p.green;
     }
+  }
+
+  /** The ink of a line's status: its signal at full strength, or gray at the
+   *  stratum's brightness — a little brighter for something in progress. */
+  private _statusInk(status: WorkStatus, alpha: number): string {
+    const p = this._palette;
+    if (status.signal) return rgba(this._signalColor(status.signal), SIGNAL_ALPHA);
+    return status.tone === 'progress' ? rgba(p.trimBright, alpha * 0.86) : rgba(p.trimDim, alpha);
+  }
+
+  /** The ink of the glyph at the end of a line: its signal, or its gray. */
+  private _glyphInk(work: WorkView): string {
+    const signal = work.status.signal;
+    if (!signal) return work.color.rgb;
+    const [r, g, b] = this._signalColor(signal);
+    return `${r},${g},${b}`;
   }
 
   /** The top-left of the scrolling content on the field. */
@@ -206,6 +246,7 @@ export class Painter {
     ctx.rect(0, layout.scroll.y, layout.scroll.x + layout.scroll.w + 14, layout.scroll.h);
     ctx.clip();
     ctx.translate(origin.x, origin.y);
+    this._bands(ctx, frame);
     for (const placed of frame.placed) this._highlight(ctx, frame, placed);
     for (const placed of frame.placed) {
       if (placed.alpha <= 0.003) continue;
@@ -391,6 +432,32 @@ export class Painter {
     ctx.restore();
   }
 
+  /**
+   * The bands behind every other line of work below the reactors (#286),
+   * drawn where their stratum's heading is, so that they move only when the
+   * stratum does and the lines slide past them.
+   */
+  private _bands(ctx: Ctx, frame: Frame): void {
+    const { layout } = frame;
+    const originY = this._origin(frame).y;
+    ctx.fillStyle = rgba(this._palette.trimBright, BAND_ALPHA);
+    for (const placed of frame.placed) {
+      const { node } = placed;
+      if (node.kind !== 'header' || node.bands.length === 0 || placed.alpha <= 0.003) continue;
+      const dx = placed.x - node.rect.x;
+      const dy = placed.y - node.rect.y;
+      ctx.globalAlpha = placed.alpha;
+      for (const band of node.bands) {
+        const top = band.y + dy + originY;
+        if (top > layout.scroll.y + layout.scroll.h || top + band.h < layout.scroll.y) continue;
+        ctx.beginPath();
+        ctx.roundRect(band.x + dx - BAND_PAD_X, band.y + dy, band.w + BAND_PAD_X * 2, band.h, BAND_RADIUS);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
   /** The wash behind a node that is selected, focused, or under the pointer. */
   private _highlight(ctx: Ctx, frame: Frame, placed: PlacedNode): void {
     const { node } = placed;
@@ -484,7 +551,12 @@ export class Painter {
     this._text(ctx, reason, x + 62, y + 70, HOLD_REASON_STYLE, rgba(p.trimBright, 0.72));
   }
 
-  /** A line of work in one of the strata below the reactors. */
+  /**
+   * A line of work in one of the strata below the reactors (#286): gray, on
+   * the ground or on a band; its issue's hue only in the mark on its track
+   * that says how far it has got; and a status signal, if it has one, in its
+   * status and the glyph at its end.
+   */
   private _row(ctx: Ctx, frame: Frame, node: WorkNode, x: number, y: number): void {
     const p = this._palette;
     const { work } = node;
@@ -496,7 +568,7 @@ export class Painter {
     const two = node.lines === 2;
     const cy = two ? y + 15 : y + h / 2;
 
-    drawTrack(ctx, x + 2, cy, work.stage, STAGES.length, { ...ROW_TRACK, color, trim: p.trim, alpha: 1 });
+    drawTrack(ctx, x + 2, cy, work.stage, STAGES.length, { ...ROW_TRACK, color, mark: work.hue.rgb, trim: p.trim, alpha: 1 });
 
     const numberX = x + ROW_TEXT_X;
     const number = work.number !== null ? `#${work.number}` : '';
@@ -508,7 +580,7 @@ export class Painter {
     // A glyph that moves is drawn by the other pass — unless the work has gone
     // dark, when it stays, frozen as it stood (#268).
     if (glyph && !glyphAnimates(work, glyph)) {
-      drawGlyph(ctx, glyph, x + w - 10, y + h / 2, 0, { color, green: p.green, coral: p.coral, alpha: 1 });
+      drawGlyph(ctx, glyph, x + w - 10, y + h / 2, 0, { color: this._glyphInk(work), alpha: 1 });
     }
 
     const repo = frame.model.multiProject && work.repo ? frame.repoLabel(work.repo) : '';
@@ -527,7 +599,7 @@ export class Painter {
         this._text(ctx, ' · ', cursor, cy2, type.meta, rgba(p.trimDim, ink.meta * 0.6));
         cursor += this._fitter.width(' · ', type.meta);
       }
-      this._text(ctx, this._fitter.fit(work.status.text, type.meta, right - cursor), cursor, cy2, type.meta, this._toneColor(work.status.tone, ink.meta));
+      this._text(ctx, this._fitter.fit(work.status.text, type.meta, right - cursor), cursor, cy2, type.meta, this._statusInk(work.status, ink.meta));
       return;
     }
 
@@ -537,7 +609,7 @@ export class Painter {
     const statusRoom = Math.max(60, (w - ROW_TEXT_X) * 0.36);
     const status = this._fitter.fit(briefStatus(work.status), type.meta, statusRoom);
     const statusW = this._fitter.width(status, type.meta);
-    this._text(ctx, status, right, cy, type.meta, this._toneColor(work.status.tone, ink.meta), 'right');
+    this._text(ctx, status, right, cy, type.meta, this._statusInk(work.status, ink.meta), 'right');
     let titleEnd = status === '' ? right : right - statusW - 14;
     if (repo !== '' && w >= 400) {
       this._text(ctx, repo, titleEnd, cy, REPO_STYLE, rgba(p.trimDim, ink.meta * 0.72), 'right');
@@ -552,8 +624,10 @@ export class Painter {
     const { work, engine } = node;
     const type = REACTOR_TYPE[frame.layout.density] ?? REACTOR_TYPE[0]!;
     const { w } = node.rect;
-    const color = work.color.rgb;
-    // A dark reactor's engine is still burning, but its work has gone cold (#268).
+    // The burning stratum is where the hue is (#286): a reactor keeps it for
+    // as long as it is on the field, a dark one included. Its engine is still
+    // burning, but its work has gone cold (#268), so its title dims.
+    const color = work.hue.rgb;
     const bright = work.dark ? 0.6 : 1;
 
     // The action, and the model running it.
@@ -599,7 +673,7 @@ export class Painter {
       ctx,
       this._fitter.fit(facts.join(' · '), FOOT_STYLE, x + w - cursor),
       cursor, y + type.footY, FOOT_STYLE,
-      work.checks === 'failure' ? rgba(p.coral, 0.9) : rgba(p.trimDim, 0.86),
+      work.checks === 'failure' ? rgba(p.red, SIGNAL_ALPHA) : rgba(p.trimDim, 0.86),
     );
   }
 
@@ -871,7 +945,9 @@ export class Painter {
       case 'done': return { color: p.green, alpha: 0.65 };
       case 'problem': return { color: p.coral, alpha: 0.55 };
       case 'selected': return { color: p.trimBright, alpha: 0.45 };
-      default: return { color: work.color.rgb, alpha: 0.6 };
+      // Waiting on a person: the work's own hue, the same as its card's edge
+      // and the mark on its line, whatever stratum it is in (#286).
+      default: return { color: work.hue.rgb, alpha: 0.6 };
     }
   }
 
@@ -922,7 +998,6 @@ export class Painter {
    * restores them from the static picture before the next frame.
    */
   paintDynamic(ctx: Ctx, frame: Frame, t: number): Rect[] {
-    const p = this._palette;
     const touched: Rect[] = [];
     const { layout } = frame;
     const origin = this._origin(frame);
@@ -957,7 +1032,7 @@ export class Painter {
         const cx = placed.x + origin.x + node.rect.w - 10;
         const cy = placed.y + origin.y + node.rect.h / 2;
         if (cy + 10 < windowTop || cy - 10 > windowBottom) continue;
-        drawGlyph(ctx, glyph, cx, cy, time, { color: node.work.color.rgb, green: p.green, coral: p.coral, alpha: placed.alpha });
+        drawGlyph(ctx, glyph, cx, cy, time, { color: this._glyphInk(node.work), alpha: placed.alpha });
         touched.push(rect(cx - 11, cy - 11, 22, 22));
       }
     }

@@ -1,5 +1,6 @@
-import type { CylinderState, DashboardState, LifecyclePair } from '../store/types.js';
+import type { ActionFailure, CylinderState, DashboardState, LifecyclePair } from '../store/types.js';
 import { burnColor, pillBurnLevel, type BurnLevel } from './burn-level.js';
+import { failureOn } from './failures.js';
 import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB, workColor, type IssueColor } from './issue-colors.js';
 import { pillActivity, pillKey, pillsDark, type PillActivity } from './pill-activity.js';
 import { approvalPressFor, approvalStatusFor, approvalView, type ApprovalView } from './pill-approval.js';
@@ -30,9 +31,13 @@ export interface WorkView {
   activity: PillActivity | null;
   /** How much token burn it stands for right now. */
   level: BurnLevel;
-  /** Its stable color at full saturation: which issue it is. */
+  /** Its stable color at full saturation: which issue it is. It goes wherever
+   *  the work has to be told from other work — its reactor and its engine's
+   *  ring, the one mark on its line below the burning stratum, its inbox card
+   *  and the tether to it — so any of them can be matched to the others (#286). */
   hue: IssueColor;
-  /** That color at its level's saturation: how hot it is. */
+  /** The color it is drawn in: its hue for as long as an engine is on it, and
+   *  hue-free gray below the burning stratum, where color means a signal (#286). */
   color: IssueColor;
   /** How far along the lifecycle it is: an index into `STAGES`. */
   stage: number;
@@ -44,6 +49,9 @@ export interface WorkView {
   blockedBy: number[];
   /** The engine cylinder running an action on it right now, if one is. */
   engine: CylinderState | null;
+  /** The action that last failed on it, while no engine has taken it up again
+   *  (`DashboardState.failures`); null when none has. */
+  failure: ActionFailure | null;
   /** What its PR's dashboard approval shows (#276, #278). */
   approval: ApprovalView;
   /** Yoke is shutting down, so it has gone dark (#268). */
@@ -52,12 +60,41 @@ export interface WorkView {
   prUrl: string | null;
 }
 
-/** What a line of status is saying, which picks its color. `plain` is trim. */
+/**
+ * How a line of status is said: `plain` and `progress` (said a little
+ * brighter) are neutral; `approved` and `problem` are an approval going
+ * through and something wrong. The inbox colors its lines by tone; the field
+ * colors a line of work by its `signal`, which says more exactly which state
+ * it is in.
+ */
 export type StatusTone = 'plain' | 'progress' | 'approved' | 'problem';
+
+/**
+ * The one state a line of work below the burning stratum is colored for
+ * (#286). Below the reactors work is hue-free gray, so saturated color there
+ * means a state and nothing else — the status signals in styles/tokens.css,
+ * never an issue's own color:
+ *
+ * - `error` (red): something went wrong and nothing has put it right yet —
+ *   its last action failed, its checks are failing, or its approval was
+ *   refused.
+ * - `blocked` (orange): held up by the issues it is blocked by.
+ * - `review` (yellow): waiting on a person to review or approve it.
+ * - `approved` (green): an approval going through — approved, and waiting
+ *   for its merge or being merged.
+ *
+ * Everything else — merged, manual, out of the queue, checks running,
+ * waiting its turn, shut down — is neutral. A line has at most one signal,
+ * which colors its status and the mark at its end alike. The next state to
+ * earn a color of its own takes blue or turquoise, not one of these.
+ */
+export type WorkSignal = 'error' | 'blocked' | 'review' | 'approved';
 
 export interface WorkStatus {
   text: string;
   tone: StatusTone;
+  /** The state it is colored for below the burning stratum; null for none. */
+  signal: WorkSignal | null;
   /** True when the line says only what its stratum already does — waiting its
    *  turn for an engine — so that a list of such lines can leave it unsaid
    *  rather than say it eight times over. */
@@ -134,44 +171,73 @@ export function workStatus(params: {
   approval: ApprovalView;
   engine: CylinderState | null;
   dark: boolean;
+  /** The action that last failed on it, if nothing has taken it up since. */
+  failure?: ActionFailure | null;
 }): WorkStatus {
   const { pair, activity, approval, engine, dark } = params;
+  const failure = params.failure ?? null;
   const pr = pair.pr ?? null;
 
   if (engine) {
     const target = actionTarget(engine);
-    return { text: target ? `${actionVerb(engine.actionType)} ${target}` : actionVerb(engine.actionType), tone: 'plain' };
+    const verb = actionVerb(engine.actionType);
+    // Burning: drawn in its own hue, so it needs no signal.
+    return { text: target ? `${verb} ${target}` : verb, tone: 'plain', signal: null };
   }
   if (approval.line) {
     // An approval's line leads with the word for where it has got to —
     // "queued — sent to yoke…", "not approved: its checks are failing".
     const brief = approval.line.text.split(/ — |: /)[0] ?? approval.line.text;
-    return { text: approval.line.text, tone: approval.line.tone, brief };
+    return { text: approval.line.text, tone: approval.line.tone, signal: approvalSignal(approval), brief };
   }
-  if (pair.disabled) return { text: 'manual — yoke leaves it to you', tone: 'plain', brief: 'manual' };
-  if (pair.prPhase === 'completed') return { text: 'merged', tone: 'approved' };
-  if (pair.prPhase === 'inactive') return { text: pair.projectStatus || 'out of the queue', tone: 'plain' };
-  if (pair.prPhase === 'planning') return { text: dark ? 'shut down' : 'implementing…', tone: 'plain' };
+  // Merged and manual are outcomes nobody has to act on here: neutral.
+  if (pair.disabled) return { text: 'manual — yoke leaves it to you', tone: 'plain', signal: null, brief: 'manual' };
+  if (pair.prPhase === 'completed') return { text: 'merged', tone: 'plain', signal: null };
+  if (pair.prPhase === 'inactive') return { text: pair.projectStatus || 'out of the queue', tone: 'plain', signal: null };
+  if (failure) {
+    // Yoke retries a failed action by itself, so this says so; the error is
+    // on the inbox card and in the log.
+    const failed = `${actionVerb(failure.actionType)} failed`;
+    return dark
+      ? { text: failed, tone: 'problem', signal: 'error' }
+      : { text: `${failed} — yoke retries it`, tone: 'problem', signal: 'error', brief: failed };
+  }
+  if (pair.prPhase === 'planning') return { text: dark ? 'shut down' : 'implementing…', tone: 'plain', signal: null };
 
   if (!pr) {
     const blockedBy = pair.blockedByIssueNumbers ?? [];
-    if (blockedBy.length > 0) return { text: `blocked by ${numbersList(blockedBy)}`, tone: 'problem' };
-    return { text: dark ? 'shut down' : 'waiting for an engine', tone: 'plain', routine: true };
+    if (blockedBy.length > 0) return { text: `blocked by ${numbersList(blockedBy)}`, tone: 'problem', signal: 'blocked' };
+    return { text: dark ? 'shut down' : 'waiting for an engine', tone: 'plain', signal: null, routine: true };
   }
 
-  if (activity === 'waiting-ci') return { text: 'checks running', tone: 'progress' };
+  if (activity === 'waiting-ci') return { text: 'checks running', tone: 'progress', signal: null };
   if (pair.prPhase === 'review') {
     if (pair.approval === 'awaiting-approval') {
       return pr.checksStatus === 'failure'
-        ? { text: 'ready — but its checks are failing', tone: 'problem', brief: 'checks failing' }
-        : { text: 'ready — waiting for your approval', tone: 'plain', brief: 'awaiting approval' };
+        ? { text: 'ready — but its checks are failing', tone: 'problem', signal: 'error', brief: 'checks failing' }
+        : { text: 'ready — waiting for your approval', tone: 'plain', signal: 'review', brief: 'awaiting approval' };
     }
-    return { text: 'ready for review', tone: 'plain' };
+    return { text: 'ready for review', tone: 'plain', signal: 'review' };
   }
   if (pr.checksStatus === 'failure') {
-    return { text: 'checks failing — an engine fixes them next', tone: 'problem', brief: 'checks failing' };
+    return { text: 'checks failing — an engine fixes them next', tone: 'problem', signal: 'error', brief: 'checks failing' };
   }
-  return { text: dark ? 'shut down' : 'draft — waiting for an engine', tone: 'plain', routine: true };
+  return { text: dark ? 'shut down' : 'draft — waiting for an engine', tone: 'plain', signal: null, routine: true };
+}
+
+/**
+ * The signal an approval's line carries: refused or failed is an error; yoke
+ * asking for one — the Approve button waiting to be pressed — is a review;
+ * one yoke has recorded is an approval going through, until its PR merges,
+ * which is neutral like any other merge. A press yoke has not answered yet is
+ * neutral too: nothing has happened to it to say.
+ */
+function approvalSignal(approval: ApprovalView): WorkSignal | null {
+  if (approval.line?.tone === 'problem') return 'error';
+  if (approval.button?.step === 'merged') return null;
+  if (approval.approved) return 'approved';
+  if (approval.button?.step === 'idle') return 'review';
+  return null;
 }
 
 function checksOf(pair: LifecyclePair): WorkView['checks'] {
@@ -214,6 +280,8 @@ export function workViews(state: DashboardState, nowMs: number): WorkView[] {
     });
     const linkRepo = pair.repo || fallbackRepo;
     const baseUrl = linkRepo ? `https://github.com/${linkRepo}` : null;
+    // An engine on it ends whatever failed on it last (the store drops it).
+    const failure = engine ? null : failureOn(pair, state.failures.values(), nowMs);
 
     return {
       key,
@@ -224,12 +292,15 @@ export function workViews(state: DashboardState, nowMs: number): WorkView[] {
       activity,
       level,
       hue,
-      color: burnColor(hue, level),
+      // Drawn as a reactor, in its hue, for as long as an engine is on it —
+      // dark ones included, while the engine finishes its action (#268).
+      color: burnColor(hue, engine ? 'burning' : level),
       stage: pairStage(pair),
-      status: workStatus({ pair, activity, approval, engine, dark }),
+      status: workStatus({ pair, activity, approval, engine, dark, failure }),
       checks: checksOf(pair),
       blockedBy: pair.pr ? [] : [...(pair.blockedByIssueNumbers ?? [])],
       engine,
+      failure,
       approval,
       dark,
       issueUrl: baseUrl && pair.issue ? `${baseUrl}/issues/${pair.issue.number}` : null,
@@ -243,14 +314,26 @@ export function workViews(state: DashboardState, nowMs: number): WorkView[] {
  * waiting on. The first four are the pill's status icons (#262) and mean what
  * they did: an engine on it, a person's to do, its checks running, ready for
  * review. The rest say what a line has no badge to say any more: approved and
- * waiting for its merge, checks failing, blocked, merged.
+ * waiting for its merge, failing — its checks, or its last action — blocked,
+ * merged. The shape says what; the line's signal, if it has one, colors it.
  */
 export type WorkGlyph = 'engine' | 'person' | 'checks' | 'eye' | 'approved' | 'failing' | 'blocked' | 'merged';
 
-export function workGlyph(work: Pick<WorkView, 'activity' | 'pair' | 'approval' | 'checks' | 'blockedBy'>): WorkGlyph | null {
+export function workGlyph(
+  work: Pick<WorkView, 'activity' | 'pair' | 'approval' | 'checks' | 'blockedBy'> & { failure?: ActionFailure | null },
+): WorkGlyph | null {
   switch (work.activity) {
     case 'working': return 'engine';
     case 'manual': return 'person';
+  }
+  // A failed action outranks what the work was waiting on when it failed,
+  // as it does in its status (`workStatus`), so a failed action's red is on a
+  // cross and never on an eye or a ring of checks. (A PR that is ready for
+  // review with failing checks keeps its eye, in red: its status says both.)
+  if (work.failure && !work.approval.line && work.pair.prPhase !== 'completed' && work.pair.prPhase !== 'inactive') {
+    return 'failing';
+  }
+  switch (work.activity) {
     case 'waiting-ci': return 'checks';
     case 'review': return 'eye';
   }

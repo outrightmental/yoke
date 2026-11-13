@@ -149,8 +149,9 @@ yoke-inbox { display: contents; }
   from { opacity: 0; transform: translateX(18px); }
 }
 
-/* The bar down its left edge is the color of the work it is about, at that
-   work's burn level: the same color the field draws the work in. */
+/* The bar down its left edge is the color of the work it is about: its own
+   hue, at whatever level the work is (issue #286) — the color of its reactor,
+   and of the one mark its line keeps below the burning stratum. */
 .inbox-card::before {
   content: '';
   position: absolute;

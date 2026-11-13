@@ -8,14 +8,16 @@ import { actionTarget, actionVerb } from './work-view.js';
 export type EngineParked = 'usage-limit' | 'rate-limit' | null;
 
 /**
- * One engine cylinder as the field draws it: a ring, burning in the color of
- * its work while it runs an action, and on the bench in trim gray otherwise.
+ * One engine cylinder as the field draws it: a ring, burning in the hue of
+ * its work while it runs an action, and on the bench otherwise — still in
+ * that hue while it holds the work its action ended on, in trim gray once it
+ * holds none.
  */
 export interface EngineView {
   /** Counted from 0; the field labels it `index + 1`, as the log does. */
   index: number;
   status: CylinderState['status'];
-  /** Its work's color at its burn level; trim gray with no work (#280, #281). */
+  /** Its work's hue for as long as it holds the work; trim gray with none (#280, #286). */
   color: IssueColor;
   /** Whether it holds work at all — an idle or parked engine does not. */
   hasWork: boolean;
