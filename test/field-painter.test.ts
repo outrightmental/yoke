@@ -450,26 +450,54 @@ test("the painter: a line's one signal colors its status and the mark at its end
   assert.deepEqual([...saturatedStrokes(byNumber(16))], [], "a merge's check, gray");
 });
 
-test("the painter: below the reactors every word clears its contrast floor on the ground", () => {
-  const state = busyState({ cylinders: [idle(1), idle(2)] });
-  const painted = paint(state);
+test("the painter: below the reactors every word clears its contrast floor, on the ground and on a band", () => {
+  // Every signal, and a neutral line, in every stratum below the reactors.
+  const pr = (number: number, checksStatus: "success" | "failure" | "pending", draft = false) =>
+    ({ number, title: `PR ${number}`, state: "open", draft, checksStatus }) as const;
+  const state = stateWith([
+    issue(9, "Snap the compass to north"),
+    issue(13, "Fix the failing tiles", { pr: pr(83, "failure", true), prPhase: "active" }),
+    issue(10, "Refer to a Top Model", { pr: pr(81, "success"), prPhase: "review", approval: "awaiting-approval" }),
+    issue(14, "Review the legend", { pr: pr(84, "success"), prPhase: "review" }),
+    issue(15, "Ship the merged one", { pr: pr(85, "success"), prPhase: "review", approval: "approved" }),
+    issue(8, "Draw constellation rays", { pr: pr(80, "pending", true), prPhase: "active" }),
+    issue(11, "Cache tiles by content hash", { blockedByIssueNumbers: [9] }),
+    issue(12, "Paginate the digest", { prPhase: "inactive", projectStatus: "Backlog" }),
+    issue(16, "Land the projection", { pr: pr(86, "success"), prPhase: "completed" }),
+    issue(17, "Hand-tune the kerning", { pr: pr(87, "success"), prPhase: "review", disabled: true }),
+  ], "o/a", { cylinders: [idle(1)] });
+  const painted = paint(state, { viewport: { width: 1600 } });
   const ground = PALETTE.bg[0];
+  const lifted = Math.round(ground + (PALETTE.trimBright[0] - ground) * 0.035);
+  const banded = new Set<string>();
+  for (const node of painted.layout.nodes) {
+    if (node.kind === "header") for (const band of node.bands) banded.add(`${band.x},${band.y}`);
+  }
+  const signals = new Set<string>();
+  const levels = new Set<string>();
+  let onBands = 0;
   for (const node of painted.layout.nodes) {
     if (node.kind !== "work" || node.mode !== "row") continue;
     const { work } = node;
-    for (const [text, floor] of [[work.title, 4.5], [`#${work.number}`, 4.5]] as const) {
-      const fill = painted.fills.find((candidate) => candidate.text === text)?.fill;
-      assert.ok(fill, text);
-      const ratio = contrastOver(fill, ground);
-      assert.ok(ratio >= floor, `${node.level}: "${text}" at ${ratio.toFixed(2)}:1`);
-    }
+    levels.add(node.level);
+    if (work.status.signal) signals.add(work.status.signal);
+    const grounds = [ground, lifted];
+    if (banded.has(`${node.rect.x},${node.rect.y}`)) onBands++;
     const status = briefStatus(work.status) || work.status.text;
-    const fill = painted.fills.find((candidate) => candidate.text === status)?.fill;
-    if (!fill) continue;
-    const ratio = contrastOver(fill, ground);
-    const floor = work.status.signal ? 4.5 : 3;
-    assert.ok(ratio >= floor, `${node.level}: status "${status}" at ${ratio.toFixed(2)}:1`);
+    const words = [[work.title, 4.5], [`#${work.number}`, 4.5], [status, work.status.signal ? 4.5 : 3]] as const;
+    for (const [text, floor] of words) {
+      const fill = painted.fills.find((candidate) => candidate.text === text)?.fill;
+      if (text === status && !fill) continue;
+      assert.ok(fill, text);
+      for (const under of grounds) {
+        const ratio = contrastOver(fill, under);
+        assert.ok(ratio >= floor, `${node.level}: "${text}" at ${ratio.toFixed(2)}:1 on ${under === ground ? "the ground" : "a band"}`);
+      }
+    }
   }
+  assert.deepEqual([...levels].sort(), ["cold", "queued", "waiting"], "every stratum below the reactors is checked");
+  assert.deepEqual([...signals].sort(), ["approved", "blocked", "error", "review"], "and every signal");
+  assert.ok(onBands > 0, "some of them on a band");
 });
 
 test("the painter: a reactor keeps its hue while its work has gone dark, and a tether keeps the hue of its work (#286)", () => {
