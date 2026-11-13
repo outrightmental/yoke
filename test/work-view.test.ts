@@ -130,6 +130,16 @@ test("an action that failed on a piece of work is an error on its line until an 
 
   const [merged] = workViews(failed(prPair(7, 10, { repo: "o/a", prPhase: "completed" })), NOW);
   assert.equal(merged?.status.text, "merged", "merged outranks a failure on the way");
+  assert.equal(merged && workGlyph(merged), "merged");
+
+  for (const [name, pair] of [
+    ["ready for review", prPair(7, 10, { repo: "o/a", prPhase: "review" }, { draft: false })],
+    ["checks running", prPair(7, 10, { repo: "o/a" }, { checksStatus: "pending" })],
+  ] as const) {
+    const [busy] = workViews(failed(pair), NOW);
+    assert.equal(busy?.status.signal, "error", `${name}: its status says the failure`);
+    assert.equal(busy && workGlyph(busy), "failing", `${name}: so does its mark, not the mark of what it waited on`);
+  }
 
   const [other] = workViews(failed(prPair(8, 11, { repo: "o/a" })), NOW);
   assert.equal(other?.failure, null, "another PR's failure is not this one's");

@@ -325,6 +325,14 @@ export function workGlyph(
   switch (work.activity) {
     case 'working': return 'engine';
     case 'manual': return 'person';
+  }
+  // A failed action outranks what the work was waiting on when it failed,
+  // as it does in its status (`workStatus`), so the line's red is always on
+  // a cross and never on an eye or a ring of checks.
+  if (work.failure && !work.approval.line && work.pair.prPhase !== 'completed' && work.pair.prPhase !== 'inactive') {
+    return 'failing';
+  }
+  switch (work.activity) {
     case 'waiting-ci': return 'checks';
     case 'review': return 'eye';
   }

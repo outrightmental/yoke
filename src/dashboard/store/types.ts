@@ -4,8 +4,8 @@ export interface CylinderState {
   index: number;
   /** Stable color of the issue this cylinder is working, or null when it has
    *  no issue (idle) — colors belong to issues, not cylinders (issue #236).
-   *  Always at full saturation: the row draws it at its status's burn level
-   *  (`cylinderColor` in shared/burn-level.ts, issue #281). */
+   *  Always at full saturation, and drawn so for as long as the cylinder
+   *  holds the work (`cylinderColor` in shared/burn-level.ts, issue #286). */
   color: string | null;
   colorRgb: string | null;
   status: 'idle' | 'active' | 'done' | 'error' | 'shutdown';
