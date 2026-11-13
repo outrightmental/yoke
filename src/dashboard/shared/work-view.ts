@@ -338,7 +338,7 @@ export function workGlyph(
   }
   if (work.pair.prPhase === 'completed') return 'merged';
   if (work.pair.approval === 'approved' || work.approval.approved) return 'approved';
-  if (work.checks === 'failure' || work.failure) return 'failing';
+  if (work.checks === 'failure') return 'failing';
   if (work.blockedBy.length > 0) return 'blocked';
   return null;
 }

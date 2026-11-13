@@ -141,6 +141,15 @@ test("an action that failed on a piece of work is an error on its line until an 
     assert.equal(busy && workGlyph(busy), "failing", `${name}: so does its mark, not the mark of what it waited on`);
   }
 
+  // An approval's line outranks a failure in the status, so it does in the
+  // mark too: no cross beside a line that says something else.
+  const sentLine = {
+    ...work,
+    activity: null,
+    approval: { ...work.approval, line: { text: "queued — sent to yoke…", tone: "progress" as const } },
+  };
+  assert.notEqual(workGlyph(sentLine), "failing", "an approval's line, not a failure, says what the line is waiting on");
+
   const [other] = workViews(failed(prPair(8, 11, { repo: "o/a" })), NOW);
   assert.equal(other?.failure, null, "another PR's failure is not this one's");
 
