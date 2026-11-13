@@ -58,7 +58,7 @@ A line has at most one signal, worked out with its status in `workStatus`, so th
 
 | Signal | Colour | When |
 | --- | --- | --- |
-| `error` | red, `--color-red` | its last action failed and no engine has taken it up again (`WorkView.failure`, for as long as the inbox lists it); its checks are failing; its approval was refused or failed |
+| `error` | red, `--color-red` | its last action failed and no engine has taken it up again (`WorkView.failure`: until an engine takes it up again, or for 90 minutes, `FAILURE_SHOW_MS` — dismissing its inbox card does not clear it, since nothing has answered the error yet); its checks are failing; its approval was refused or failed |
 | `blocked` | orange, `--color-orange` | it is blocked by other issues — a hold, like a usage limit or a shutdown, which are orange too |
 | `review` | yellow, `--color-yellow` | it waits on a person: ready for review, or parked for an approval Yoke is asking for |
 | `approved` | green, `--color-green` | an approval going through: approved, and waiting for or undergoing its merge |
