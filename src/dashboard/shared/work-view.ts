@@ -327,8 +327,9 @@ export function workGlyph(
     case 'manual': return 'person';
   }
   // A failed action outranks what the work was waiting on when it failed,
-  // as it does in its status (`workStatus`), so the line's red is always on
-  // a cross and never on an eye or a ring of checks.
+  // as it does in its status (`workStatus`), so a failed action's red is on a
+  // cross and never on an eye or a ring of checks. (A PR that is ready for
+  // review with failing checks keeps its eye, in red: its status says both.)
   if (work.failure && !work.approval.line && work.pair.prPhase !== 'completed' && work.pair.prPhase !== 'inactive') {
     return 'failing';
   }
