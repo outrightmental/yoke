@@ -1,4 +1,5 @@
 import type { ActionFailure } from '../store/types.js';
+import { failureIsOn } from './failures.js';
 import { formatDuration } from './format.js';
 import type { IssueColor } from './issue-colors.js';
 import { approveKey, type ApproveButtonStep, type ApproveTarget } from './pill-approval.js';
@@ -217,12 +218,7 @@ export function failureCardId(failure: Pick<ActionFailure, 'key' | 'atMs'>): str
 
 /** The work a failure was on, if the field still shows it. */
 function failedWork(failure: ActionFailure, works: readonly WorkView[]): WorkView | null {
-  for (const work of works) {
-    if (work.repo && failure.repo && work.repo !== failure.repo) continue;
-    if (failure.prNumber !== null && work.pair.pr?.number === failure.prNumber) return work;
-    if (failure.prNumber === null && failure.issueNumber !== null && work.pair.issue?.number === failure.issueNumber) return work;
-  }
-  return null;
+  return works.find((work) => failureIsOn(failure, work.pair)) ?? null;
 }
 
 /**

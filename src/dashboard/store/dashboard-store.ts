@@ -3,6 +3,7 @@ import type { DashboardState, CylinderState, BroadcastEventData, EventLine, Life
 import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
 import { approvalStatusExpired, approveKey, approveRequestMessage, isApprovalOutcome, type ApproveTarget } from '../shared/pill-approval.js';
+import { FAILURE_SHOW_MS } from '../shared/failures.js';
 import { WsClient } from './ws-client.js';
 
 export type { DashboardState };
@@ -309,11 +310,9 @@ function applyActionComplete(state: DashboardState, data: Record<string, unknown
   return addToStream({ ...withMergedPresses(state, cyl), cylinders }, atMs, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
 }
 
-/** How long a failed action stays in the inbox when nothing takes its work up
- *  again. Yoke backs a failing action off for as long as an hour before it
- *  tries again (`ACTION_FAILURE_BACKOFF_MS` in src/index.ts), and a failure
- *  should not leave the inbox while its work is still parked because of it. */
-export const FAILURE_SHOW_MS = 90 * 60_000;
+// How long a failed action is kept (`FAILURE_SHOW_MS`) is shared with the
+// work it failed on, which is drawn as an error for as long (#286).
+export { FAILURE_SHOW_MS };
 /** At most this many failures are kept, newest first to stay. */
 const FAILURE_MAX = 24;
 
