@@ -16,8 +16,12 @@ export interface TrackStyle {
   pitch: number;
   /** Radius of the mark the work has reached; the others are smaller. */
   dot: number;
-  /** The work's color, as an "r,g,b" triplet. */
+  /** The work's color, as an "r,g,b" triplet: the marks behind it and the line. */
   color: string;
+  /** The color of the mark it has reached, when that is not `color`. Below
+   *  the burning stratum it is the work's own hue, the one mark of it a line
+   *  keeps (#286). */
+  mark?: string;
   trim: Rgb;
   alpha: number;
 }
@@ -34,10 +38,12 @@ export function trackWidth(marks: number, style: Pick<TrackStyle, 'pitch' | 'dot
 
 /**
  * A work's place on the lifecycle: `marks` marks on a line, colored up to the
- * one it has reached. What is behind it is its color, what is ahead is trim.
+ * one it has reached. What is behind it is its color, what is ahead is trim,
+ * and the mark it has reached is its `mark` color.
  */
 export function drawTrack(ctx: Ctx, x: number, cy: number, stage: number, marks: number, style: TrackStyle): void {
   const { pitch, dot, color, trim, alpha } = style;
+  const mark = style.mark ?? color;
   const first = trackMarkX(x, 0, style);
   const here = trackMarkX(x, stage, style);
   const last = trackMarkX(x, marks - 1, style);
@@ -62,7 +68,7 @@ export function drawTrack(ctx: Ctx, x: number, cy: number, stage: number, marks:
     const cx = first + i * pitch;
     ctx.beginPath();
     if (i === stage) {
-      ctx.fillStyle = rgba(color, alpha);
+      ctx.fillStyle = rgba(mark, alpha);
       ctx.arc(cx, cy, dot, 0, TAU);
     } else if (i < stage) {
       ctx.fillStyle = rgba(color, 0.7 * alpha);
@@ -139,16 +145,17 @@ export function glyphMoves(glyph: WorkGlyph | null): boolean {
 }
 
 export interface GlyphColors {
-  /** The work's color, as an "r,g,b" triplet. */
+  /** The glyph's ink, as an "r,g,b" triplet: its line's signal color, or
+   *  its line's gray when the line has no signal (#286). */
   color: string;
-  green: Rgb;
-  coral: Rgb;
   alpha: number;
 }
 
 /**
  * The glyph at the end of a line of work, centred on (`cx`, `cy`) in a box
- * about 16 pixels square, as it looks `t` seconds in.
+ * about 16 pixels square, as it looks `t` seconds in. Its shape says what the
+ * work is doing or waiting on; its color is its line's, so a line never says
+ * two states in two colors.
  */
 export function drawGlyph(ctx: Ctx, glyph: WorkGlyph, cx: number, cy: number, t: number, colors: GlyphColors): void {
   const { color, alpha } = colors;
@@ -222,7 +229,7 @@ export function drawGlyph(ctx: Ctx, glyph: WorkGlyph, cx: number, cy: number, t:
     case 'approved':
     case 'merged': {
       ctx.lineWidth = 1.8;
-      ctx.strokeStyle = glyph === 'approved' ? rgba(colors.green, alpha) : rgba(color, alpha);
+      ctx.strokeStyle = rgba(color, alpha);
       ctx.beginPath();
       ctx.moveTo(cx - 5, cy + 0.4);
       ctx.lineTo(cx - 1.6, cy + 3.8);
@@ -232,7 +239,7 @@ export function drawGlyph(ctx: Ctx, glyph: WorkGlyph, cx: number, cy: number, t:
     }
     case 'failing': {
       ctx.lineWidth = 1.8;
-      ctx.strokeStyle = rgba(colors.coral, alpha);
+      ctx.strokeStyle = rgba(color, alpha);
       ctx.beginPath();
       ctx.moveTo(cx - 3.8, cy - 3.8);
       ctx.lineTo(cx + 3.8, cy + 3.8);
@@ -243,7 +250,7 @@ export function drawGlyph(ctx: Ctx, glyph: WorkGlyph, cx: number, cy: number, t:
     }
     case 'blocked': {
       ctx.lineWidth = 1.4;
-      ctx.strokeStyle = rgba(colors.coral, 0.9 * alpha);
+      ctx.strokeStyle = rgba(color, 0.9 * alpha);
       ctx.beginPath();
       ctx.arc(cx, cy, 5.4, 0, TAU);
       ctx.moveTo(cx - 3.8, cy + 3.8);

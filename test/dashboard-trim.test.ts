@@ -197,18 +197,71 @@ test("the field marks a lost connection in red, and connecting in trim", () => {
   assert.equal(paintField({ ...initialState(), connection: "connected" }).inkOf("LOST"), undefined, "connected, it says nothing");
 });
 
-test("an idle engine is trim, and work is never gray: an orphan PR takes its own number's color (#280)", () => {
+test("an idle engine is trim, and every piece of work has a hue: an orphan PR takes its own number's color (#280)", () => {
   const orphan: LifecyclePair = { issue: null, pr: { number: 300, title: "Orphan", state: "open" }, prPhase: "review" };
   const withIssue: LifecyclePair = { issue: { number: 7, title: "X", state: "open" }, pr: null, prPhase: "planning" };
   const state = stateWith([orphan, withIssue], "o/a", { cylinders: [cylinder({ status: "idle", actionType: null, issueNumber: null })] });
   const hues = workViews(state, Date.now()).map((work) => work.hue.hex);
   assert.deepEqual(hues.sort(), [issueColor(300).hex, issueColor(7).hex].sort());
-  assert.ok(!hues.includes(NEUTRAL_COLOR), "no piece of work is gray");
+  assert.ok(!hues.includes(NEUTRAL_COLOR), "no piece of work is without a hue to say which it is");
   for (const work of workViews(state, Date.now())) {
-    assert.ok(!hueFree(parseColor(work.color.rgb)! as unknown as Rgb), "nor is it gray at its burn level");
+    // But no engine burns on either, so neither is drawn in it (#286).
+    assert.ok(hueFree(parseColor(work.color.rgb)! as unknown as Rgb), `${work.key} is drawn in gray below the burning stratum`);
   }
   const painted = paintField(state);
   assert.equal(painted.inkOf("idle")?.rgb, triplet(tokensPalette().trimDim), "an engine with no work is trim");
+});
+
+test("below the burning stratum the only saturated ink is a work's mark of its hue and the status signals (#286)", () => {
+  const pairs: LifecyclePair[] = [
+    { issue: { number: 7, title: "Burning", state: "open" }, pr: null, prPhase: "planning" },
+    { issue: { number: 8, title: "Checks", state: "open" }, pr: { number: 80, title: "Checks", state: "open", draft: true, checksStatus: "pending" }, prPhase: "active" },
+    { issue: { number: 9, title: "Blocked", state: "open" }, pr: null, prPhase: "absent", blockedByIssueNumbers: [8] },
+    { issue: { number: 10, title: "Review", state: "open" }, pr: { number: 81, title: "Review", state: "open", draft: false, checksStatus: "success" }, prPhase: "review" },
+    { issue: { number: 11, title: "Failing", state: "open" }, pr: { number: 82, title: "Failing", state: "open", draft: true, checksStatus: "failure" }, prPhase: "active" },
+    { issue: { number: 12, title: "Merged", state: "open" }, pr: { number: 83, title: "Merged", state: "open", checksStatus: "success" }, prPhase: "completed" },
+    { issue: { number: 13, title: "Manual", state: "open" }, pr: { number: 84, title: "Manual", state: "open", draft: false, checksStatus: "success" }, prPhase: "review", disabled: true },
+  ];
+  const state = stateWith(pairs, "o/a", { cylinders: [cylinder({ ...issueColorOf(7) })] });
+  const painted = paintField(state);
+  const palette = tokensPalette();
+  const signals = new Set([palette.red, palette.orange, palette.yellow, palette.green].map(triplet));
+  const below = painted.layout.nodes.filter((node) => node.kind === "work" && node.mode === "row");
+  assert.equal(below.length, 6, "everything but the reactor is on a line below it");
+  for (const node of below) {
+    if (node.kind !== "work") continue;
+    const { work } = node;
+    // Every word on its line is gray, or one of the signals.
+    for (const word of [work.title, `#${work.number}`]) {
+      const ink = painted.inkOf(word);
+      assert.ok(ink && hueFree(parseColor(ink.rgb)! as unknown as Rgb), `${word} is gray`);
+    }
+    // Its hue is on the canvas once: one dot, the mark its track has reached.
+    const marks = painted.shapes.filter((shape) => parseRgba(shape.fill)?.rgb === work.hue.rgb);
+    assert.equal(marks.length, 1, `#${work.number}'s hue is one mark`);
+    assert.equal(marks[0]!.arcs.length, 1, "a dot");
+    assert.ok(marks[0]!.arcs[0]![2]! <= 3, "a small one");
+  }
+  // The signals say error, blocked and review, and nothing else is saturated.
+  // (A roomy line says the whole sentence, a tight one the first words of it.)
+  const inkOf = (words: string) => {
+    const fill = painted.fills.find((candidate) => candidate.text.startsWith(words));
+    return fill ? parseRgba(fill.fill) : undefined;
+  };
+  assert.equal(inkOf("checks failing")?.rgb, triplet(palette.red));
+  assert.equal(inkOf("blocked by #8")?.rgb, triplet(palette.orange));
+  assert.equal(inkOf("ready for review")?.rgb, triplet(palette.yellow));
+  for (const neutral of ["merged", "manual", "checks running"]) {
+    const ink = inkOf(neutral);
+    assert.ok(ink && hueFree(parseColor(ink.rgb)! as unknown as Rgb), `${neutral} is neutral`);
+  }
+  // The only words in a hue are the reactor's, in the burning stratum.
+  const burning = issueColor(7).rgb;
+  for (const fill of painted.fills) {
+    const ink = parseRgba(fill.fill);
+    if (!ink || hueFree(parseColor(ink.rgb)! as unknown as Rgb) || ink.rgb === burning) continue;
+    assert.ok(signals.has(ink.rgb), `"${fill.text}" is drawn in ${ink.rgb}, which is no signal`);
+  }
 });
 
 test("a line of the ribbon with no color of its own is trim, with no picture-emoji to bring one in (#280)", () => {

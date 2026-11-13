@@ -6,7 +6,8 @@
  * that the rest of the dashboard uses. The rule those tokens encode therefore
  * holds on the canvas too (#280): the trim is hue-free gray, the only
  * saturated colors that are not a work's are the named status signals, and
- * nothing here brings a color of its own.
+ * nothing here brings a color of its own. Below the burning stratum a work's
+ * color is one of these grays too, and a status signal its only color (#286).
  */
 export type Rgb = readonly [number, number, number];
 
@@ -17,8 +18,9 @@ export interface Palette {
   trim: Rgb;
   trimBright: Rgb;
   trimDim: Rgb;
-  /** Status signals: an approval going through, a warning, a hold or a
-   *  shutdown, an error or a lost connection, and a block or a refusal. */
+  /** Status signals: an approval going through; waiting on a person, or a
+   *  warning; something held up — a block, a hold, a shutdown; an error or a
+   *  lost connection; and, in the inbox, a card's problem (#286). */
   green: Rgb;
   yellow: Rgb;
   orange: Rgb;

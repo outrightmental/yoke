@@ -1,14 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  BURN_SATURATION,
-  burnColor,
-  cylinderBurnLevel,
-  cylinderColor,
-  pillBurnLevel,
-  type BurnLevel,
-} from "../src/dashboard/shared/burn-level.js";
-import { atSaturation, issueColor, issueHue, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from "../src/dashboard/shared/issue-colors.js";
+import { burnColor, cylinderColor, pillBurnLevel, type BurnLevel } from "../src/dashboard/shared/burn-level.js";
+import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from "../src/dashboard/shared/issue-colors.js";
 import type { PillActivity } from "../src/dashboard/shared/pill-activity.js";
 import type { CylinderState, LifecyclePair } from "../src/dashboard/store/types.js";
 import { engineView } from "../src/dashboard/shared/engine-view.js";
@@ -17,27 +10,18 @@ import { layoutField } from "../src/dashboard/field/layout.js";
 import { workViews } from "../src/dashboard/shared/work-view.js";
 import { renderInbox, stateWith } from "./dashboard-helpers.js";
 
-// More saturation = more token burn (issue #281): every state lands on one
-// level of a shared scale, the hue keeps saying which issue, and the same level
-// is the same color whichever component draws it.
+// Every state lands on a level of token burn (issue #281), and the level is a
+// stratum of the field. The rainbow of issue hues is kept for the top one,
+// burning (issue #286): below it work is hue-free gray, and only the things
+// that identify a piece of work — the mark on its line, its inbox card, its
+// tether — keep its hue.
 
 const LEVELS: BurnLevel[] = ["burning", "queued", "waiting", "cold"];
+const GRAY = { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
 
-/** Hue (degrees), HSL saturation and lightness of an "r,g,b" triplet. */
-function hsl(rgb: string): { h: number; s: number; l: number } {
-  const [r, g, b] = rgb.split(",").map((v) => Number(v) / 255) as [number, number, number];
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const c = max - min;
-  const l = (max + min) / 2;
-  const s = c === 0 ? 0 : c / (1 - Math.abs(2 * l - 1));
-  const sector = c === 0 ? 0 : max === r ? (g - b) / c : max === g ? (b - r) / c + 2 : (r - g) / c + 4;
-  return { h: (sector * 60 + 360) % 360, s, l };
-}
-
-function hueDistance(a: number, b: number): number {
-  const d = Math.abs(a - b) % 360;
-  return Math.min(d, 360 - d);
+function hueFree(rgb: string): boolean {
+  const [r, g, b] = rgb.split(",").map(Number);
+  return r === g && g === b;
 }
 
 function cylinder(overrides: Partial<CylinderState> = {}): CylinderState {
@@ -89,62 +73,37 @@ function pillColor(p: LifecyclePair, activity: PillActivity | null, dark = false
   return work.color.hex;
 }
 
-// ── the scale ────────────────────────────────────────────────────────────────
+// ── the rule ─────────────────────────────────────────────────────────────────
 
-test("the scale runs from full saturation down to a floor above trim's zero", () => {
-  assert.equal(BURN_SATURATION.burning, 1, "an engine running an action is at full saturation");
-  for (let i = 1; i < LEVELS.length; i++) {
-    assert.ok(BURN_SATURATION[LEVELS[i]!] < BURN_SATURATION[LEVELS[i - 1]!], `${LEVELS[i]} burns less than ${LEVELS[i - 1]}`);
-  }
-  assert.ok(BURN_SATURATION.cold > 0, "cold work keeps its hue, so it never reads as trim");
-});
-
-test("burnColor keeps the work's hue and lightness and sets only its saturation", () => {
+test("only the burning level is drawn in the work's hue; every level below it is hue-free gray", () => {
   for (let n = 0; n <= 2000; n++) {
-    const base = issueColor(n);
-    for (const level of LEVELS) {
-      const c = burnColor(base, level);
-      const { h, s, l } = hsl(c.rgb);
-      assert.ok(hueDistance(h, issueHue(n)) <= 1.5, `#${n} at ${level} drifts to hue ${h.toFixed(1)}`);
-      assert.ok(Math.abs(s - BURN_SATURATION[level]) <= 0.03, `#${n} at ${level} has saturation ${s.toFixed(2)}`);
-      assert.ok(Math.abs(l - 0.6) <= 0.01, `#${n} at ${level} has lightness ${l.toFixed(2)}`);
-      const [r, g, b] = c.rgb.split(",").map(Number);
-      assert.ok(!(r === g && g === b), `#${n} at ${level} is ${c.hex}: no level of work is gray`);
-      assert.match(c.hex, /^#[0-9a-f]{6}$/);
+    const hue = issueColor(n);
+    assert.deepEqual(burnColor(hue, "burning"), hue, `#${n} burns in its own color, exactly`);
+    for (const level of LEVELS.filter((l) => l !== "burning")) {
+      const c = burnColor(hue, level);
+      assert.deepEqual(c, GRAY, `#${n} at ${level} is the trim gray, --trim-dim`);
+      assert.ok(hueFree(c.rgb), `#${n} at ${level} has no hue`);
     }
-    assert.deepEqual(burnColor(base, "burning"), base, "burning is the issue's own color, exactly");
   }
-});
-
-test("a gray has no hue to re-saturate: trim stays trim", () => {
-  const trim = { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
-  for (const s of [0, 0.2, 1]) assert.deepEqual(atSaturation(trim, s), trim);
 });
 
 // ── engine cylinders ─────────────────────────────────────────────────────────
 
-test("a cylinder burns only while it runs an action", () => {
-  assert.equal(cylinderBurnLevel("active"), "burning");
+test("a cylinder keeps its work's hue for as long as it holds the work, and is trim gray with none", () => {
+  assert.deepEqual(cylinderColor(cylinder()), issueColor(7), "burning on it");
   for (const status of ["done", "error", "shutdown"] as const) {
-    assert.equal(cylinderBurnLevel(status), "cold", `${status}: the action has ended`);
-  }
-});
-
-test("a cylinder is drawn in its work's color at its level, and in trim gray with no work", () => {
-  assert.deepEqual(cylinderColor(cylinder()), issueColor(7));
-  for (const status of ["done", "error", "shutdown"] as const) {
-    assert.deepEqual(cylinderColor(cylinder({ status })), burnColor(issueColor(7), "cold"));
+    assert.deepEqual(cylinderColor(cylinder({ status })), issueColor(7), `${status}: still holding the work, so still its hue`);
   }
   const idle = cylinder({ status: "idle", color: null, colorRgb: null, issueNumber: null });
-  assert.deepEqual(cylinderColor(idle), { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB }, "idle is trim");
+  assert.deepEqual(cylinderColor(idle), GRAY, "idle is trim");
   const parked = { ...idle, rateLimitedUntilMs: Date.now() + 60_000, idleStatusText: "claude-usage-limit" };
-  assert.deepEqual(cylinderColor(parked), { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB }, "parked by a limit is trim");
+  assert.deepEqual(cylinderColor(parked), GRAY, "parked by a limit is trim");
 });
 
-test("the field draws an engine at each status's level", () => {
+test("the field draws an engine in its work's hue, burning or done with it", () => {
   assert.equal(rowColor(cylinder()), issueColor(7).hex);
-  assert.equal(rowColor(cylinder({ status: "done" })), burnColor(issueColor(7), "cold").hex);
-  assert.equal(rowColor(cylinder({ status: "error" })), burnColor(issueColor(7), "cold").hex);
+  assert.equal(rowColor(cylinder({ status: "done" })), issueColor(7).hex, "on the bench, in the burning stratum");
+  assert.equal(rowColor(cylinder({ status: "error" })), issueColor(7).hex);
 });
 
 // ── lifecycle pills ──────────────────────────────────────────────────────────
@@ -172,18 +131,21 @@ test("a pill with no activity is leveled by where its work stands", () => {
   assert.equal(pillBurnLevel(pair({ pr: null, prPhase: "inactive", projectStatus: "Backlog" }), null, false), "cold");
 });
 
-test("the field draws a piece of work at its level", () => {
+test("the field draws a piece of work in its hue while an engine burns on it, and in gray below", () => {
   assert.equal(pillColor(pair(), "working"), issueColor(7).hex);
-  assert.equal(pillColor(pair(), "review"), burnColor(issueColor(7), "waiting").hex);
-  assert.equal(pillColor(pair(), "working", true), burnColor(issueColor(7), "cold").hex);
+  assert.equal(pillColor(pair(), "review"), NEUTRAL_COLOR, "waiting: gray");
+  assert.equal(pillColor(pair(), "working", true), issueColor(7).hex, "dark, but its engine is still finishing: a reactor keeps its hue");
   const orphan = pair({ issue: null, pr: { number: 300, title: "Orphan", state: "open", checksStatus: "pending" }, prPhase: "active" });
-  assert.equal(pillColor(orphan, "waiting-ci"), burnColor(issueColor(300), "queued").hex);
+  assert.equal(pillColor(orphan, "waiting-ci"), NEUTRAL_COLOR, "queued: gray");
 });
 
-test("a manual PR is drawn at the cold level, hue and all, never grayed below it", () => {
-  const manual = pillColor(pair({ disabled: true }), "manual");
-  assert.equal(manual, burnColor(issueColor(7), "cold").hex);
-  assert.notEqual(manual, NEUTRAL_COLOR, "cold work keeps a trace of its hue");
+test("work below the burning stratum keeps its hue as its identity, not as its color", () => {
+  for (const [p, activity] of [[pair({ disabled: true }), "manual"], [pair(), "review"], [pair({ prPhase: "active" }), null]] as const) {
+    const [work] = workViews(stateFor(p, activity), Date.now());
+    assert.ok(work && work.level !== "burning");
+    assert.equal(work.color.hex, NEUTRAL_COLOR, `${work.level}: drawn in gray`);
+    assert.equal(work.hue.hex, issueColor(7).hex, `${work.level}: still knows which issue it is`);
+  }
 });
 
 test("a piece of work is laid out in the stratum of its level, and an engine's work beside its ring", () => {
@@ -201,22 +163,19 @@ test("a piece of work is laid out in the stratum of its level, and an engine's w
   assert.equal(stratumOf(pair(), "review", true), "row:cold", "shut down: everything goes cold");
 });
 
-test("an inbox card is accented in its work's color at its level, the same color the field draws it in", () => {
+test("an inbox card is edged in its work's own hue at every level, so it can be matched to the work", () => {
   const parked = pair({ approval: "awaiting-approval" });
   const { cards, html } = renderInbox(stateFor(parked, "review"));
-  const leveled = burnColor(issueColor(7), "waiting");
-  assert.equal(cards[0]?.color?.hex, leveled.hex);
-  assert.ok(html.includes(`--card-color:${leveled.hex};--card-rgb:${leveled.rgb}`));
+  const hue = issueColor(7);
+  assert.equal(cards[0]?.color?.hex, hue.hex, "a waiting PR's card is not gray, though its line is");
+  assert.ok(html.includes(`--card-color:${hue.hex};--card-rgb:${hue.rgb}`));
 });
 
-// ── one scale for every component ────────────────────────────────────────────
+// ── one rule for every component ─────────────────────────────────────────────
 
-test("the same level is the same color for an engine and for a piece of work", () => {
+test("an engine and the work it is on burn in the same hue, and work that has cooled is gray wherever it is drawn", () => {
   assert.equal(rowColor(cylinder()), pillColor(pair(), "working"), "an engine and the work it is on burn alike");
-  assert.equal(
-    rowColor(cylinder({ status: "done" })),
-    pillColor(pair({ disabled: true }), "manual"),
-    "a finished action and a manual PR are both cold",
-  );
-  assert.equal(rowColor(cylinder({ status: "shutdown" })), pillColor(pair(), "review", true), "shut down is cold in both");
+  assert.equal(pillColor(pair({ disabled: true }), "manual"), NEUTRAL_COLOR, "a manual PR is cold, so gray");
+  assert.equal(pillColor(pair(), "review", true), NEUTRAL_COLOR, "shut down is cold, so gray");
+  assert.equal(rowColor(cylinder({ status: "shutdown" })), issueColor(7).hex, "while a shut-down engine still holds its work, it keeps the hue");
 });

@@ -1,13 +1,11 @@
 import type { CylinderState, LifecyclePair } from '../store/types.js';
-import { atSaturation, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB, type IssueColor } from './issue-colors.js';
+import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB, type IssueColor } from './issue-colors.js';
 import type { PillActivity } from './pill-activity.js';
 
 /**
  * How much token-burning activity a piece of work on the dashboard stands for
  * right now (issue #281), judged by its state alone, never by measured usage.
- * More saturation means more burn: each level is one saturation of the work's
- * own stable hue, so the hue still says *which* issue and the saturation says
- * *how hot* it is, the same in every component that draws it.
+ * Each level is a stratum of the field, hottest at the top.
  *
  * - `burning`: an engine is running an action on it right now.
  * - `queued`: yoke burns on it next, with nothing but yoke's own pipeline in
@@ -19,41 +17,38 @@ import type { PillActivity } from './pill-activity.js';
  *   shut down), the PR is manual, merged, or out of the queue, or yoke has
  *   shut down.
  *
- * Even `cold` keeps a floor of saturation, so its hue still tells one issue
- * from another and work never reads as trim. Only what is no work at all —
- * an idle cylinder, one parked by a rate or usage limit — is trim gray, with
- * none.
+ * Only `burning` is drawn in the work's own hue (#286). The rainbow of issue
+ * colors is kept for the top of the field, where engines are spending tokens,
+ * so that it says one thing: this is burning. Every level below is hue-free
+ * gray, the level saying itself in how bright the ink is and how much room a
+ * line has; there the hue survives only as the small mark on each line's
+ * track that says which issue it is, and saturated color is otherwise a
+ * status signal (`WorkSignal` in shared/work-view.ts). See "Colour" in
+ * design/DASHBOARD.md for the whole scheme.
  */
 export type BurnLevel = 'burning' | 'queued' | 'waiting' | 'cold';
 
-/** The HSL saturation each level is drawn at, hottest first. */
-export const BURN_SATURATION: Readonly<Record<BurnLevel, number>> = {
-  burning: 1,
-  queued: 0.6,
-  waiting: 0.4,
-  cold: 0.2,
-};
+/** The hue-free gray work is drawn in below the burning stratum: `--trim-dim`. */
+const BELOW_BURNING: IssueColor = { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
 
-/** A piece of work's stable color at a level of the scale. */
-export function burnColor(color: IssueColor, level: BurnLevel): IssueColor {
-  return atSaturation(color, BURN_SATURATION[level]);
+/**
+ * The color a piece of work is drawn in at a level: its own hue while it
+ * burns, and hue-free gray below (#286).
+ */
+export function burnColor(hue: IssueColor, level: BurnLevel): IssueColor {
+  return level === 'burning' ? hue : BELOW_BURNING;
 }
 
 /**
- * An engine cylinder's level: burning while it runs an action, cold once the
- * action is done, has failed, or the cylinder has shut down.
+ * The color an engine cylinder is drawn in: the hue of the work it holds, for
+ * as long as it holds it — burning on it, and on the bench once its action has
+ * ended, until it goes idle (#286). An engine is drawn in the burning stratum,
+ * where the hue belongs, and a gray engine just looks inactive (#280). Trim
+ * gray while it holds no work (idle, or parked by a limit).
  */
-export function cylinderBurnLevel(status: CylinderState['status']): BurnLevel {
-  return status === 'active' ? 'burning' : 'cold';
-}
-
-/**
- * The color an engine cylinder is drawn in: the work it holds, at its level;
- * trim gray while it holds none (idle, or parked by a limit).
- */
-export function cylinderColor(cyl: Pick<CylinderState, 'status' | 'color' | 'colorRgb'>): IssueColor {
+export function cylinderColor(cyl: Pick<CylinderState, 'color' | 'colorRgb'>): IssueColor {
   if (!cyl.color || !cyl.colorRgb) return { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB };
-  return burnColor({ hex: cyl.color, rgb: cyl.colorRgb }, cylinderBurnLevel(cyl.status));
+  return { hex: cyl.color, rgb: cyl.colorRgb };
 }
 
 /**

@@ -17,7 +17,7 @@ import {
   type WorkView,
 } from "../src/dashboard/shared/work-view.js";
 import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
-import type { DashboardState, LifecyclePair } from "../src/dashboard/store/types.js";
+import type { ActionFailure, DashboardState, LifecyclePair } from "../src/dashboard/store/types.js";
 import { cylinder, makeEvent, stateWith } from "./dashboard-helpers.js";
 
 // Everything the field, the inbox and the screen-reader mirror say about a
@@ -60,25 +60,85 @@ test("the lifecycle has five stages, and each phase of a pair is one of them", (
 
 // ── where a piece of work stands ─────────────────────────────────────────────
 
-test("a line of status names the one thing a piece of work is waiting on", () => {
-  const cases: Array<[string, LifecyclePair, string, string]> = [
-    ["a ready issue", issuePair(1), "waiting for an engine", "plain"],
-    ["a blocked issue", issuePair(1, { blockedByIssueNumbers: [2, 3] }), "blocked by #2, #3", "problem"],
-    ["a claimed issue", issuePair(1, { prPhase: "planning" }), "implementing…", "plain"],
-    ["out of the queue", issuePair(1, { prPhase: "inactive", projectStatus: "Backlog" }), "Backlog", "plain"],
-    ["a draft waiting its turn", prPair(1, 10), "draft — waiting for an engine", "plain"],
-    ["checks running", prPair(1, 10, {}, { checksStatus: "pending" }), "checks running", "progress"],
-    ["checks failing", prPair(1, 10, {}, { checksStatus: "failure" }), "checks failing — an engine fixes them next", "problem"],
-    ["ready for review", prPair(1, 10, { prPhase: "review" }, { draft: false }), "ready for review", "plain"],
-    ["parked for approval", prPair(1, 10, { prPhase: "review", approval: "awaiting-approval" }, { draft: false }), "ready — waiting for your approval", "plain"],
-    ["parked, checks failing", prPair(1, 10, { prPhase: "review", approval: "awaiting-approval" }, { draft: false, checksStatus: "failure" }), "ready — but its checks are failing", "problem"],
-    ["manual", prPair(1, 10, { prPhase: "review", disabled: true }, { draft: false }), "manual — yoke leaves it to you", "plain"],
-    ["merged", prPair(1, 10, { prPhase: "completed" }), "merged", "approved"],
+test("a line of status names the one thing a piece of work is waiting on, and the one signal it is colored for", () => {
+  const cases: Array<[string, LifecyclePair, string, string, string | null]> = [
+    ["a ready issue", issuePair(1), "waiting for an engine", "plain", null],
+    ["a blocked issue", issuePair(1, { blockedByIssueNumbers: [2, 3] }), "blocked by #2, #3", "problem", "blocked"],
+    ["a claimed issue", issuePair(1, { prPhase: "planning" }), "implementing…", "plain", null],
+    ["out of the queue", issuePair(1, { prPhase: "inactive", projectStatus: "Backlog" }), "Backlog", "plain", null],
+    ["a draft waiting its turn", prPair(1, 10), "draft — waiting for an engine", "plain", null],
+    ["checks running", prPair(1, 10, {}, { checksStatus: "pending" }), "checks running", "progress", null],
+    ["checks failing", prPair(1, 10, {}, { checksStatus: "failure" }), "checks failing — an engine fixes them next", "problem", "error"],
+    ["ready for review", prPair(1, 10, { prPhase: "review" }, { draft: false }), "ready for review", "plain", "review"],
+    ["parked for approval", prPair(1, 10, { prPhase: "review", approval: "awaiting-approval" }, { draft: false }), "ready — waiting for your approval", "plain", "review"],
+    ["parked, checks failing", prPair(1, 10, { prPhase: "review", approval: "awaiting-approval" }, { draft: false, checksStatus: "failure" }), "ready — but its checks are failing", "problem", "error"],
+    ["approved", prPair(1, 10, { prPhase: "review", approval: "approved" }, { draft: false }), "approved — waiting for a free engine to squash-merge it", "approved", "approved"],
+    ["manual", prPair(1, 10, { prPhase: "review", disabled: true }, { draft: false }), "manual — yoke leaves it to you", "plain", null],
+    ["merged", prPair(1, 10, { prPhase: "completed" }), "merged", "plain", null],
   ];
-  for (const [description, pair, text, tone] of cases) {
+  for (const [description, pair, text, tone, signal] of cases) {
     const { status } = only(pair);
-    assert.deepEqual({ text: status.text, tone: status.tone }, { text, tone }, description);
+    assert.deepEqual({ text: status.text, tone: status.tone, signal: status.signal }, { text, tone, signal }, description);
   }
+});
+
+test("an approval's line carries its own signal: asked for is a review, refused an error, recorded an approval — until it merges", () => {
+  const parked = prPair(1, 10, { prPhase: "review", approval: "awaiting-approval", repo: "o/a" }, { draft: false });
+  const press = { repo: "o/a", pullRequestNumber: 10, atMs: NOW - 5, sent: true };
+  const answer = (state: "refused" | "approved") => new Map([["o/a#10", {
+    repo: "o/a", pullRequestNumber: 10, requestedAt: "", state, reason: "its checks are failing", emittedAt: "", receivedAtMs: NOW,
+  }]]);
+
+  const refused = only(parked, { approvalPresses: new Map([["o/a#10", press]]), approvals: answer("refused") });
+  assert.equal(refused.status.brief, "not approved");
+  assert.equal(refused.status.signal, "error", "a refusal is something gone wrong");
+
+  const recorded = only(parked, { approvalPresses: new Map([["o/a#10", press]]), approvals: answer("approved") });
+  assert.equal(recorded.status.signal, "approved", "an approval going through");
+
+  const sent = only(parked, { approvalPresses: new Map([["o/a#10", { ...press, atMs: NOW }]]) });
+  assert.equal(sent.status.text, "queued — sent to yoke…");
+  assert.equal(sent.status.signal, null, "no answer yet: nothing has happened to say");
+
+  const merged = only(parked, { approvalPresses: new Map([["o/a#10", { ...press, merged: true }]]) });
+  assert.match(merged.status.text, /^merged/);
+  assert.equal(merged.status.signal, null, "merged is neutral, however it got there");
+});
+
+test("an action that failed on a piece of work is an error on its line until an engine takes it up again", () => {
+  const failure: ActionFailure = {
+    key: "o/a#pr-10", repo: "o/a", actionType: "self-review", issueNumber: null, prNumber: 10,
+    issueTitle: null, prTitle: "PR 10", error: "boom", atMs: NOW - MINUTE, engineIndex: 0,
+  };
+  const failed = (pair: LifecyclePair, overrides: Partial<DashboardState> = {}) =>
+    stateWith([pair], "o/a", { failures: new Map([[failure.key, failure]]), ...overrides });
+  const state = failed(prPair(7, 10, { repo: "o/a" }));
+  const [work] = workViews(state, NOW);
+  assert.ok(work?.failure, "the work knows its last action failed");
+  assert.equal(work.status.text, "reviewing failed — yoke retries it");
+  assert.equal(briefStatus(work.status), "reviewing failed");
+  assert.equal(work.status.signal, "error");
+  assert.equal(workGlyph(work), "failing", "and its mark says so");
+
+  const [dark] = workViews({ ...state, shutdownRequested: true }, NOW);
+  assert.equal(dark?.status.text, "reviewing failed", "shut down, nothing retries it");
+  assert.equal(dark?.status.signal, "error", "an error does not go cold");
+
+  const [stale] = workViews(state, NOW + 2 * 60 * MINUTE);
+  assert.equal(stale?.failure, null, "once it is too old to show, it is not an error any more");
+  assert.equal(stale?.status.signal, null);
+
+  const [merged] = workViews(failed(prPair(7, 10, { repo: "o/a", prPhase: "completed" })), NOW);
+  assert.equal(merged?.status.text, "merged", "merged outranks a failure on the way");
+
+  const [other] = workViews(failed(prPair(8, 11, { repo: "o/a" })), NOW);
+  assert.equal(other?.failure, null, "another PR's failure is not this one's");
+
+  const [taken] = workViews(failed(prPair(7, 10, { repo: "o/a" }), {
+    cylinders: [cylinder({ repo: "o/a", issueNumber: null, prNumber: 10, actionType: "address-failing-checks" })],
+  }), NOW);
+  assert.equal(taken?.failure, null, "an engine on it again: burning, not an error");
+  assert.equal(taken?.status.signal, null);
 });
 
 test("a status that says only what its stratum says is marked routine, so a list can leave it unsaid", () => {
@@ -135,7 +195,7 @@ test("work an engine is on says what the engine is doing to it", () => {
   assert.equal(work?.status.text, "reviewing PR #70");
   assert.equal(work?.engine?.index, 1);
   assert.equal(work?.level, "burning");
-  assert.equal(work?.color.hex, issueColor(7).hex, "at full saturation");
+  assert.equal(work?.color.hex, issueColor(7).hex, "burning: in its own hue");
 });
 
 test("shut down, waiting work reads shut down rather than waiting for an engine that is not coming (#268)", () => {
@@ -170,12 +230,13 @@ test("with one project the links come from the dashboard's own repository", () =
   assert.equal(work?.issueUrl, "https://github.com/acme/app/issues/4");
 });
 
-test("the color of a piece of work is its issue's hue at its burn level", () => {
+test("below the burning stratum a piece of work is drawn in gray, and keeps its issue's hue to say which it is", () => {
   const blocked = only(issuePair(9, { blockedByIssueNumbers: [8] }));
   assert.equal(blocked.level, "waiting");
-  assert.equal(blocked.hue.hex, issueColor(9).hex);
+  assert.equal(blocked.hue.hex, issueColor(9).hex, "which issue it is");
   assert.equal(blocked.color.hex, burnColor(issueColor(9), "waiting").hex);
-  assert.notEqual(blocked.color.hex, NEUTRAL_COLOR);
+  assert.equal(blocked.color.hex, NEUTRAL_COLOR, "drawn in hue-free gray");
+  assert.equal(blocked.status.signal, "blocked", "and colored only for its state");
 });
 
 test("an engine's work is on the field even when GitHub's open lists no longer carry it", () => {
@@ -248,11 +309,11 @@ test("an engine running an action says what, on what, and for how long", () => {
   assert.equal(view.hasWork, true);
 });
 
-test("an engine whose action has ended says how it ended, in its work's color gone cold", () => {
+test("an engine whose action has ended says how it ended, still in its work's hue while it holds it", () => {
   const c = issueColor(7);
   const done = engineView(cylinder({ color: c.hex, colorRgb: c.rgb, status: "done", actionType: "squash-merge", prNumber: 75 }), NOW);
   assert.equal(done.line, "✓ merged PR #75");
-  assert.equal(done.color.hex, burnColor(c, "cold").hex);
+  assert.equal(done.color.hex, c.hex, "an engine keeps the hue for as long as the work is on it (#286)");
 
   const failed = engineView(cylinder({ color: c.hex, colorRgb: c.rgb, status: "error", actionType: "self-review", prNumber: 119 }), NOW);
   assert.equal(failed.line, "✗ reviewing PR #119 failed");

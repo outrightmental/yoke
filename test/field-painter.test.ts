@@ -10,8 +10,9 @@ import { Painter, type Surface } from "../src/dashboard/field/painter.js";
 import { settleSpring, spring, SPRING_OMEGA, stepSpring } from "../src/dashboard/field/spring.js";
 import { mono, sans, TextFitter } from "../src/dashboard/field/text.js";
 import { buildInbox } from "../src/dashboard/shared/inbox.js";
+import type { Rgb } from "../src/dashboard/field/palette.js";
 import { issueColor } from "../src/dashboard/shared/issue-colors.js";
-import { workViews } from "../src/dashboard/shared/work-view.js";
+import { briefStatus, workViews } from "../src/dashboard/shared/work-view.js";
 import { dashboardReducer, FAILURE_SHOW_MS, initialState } from "../src/dashboard/store/dashboard-store.js";
 import type { CylinderState, DashboardState, LifecyclePair } from "../src/dashboard/store/types.js";
 import {
@@ -22,6 +23,7 @@ import {
   flatten,
   makeEvent,
   paintField,
+  parseRgba,
   stateWith,
   tokensPalette,
   triplet,
@@ -285,13 +287,14 @@ test("the painter: every stratum is headed by its level and how much is in it", 
   assert.ok(painted.texts.includes("nothing coming"));
 });
 
-test("the painter: a line of work is its number in its color, its title, and where it stands", () => {
+test("the painter: a line of work is its number, its title, and where it stands", () => {
   const painted = paint(busyState());
   const work = (n: number) => workViews(busyState(), NOW).find((candidate) => candidate.number === n)!;
 
-  assert.equal(painted.inkOf("#11")?.rgb, work(11).color.rgb, "the number carries the work's color at its level");
+  assert.equal(painted.inkOf("#11")?.rgb, work(11).color.rgb, "the number is in the work's color at its level");
+  assert.equal(painted.inkOf("#11")?.rgb, triplet(PALETTE.trimDim), "which, below the reactors, is gray (#286)");
   assert.ok(painted.texts.includes("Cache tiles by content hash"));
-  assert.equal(painted.inkOf("blocked by #9")?.rgb, triplet(PALETTE.coral), "a block is a problem");
+  assert.equal(painted.inkOf("blocked by #9")?.rgb, triplet(PALETTE.orange), "a block is orange");
   assert.equal(painted.inkOf("checks running")?.rgb, triplet(PALETTE.trimBright));
   assert.ok(painted.texts.includes("awaiting approval"), "in a word or two on a one-line row: the sentence is on its inbox card");
   assert.ok(painted.texts.includes("Backlog"));
@@ -299,6 +302,190 @@ test("the painter: a line of work is its number in its color, its title, and whe
   // Heat is brightness too: the hotter the stratum, the firmer the ink.
   assert.ok(painted.inkOf("Snap the compass to north")!.alpha > painted.inkOf("Cache tiles by content hash")!.alpha);
   assert.ok(painted.inkOf("Cache tiles by content hash")!.alpha > painted.inkOf("Paginate the digest")!.alpha);
+});
+
+// ── colour below the reactors (#286) ────────────────────────────────────────
+
+/** WCAG contrast of `fill` ("rgba(r,g,b,a)") laid over the gray `ground`. */
+function contrastOver(fill: string, ground: number): number {
+  const m = /^rgba\((\d+),(\d+),(\d+),([\d.]+)\)$/.exec(fill);
+  assert.ok(m, fill);
+  const a = Number(m[4]);
+  const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const lum = (rgb: number[]) => 0.2126 * lin(rgb[0]! / 255) + 0.7152 * lin(rgb[1]! / 255) + 0.0722 * lin(rgb[2]! / 255);
+  const over = [1, 2, 3].map((i) => ground + (Number(m[i]) - ground) * a);
+  const [hi, lo] = [lum(over), lum([ground, ground, ground])].sort((x, y) => y - x);
+  return (hi! + 0.05) / (lo! + 0.05);
+}
+
+test("the painter: below the reactors every other line lies on a band, counted down each column", () => {
+  const pairs = Array.from({ length: 7 }, (_, i) => issue(100 + i, `Queued ${i}`))
+    .concat(Array.from({ length: 3 }, (_, i) => issue(200 + i, `Blocked ${i}`, { blockedByIssueNumbers: [100] })));
+  const painted = paint(stateWith(pairs, "o/a", { cylinders: [idle(1)] }), { viewport: { width: 1600 } });
+  const headers = painted.layout.nodes.filter((node) => node.kind === "header");
+  const bandsOf = (level: string) => {
+    const header = headers.find((node) => node.kind === "header" && node.level === level);
+    assert.ok(header && header.kind === "header");
+    return header.bands;
+  };
+  assert.deepEqual(bandsOf("burning"), [], "the reactors have their hue, and no bands");
+
+  // Seven lines in two columns are four and three: the second and fourth of
+  // the first, and the second of the next.
+  const queued = painted.layout.nodes.filter((node) => node.kind === "work" && node.level === "queued");
+  const columns = [...new Set(queued.map((node) => node.rect.x))];
+  assert.equal(columns.length, 2);
+  const banded = (node: (typeof queued)[number]) => bandsOf("queued").some((band) => band.x === node.rect.x && band.y === node.rect.y);
+  for (const x of columns) {
+    const column = queued.filter((node) => node.rect.x === x).sort((a, b) => a.rect.y - b.rect.y);
+    column.forEach((node, i) => assert.equal(banded(node), i % 2 === 1, `line ${i} of its column`));
+  }
+  assert.equal(bandsOf("waiting").length, 1, "and the same in every stratum below");
+
+  // Each band is painted once, as a soft lift of the trim, behind its line.
+  const bands = painted.shapes.filter((shape) => shape.boxes.length === 1 && parseRgba(shape.fill)?.rgb === triplet(PALETTE.trimBright));
+  assert.equal(bands.length, bandsOf("queued").length + bandsOf("waiting").length);
+  for (const band of bands) assert.ok(parseRgba(band.fill)!.alpha < 0.05, "felt more than seen");
+  const ground = PALETTE.bg[0];
+  const lifted = Math.round(ground + (PALETTE.trimBright[0] - ground) * parseRgba(bands[0]!.fill)!.alpha);
+  const step = contrastOver(`rgba(${lifted},${lifted},${lifted},1)`, ground);
+  assert.ok(step > 1.04 && step < 1.1, `a band is a step off the ground (${step.toFixed(3)}:1)`);
+  const firstBand = painted.calls.findIndex((call) => call.method === "roundRect");
+  const firstWord = painted.calls.findIndex((call) => call.method === "fillText" && call.args[0] === "Queued 0");
+  assert.ok(firstBand < firstWord, "under the words");
+});
+
+test("the painter: a band belongs to its stratum, so it moves with the stratum and not with the lines sliding past it", () => {
+  const before = stateWith([issue(1, "A"), issue(2, "B"), issue(3, "C"), issue(4, "D")], "o/a", { cylinders: [idle(1)] });
+  const after = stateWith([issue(2, "B"), issue(3, "C"), issue(4, "D")], "o/a", { cylinders: [idle(1)] });
+  const viewport = { width: 700, height: 900, railWidth: 0, lampWidth: 0 };
+  const first = layoutField(fieldModel(before, NOW), viewport);
+  const second = layoutField(fieldModel(after, NOW), viewport);
+  const header = (layout: FieldLayout) => layout.nodes.find((node) => node.id === "header:queued");
+  const bandYs = (layout: FieldLayout) => {
+    const node = header(layout);
+    return node && node.kind === "header" ? node.bands.map((band) => band.y) : [];
+  };
+  assert.deepEqual(bandYs(second), bandYs(first).slice(0, 1), "#1 left: the lines close up, and the band under the second stays where it was");
+
+  const animator = new Animator();
+  animator.sync(first, 0, true);
+  animator.sync(second, 0);
+  animator.step(0.05);
+  const placed = animator.placed();
+  const line = placed.find((p) => p.node.id === "work:o/a#3")!;
+  const head = placed.find((p) => p.node.id === "header:queued")!;
+  assert.ok(line.y > line.node.rect.y, "#3 is still sliding up");
+  assert.equal(head.y, head.node.rect.y, "while its stratum, and so its bands, stay put");
+});
+
+test("the painter: below the reactors a line keeps its issue's hue in one mark — the one its track has reached", () => {
+  const state = busyState();
+  const painted = paint(state);
+  for (const work of workViews(state, NOW).filter((candidate) => !candidate.engine)) {
+    const node = painted.layout.nodes.find((candidate) => candidate.id === `work:${work.key}`)!;
+    const marks = painted.shapes.filter((shape) => parseRgba(shape.fill)?.rgb === work.hue.rgb);
+    assert.equal(marks.length, 1, `#${work.number}: one mark of its hue`);
+    const [cx, cy, r] = marks[0]!.arcs[0]!;
+    const rowCy = node.kind === "work" && node.lines === 2 ? node.rect.y + 15 : node.rect.y + node.rect.h / 2;
+    assert.equal(cx, painted.layout.nodes.includes(node) ? trackMarkX(node.rect.x + 2, work.stage, { pitch: 8, dot: 2.6 }) : NaN, `#${work.number} at its stage`);
+    assert.equal(cy, rowCy);
+    assert.equal(r, 2.6);
+  }
+  // The reactor is in the burning stratum: its hue is everywhere on it.
+  assert.equal(painted.inkOf("#7")?.rgb, issueColor(7).rgb);
+  assert.equal(painted.inkOf("BUILD")?.rgb, issueColor(7).rgb);
+});
+
+test("the painter: a line's one signal colors its status and the mark at its end, at full strength in every stratum", () => {
+  const failure = {
+    key: "o/a#pr-90", repo: "o/a", actionType: "start-implementation", issueNumber: 12, prNumber: 90,
+    issueTitle: null, prTitle: null, error: "boom", atMs: NOW - 60_000, engineIndex: 0,
+  };
+  const state = stateWith([
+    issue(11, "Cache tiles", { blockedByIssueNumbers: [9] }),
+    { issue: { number: 12, title: "Failed once", state: "open" }, pr: { number: 90, title: "Failed once", state: "open", draft: true, checksStatus: "success" }, prPhase: "active" },
+    { issue: { number: 13, title: "Failing checks", state: "open" }, pr: { number: 91, title: "Failing checks", state: "open", draft: true, checksStatus: "failure" }, prPhase: "active" },
+    { issue: { number: 14, title: "For review", state: "open" }, pr: { number: 92, title: "For review", state: "open", draft: false, checksStatus: "success" }, prPhase: "review" },
+    { issue: { number: 15, title: "Approved", state: "open" }, pr: { number: 93, title: "Approved", state: "open", draft: false, checksStatus: "success" }, prPhase: "review", approval: "approved" },
+    { issue: { number: 16, title: "Merged", state: "open" }, pr: { number: 94, title: "Merged", state: "open", checksStatus: "success" }, prPhase: "completed" },
+  ], "o/a", { cylinders: [idle(1)], failures: new Map([[failure.key, failure]]) });
+  const painted = paint(state);
+  const expected: Array<[string, Rgb | null]> = [
+    ["blocked by #9", PALETTE.orange],
+    ["implementing failed", PALETTE.red],
+    ["checks failing", PALETTE.red],
+    ["ready for review", PALETTE.yellow],
+    ["approved", PALETTE.green],
+    ["merged", null],
+  ];
+  for (const [text, color] of expected) {
+    // A roomy line says the whole sentence, a tight one the first words of it.
+    const fill = painted.fills.find((candidate) => candidate.text.startsWith(text));
+    const ink = fill ? parseRgba(fill.fill) : undefined;
+    assert.ok(ink, `"${text}" is said`);
+    if (color === null) {
+      assert.equal(ink.rgb, triplet(PALETTE.trimDim), `"${text}" is neutral`);
+    } else {
+      assert.equal(ink.rgb, triplet(color), `"${text}"`);
+      assert.equal(ink.alpha, 1, `"${text}" does not cool with its stratum`);
+    }
+  }
+  // The mark at the end of each line is drawn in its line's signal, and a
+  // line with none has a gray one.
+  const pairs = state.lastLifecyclePairs;
+  const saturatedStrokes = (only: LifecyclePair) => {
+    const one = paint(stateWith([only], "o/a", { cylinders: [idle(1)], failures: state.failures }));
+    return new Set(one.strokes.map((stroke) => parseRgba(stroke)?.rgb).filter((rgb): rgb is string => {
+      if (!rgb) return false;
+      const [r, g, b] = rgb.split(",");
+      return !(r === g && g === b);
+    }));
+  };
+  const byNumber = (n: number) => pairs.find((pair) => pair.issue?.number === n)!;
+  assert.deepEqual([...saturatedStrokes(byNumber(11))], [triplet(PALETTE.orange)], "a barred circle, orange");
+  assert.deepEqual([...saturatedStrokes(byNumber(12))], [triplet(PALETTE.red)], "a failed action's cross, red");
+  assert.deepEqual([...saturatedStrokes(byNumber(13))], [triplet(PALETTE.red)], "failing checks' cross, red");
+  assert.deepEqual([...saturatedStrokes(byNumber(15))], [triplet(PALETTE.green)], "an approval's check, green");
+  assert.deepEqual([...saturatedStrokes(byNumber(16))], [], "a merge's check, gray");
+});
+
+test("the painter: below the reactors every word clears its contrast floor on the ground", () => {
+  const state = busyState({ cylinders: [idle(1), idle(2)] });
+  const painted = paint(state);
+  const ground = PALETTE.bg[0];
+  for (const node of painted.layout.nodes) {
+    if (node.kind !== "work" || node.mode !== "row") continue;
+    const { work } = node;
+    for (const [text, floor] of [[work.title, 4.5], [`#${work.number}`, 4.5]] as const) {
+      const fill = painted.fills.find((candidate) => candidate.text === text)?.fill;
+      assert.ok(fill, text);
+      const ratio = contrastOver(fill, ground);
+      assert.ok(ratio >= floor, `${node.level}: "${text}" at ${ratio.toFixed(2)}:1`);
+    }
+    const status = briefStatus(work.status) || work.status.text;
+    const fill = painted.fills.find((candidate) => candidate.text === status)?.fill;
+    if (!fill) continue;
+    const ratio = contrastOver(fill, ground);
+    const floor = work.status.signal ? 4.5 : 3;
+    assert.ok(ratio >= floor, `${node.level}: status "${status}" at ${ratio.toFixed(2)}:1`);
+  }
+});
+
+test("the painter: a reactor keeps its hue while its work has gone dark, and a tether keeps the hue of its work (#286)", () => {
+  const dark = busyState({ shutdownRequested: true });
+  const frozen = new Map(workViews(busyState(), NOW).map((work) => [work.key, work.activity] as const));
+  const painted = paint({ ...dark, frozenPillActivity: frozen });
+  assert.equal(painted.inkOf("#7")?.rgb, issueColor(7).rgb, "its engine is still finishing: the reactor keeps the hue");
+
+  const state = busyState();
+  const cards = buildInbox({
+    works: workViews(state, NOW), failures: [], keepAwake: "awake", dismissed: new Set(), arrivals: new Map(), nowMs: NOW, failureShowMs: FAILURE_SHOW_MS,
+  });
+  assert.equal(cards[0]?.color?.hex, issueColor(10).hex, "the card is edged in the work's hue, though its line is gray");
+  const tethered = paint(state, { cards, anchors: new Map([["approval:o/a#81", { x: 1100, y: 120 }]]), viewport: { railWidth: 340 } });
+  const dot = tethered.shapes.at(-1)!;
+  assert.equal(parseRgba(dot.fill)?.rgb, issueColor(10).rgb, "and so is the tether that joins them");
 });
 
 test("the painter: a status that says only what its stratum says is left unsaid on a one-line row", () => {

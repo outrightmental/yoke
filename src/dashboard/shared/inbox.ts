@@ -51,7 +51,8 @@ export interface InboxCard {
   source: InboxSource;
   /** The work on the field this card is about (`WorkView.key`), or null. */
   workKey: string | null;
-  /** The work's color at its burn level; null for a card about no work. */
+  /** The work's own hue, whatever its level, so the card can be matched to
+   *  the work on the field (#286); null for a card about no work. */
   color: IssueColor | null;
   /** How the card is accented: by its work's color, or as a warning or an
    *  alarm in the status colors. */
@@ -133,7 +134,7 @@ function approvalCards(works: readonly WorkView[]): InboxCard[] {
       id: `approval:${approveKey(target)}`,
       source: 'approval',
       workKey: work.key,
-      color: work.color,
+      color: work.hue,
       accent: 'work',
       eyebrow: button ? APPROVAL_EYEBROWS[button.step] : 'Approval',
       repo: work.repo,
@@ -160,7 +161,7 @@ function reviewCards(works: readonly WorkView[]): InboxCard[] {
       id: `review:${work.key}`,
       source: 'review',
       workKey: work.key,
-      color: work.color,
+      color: work.hue,
       accent: 'work',
       eyebrow: 'Ready for your review',
       repo: work.repo,
@@ -190,7 +191,7 @@ function manualCards(works: readonly WorkView[]): InboxCard[] {
       id: `manual:${work.key}`,
       source: 'manual',
       workKey: work.key,
-      color: work.color,
+      color: work.hue,
       accent: 'work',
       eyebrow: 'Manual — yours',
       repo: work.repo,
@@ -248,7 +249,7 @@ function failureCards(
       id: failureCardId(failure),
       source: 'failure',
       workKey: work?.key ?? null,
-      color: work?.color ?? null,
+      color: work?.hue ?? null,
       accent: 'alarm',
       eyebrow: `Failed ${actionVerb(failure.actionType)}`,
       repo: failure.repo,
@@ -415,7 +416,7 @@ function inspectWork(work: WorkView): Inspection {
   if (prTitle && work.pair.issue && prTitle !== work.pair.issue.title) body.push(`PR: ${prTitle}`);
   return {
     workKey: work.key,
-    color: work.color,
+    color: work.hue,
     eyebrow: [LEVEL_WORDS[work.level], STAGES[work.stage]].filter(Boolean).join(' · '),
     repo: work.repo,
     title: work.title,
