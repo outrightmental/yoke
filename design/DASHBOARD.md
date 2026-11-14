@@ -16,9 +16,9 @@ The README's [Dashboard](../README.md#dashboard) section says what each shows. T
 | Level | What it is | How it is drawn | In colour |
 | --- | --- | --- | --- |
 | `burning` | an engine is running an action on it | a *reactor*: the engine's ring, and the work in large type beside it | the work's own hue |
-| `queued` | Yoke works it next | a line, whole, at the head of its project's group | gray, banded; a status signal if it has one |
-| `waiting` | on someone else first | a line at 40% opacity, after its project's queued work | gray, banded; a status signal, at full strength, if it has one |
-| `cold` | nothing is coming | a line of smaller, dimmer type at 40% opacity, last in its project | gray, banded; a status signal, at full strength, if it has one |
+| `queued` | Yoke works it next | a line, whole, at the head of its project's group | gray, banded; its dot of hue; a status signal if it has one |
+| `waiting` | on someone else first | a line at 40% opacity, after its project's queued work | gray, banded; its dot of hue and a status signal, if it has one, at full strength |
+| `cold` | nothing is coming | a line of smaller, dimmer type at 40% opacity, last in its project | gray, banded; its dot of hue and a status signal, if it has one, at full strength |
 
 Nothing has a box of fixed size. A project with no work below the reactors takes no room at all, not even a heading. A group is never set in more columns than it has work for. And when the window cannot hold everything, the whole field steps down to a denser set of sizes (`DENSITIES` in `field/layout.ts`) before it asks to be scrolled.
 
@@ -30,8 +30,9 @@ Decisions, and why:
 
 - **The groups are in the order of the projects' names.** Nothing that happens to a project's work can move its group past another, so the only thing that moves a group is the work above it growing or shrinking. A group sorted by heat would jump past its neighbours whenever one piece of work changed level, and every line in both would move with it.
 - **Within a project, queued work comes first, then waiting, then cold** (`compareProjectWork` in `shared/work-view.ts`), each level in `compareWork`'s order. What yoke works next still leads, as it did when it had a stratum of its own.
-- **The level is said by weight, not by place.** A waiting line is drawn at 40% opacity (`DIMMED_OPACITY`, `burnOpacity` in `shared/burn-level.ts`, carried on `WorkView.opacity`) — its number, title, status, track and gray glyph — so it recedes against the queued work around it. Cold work shares the group, so it is dimmed the same; its smaller, dimmer type (`ROW_TYPE` and `INK` in `field/painter.ts`) keeps it the faintest of the three, where drawn whole it would have stood out above the waiting lines.
-- **A signal is not dimmed.** An alarm does not cool (#286): a dimmed line's red, orange, yellow or green status, and the glyph in the same colour, are drawn at full strength. A PR waiting for your approval recedes; the yellow saying so does not.
+- **The level is said by weight, not by place.** A waiting line is drawn at 40% opacity (`DIMMED_OPACITY`, `burnOpacity` in `shared/burn-level.ts`, carried on `WorkView.opacity`) — its number, title, neutral status, the gray of its track and its gray glyph — so it recedes against the queued work around it. Cold work shares the group, so it is dimmed the same; its smaller, dimmer type (`ROW_TYPE` and `INK` in `field/painter.ts`) keeps it the faintest of the three, where drawn whole it would have stood out above the waiting lines.
+- **A signal is not dimmed.** An alarm does not cool (#286): a dimmed line's red, orange, yellow or turquoise status, and the glyph in the same colour, are drawn at full strength. A PR waiting for your approval recedes; the yellow saying so does not.
+- **Nor is the dot of its issue's hue.** It is what a piece of work is tracked by as it cools (#286), so it is drawn whole on a dimmed line too — see "Which issue", below.
 - **A project's lines are all one size**: that of the hottest level it holds — queued lines throughout a group with any queued work, the waiting size for one whose work waits at most, small print for one nothing is coming for. That keeps a group's bands evenly ruled, and means a line that changes level fades and slides to its new place rather than growing or shrinking as well.
 - **A line does not repeat its project.** The heading above it says it. A reactor still names its project when several share the dashboard, since the burning stratum is not grouped.
 - **The heading is not a level, so the markup says each line's level in words** — `· waiting` at the end of the item — under a heading with the project's whole name (see Accessibility).
@@ -64,21 +65,31 @@ Decisions about the bands, and why:
 
 Each line below the reactors keeps its issue's hue in exactly one place: the mark its track has reached — the dot on *issue · build · draft · ready · merged* that says how far along it is. The marks behind it, and the line joining them, are gray. It is the same hue as the work's reactor, its inbox card and its tether, so a piece of work can be followed as it cools from a reactor into its project's group below, and the ring that spreads from it when its state changes is already drawn in that hue.
 
+The dot is drawn whole at every level, on a line dimmed to 40% as well (`IDENTITY_ALPHA` in `field/painter.ts`, `markAlpha` on the track); the rest of the track is dimmed with its line. Following a piece of work as it cools is the dot's whole job, and cooling is exactly when it is dimmed: drawn at 40%, 223 of the 360 hues an issue can have fall under the 3:1 a mark needs on the ground — a blue issue's dot to 1.3:1 — where whole only 12 do, the bluest at 2.8:1. Drawn whole it is still five pixels across, so a group of dimmed lines reads as a column of small dots of colour beside gray words, not as a rainbow.
+
 A hue can happen to be close to a signal's — an issue's red mark beside an error — so the two are kept apart by place and shape: an issue's mark is always a 5-pixel dot on the track at the left of the line, and a signal is always words and a glyph at its right-hand end.
 
 ### What state: the signals
 
-A line has at most one signal, worked out with its status in `workStatus`, so the words always say what the colour means. It colours the status and the glyph at the end of the line, and nothing else; the number, the title and the track stay gray. A signal is drawn at full strength at every level, on a line dimmed to 40% too (#290) — an alarm does not cool — and is never the only way it is said: there is always a glyph's shape and words.
+A line has at most one signal, worked out with its status in `workStatus`, so the words always say what the colour means. It colours the status and the glyph at the end of the line, and nothing else; the number, the title and the track stay gray but for the track's one dot of hue. A signal is drawn at full strength at every level, on a line dimmed to 40% too (#290) — an alarm does not cool — and is never the only way it is said: there is always a glyph's shape and words.
 
 | Signal | Colour | When |
 | --- | --- | --- |
 | `error` | red, `--color-red` | its last action failed and no engine has taken it up again (`WorkView.failure`: until an engine takes it up again, or for 90 minutes, `FAILURE_SHOW_MS` — dismissing its inbox card does not clear it, since nothing has answered the error yet); its checks are failing; its approval was refused or failed |
 | `blocked` | orange, `--color-orange` | it is blocked by other issues — a hold, like a usage limit or a shutdown, which are orange too |
 | `review` | yellow, `--color-yellow` | it waits on a person: ready for review, or parked for an approval Yoke is asking for |
-| `approved` | green, `--color-green` | an approval going through: approved, and waiting for or undergoing its merge |
+| `approved` | turquoise, `--color-turquoise` | an approval going through: approved, and waiting for or undergoing its merge |
 | none | gray | merged; `manual`; out of the queue; checks running; waiting for an engine; implementing; an approval sent and not yet answered; shut down |
 
-Red, orange and yellow were chosen for the three states the field most needs to be seen (#286). Merged and manual are outcomes nobody has to act on here, so they stay neutral. Green is the one signal kept from before: it already meant an approval going through — the Approve button, and the point that travels back along a tether once a person has acted — and an approved PR waiting for its merge is exactly that. Coral is left to the inbox, for a card's problem line. The next state that earns a colour of its own takes blue or turquoise, rather than lending it one of these.
+Red for an error, orange for a block and yellow for a PR awaiting review are the three the issue asked for (#286): the states the field most needs to be seen. Merged and manual are outcomes nobody has to act on here, so they stay neutral, as the issue asked too. Every further state was to take blue or turquoise next, and an approval going through is one: an approved PR waiting for its merge is worth a glance — your press took, and the merge is coming — but it is not merged yet, and is not an alarm.
+
+So it takes turquoise, a token of its own (`--color-turquoise`), and not the green the dashboard used for it before. Why turquoise, and why not green:
+
+- **Green stays the inbox's.** It is the Approve button, and the point that travels back along a tether once a person has acted: the person's act, where the turquoise line is the state that act put the work in. No line below the reactors is drawn in green — the green there is only ever a tether, which is the inbox's, reaching a line from its card — so the lines of the field's lower section carry the four signal colours the issue asked for and no other.
+- **Turquoise before blue.** Blue is the darkest of the hues: a pure blue is 2.3:1 on this ground, and the issue palette's own blue only 2.8:1, so a blue signal has to be lightened toward azure before it can be read at all. Turquoise (`#00e0e0`) is 11.7:1 on the ground and 11.1:1 on a band as it is.
+- **As far from its neighbours as a turquoise goes.** In CIEDE2000 it is 26.6 from the inbox's green and 44.2 from yellow, where a greener turquoise (`#00e5d0`) was 19.7 and 42.0. Simulated for red–green colour blindness it stays clear of yellow (36 to 45) and of orange and red (38 to 44). For tritanopia it is all but the same as green (6.1) — but no line is ever green, and every signal also says itself in a glyph and in words.
+
+Blue is left for the next state that earns a colour. Coral is left to the inbox, for a card's problem line.
 
 ### The grays, and their contrast
 
@@ -90,9 +101,9 @@ Every gray is one of the trim tokens at an alpha over the ground. Each was set t
 | waiting | 7.5 / 7.2 | 5.3 / 5.0 | 3.4 / 3.3 | 5.8 / 5.7 |
 | cold | 4.8 / 4.8 | 4.8 / 4.6 | 3.1 / 3.1 | 5.2 / 5.2 |
 
-| Signal | red | orange | yellow | green |
+| Signal | red | orange | yellow | turquoise |
 | --- | --- | --- | --- | --- |
-| on the ground / on a band | 4.9 / 4.7 | 6.6 / 6.2 | 12.8 / 12.0 | 14.4 / 13.6 |
+| on the ground / on a band | 4.9 / 4.7 | 6.6 / 6.2 | 12.8 / 12.0 | 11.7 / 11.1 |
 
 A glyph with no signal is 5.7:1, and the marks behind a track's reached mark 3.4:1. To meet those floors a cold title went from 0.46 to 0.54 of `--trim-bright` (it was 3.8:1), and a neutral status from 0.66 and 0.5 to 0.7 and 0.66 of `--trim-dim` at the waiting and cold levels (the cold one was 2.3:1). The gray number is also steadier than the hue it replaces: a line's number used to be anywhere from 2.8:1 (a blue issue) to 18:1 (a yellow one), depending only on its issue number.
 
@@ -112,7 +123,7 @@ DashboardState ──► workViews / engineViews / vitals      shared/   what ea
                         Painter                          field/painter.ts   what it looks like
 ```
 
-Every step above the painter is a plain function of the store's state, the clock and the size of the window. None of them touches a canvas, the DOM, or a font, which is why all of them are tested in Node: `test/work-view.test.ts`, `test/inbox.test.ts`, `test/field-layout.test.ts`. The painter is tested too, against a canvas that draws nothing and remembers what it was asked to draw (`fakeCanvas` in `test/dashboard-helpers.ts`), so "the status of a blocked issue is drawn in coral" is an assertion, not a screenshot.
+Every step above the painter is a plain function of the store's state, the clock and the size of the window. None of them touches a canvas, the DOM, or a font, which is why all of them are tested in Node: `test/work-view.test.ts`, `test/inbox.test.ts`, `test/field-layout.test.ts`. The painter is tested too, against a canvas that draws nothing and remembers what it was asked to draw (`fakeCanvas` in `test/dashboard-helpers.ts`), so "the status of a blocked issue is drawn in orange" is an assertion, not a screenshot.
 
 ### One description of each piece of work
 
@@ -196,7 +207,7 @@ One press merges a pull request, so the list must never be what chose which.
 
 ### Tethers
 
-A card about a piece of work is edged in the work's own hue, at whatever level the work is, and joined to it by a line in the same hue. The line leaves along the rule under the work's own line, runs out to a gutter between the field and the inbox, turns up or down the gutter to the height of the card, and goes in — so it never crosses text. Each tether takes its own lane in the gutter. A point travels along it: towards the card while the work waits on a person, and back, in green, once that person has acted.
+A card about a piece of work is edged in the work's own hue, at whatever level the work is, and joined to it by a line in the same hue. The line leaves along the rule under the work's own line, runs out to a gutter between the field and the inbox, turns up or down the gutter to the height of the card, and goes in — so it never crosses text. Each tether takes its own lane in the gutter. A point travels along it: towards the card while the work waits on a person, and back, in green, once that person has acted. Green is the inbox's colour for that act; the line it reaches is turquoise while the approval goes through (see "What state: the signals").
 
 The inbox is DOM and the field is canvas, so the inbox reports where its cards are (`inbox-anchors`) and the field draws to those points.
 

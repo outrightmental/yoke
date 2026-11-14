@@ -29,14 +29,19 @@
 
   /* Status signals: the only saturated colors that are not an issue's. They
      mark an outcome or an alarm, and are never used for trim. Below the
-     burning stratum they are the only color a line of work has (issue #286):
-     red an error (a failed action, failing checks, a refused approval),
-     orange something held up (a block, a hold, a shutdown), yellow waiting
-     on a person or a warning, green an approval going through. Coral is the
-     inbox's for a card's problem. The next state that needs a color of its
-     own takes a blue or a turquoise, not one of these. */
+     burning stratum they are the only color a line of work has but the one
+     mark of its issue's hue (issue #286): red an error (a failed action,
+     failing checks, a refused approval), orange something held up (a block,
+     a hold, a shutdown), yellow waiting on a person or a warning, turquoise
+     an approval going through. Green is the inbox's, for a person's
+     approval — the Approve button, and the point that travels back along a
+     tether once they have pressed it — and no line of work is drawn in it;
+     coral is the inbox's for a card's problem. The next state that needs a
+     color of its own takes a blue, not one of these. */
   --color-green: #00ff88;
   --color-green-rgb: 0, 255, 136;
+  --color-turquoise: #00e0e0;
+  --color-turquoise-rgb: 0, 224, 224;
   --color-yellow: #ffcc00;
   --color-yellow-rgb: 255, 204, 0;
   --color-orange: #ff6600;
