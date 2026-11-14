@@ -24,6 +24,10 @@ export type DashboardEventType =
   // its lifting. Emitted once per hold, not once per engine.
   | "work-hold"
   | "work-hold-cleared"
+  // The checkout root's free space after each of engine 0's checkout upkeep
+  // passes (#288): `{ path, freeBytes, minFreeBytes, low }`. `low` means new
+  // work is held until there is room. The cache holds the latest.
+  | "disk-space"
   // The latest reading of the Claude account's usage window, for the
   // header's usage gauge. Re-emitted on every poll, so the cache holds one.
   | "usage-update"

@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+
+import { removeCheckout } from "../src/checkout-reaper.js";
 
 import {
   activeWaitKeys,
@@ -15,6 +17,7 @@ import {
   clearWait,
   clockTimeRefs,
   createClaudeAgentClient,
+  createRunTempDir,
   extractFinalDescription,
   extractImplementationPayload,
   extractSelfReviewPayload,
@@ -36,8 +39,10 @@ import {
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
   recordClaudeQuotaHold,
+  removeRunTempDir,
   runCommand,
   sanitizePullRequestTitle,
+  sweepOrphanedRunTempDirs,
   validateClaudeAuth,
 } from "../src/claude-agent.js";
 
@@ -2832,4 +2837,231 @@ test("runCommand reaps a group-escaped grandchild on NORMAL completion of a shor
     false,
     `escaped grandchild pid ${grandchildPid} survived normal completion — the sweep never recorded it`,
   );
+});
+
+// ── Checkout reaping and per-run scratch (#288) ──────────────────────────────
+
+async function seedRemote(root: string, extraBranch?: string): Promise<{ remoteDir: string; extraHeadSha?: string }> {
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+  runOrThrow("git", ["clone", remoteDir, seedDir], root);
+  runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+  runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+  await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+  runOrThrow("git", ["add", "README.md"], seedDir);
+  runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+  runOrThrow("git", ["branch", "-M", "main"], seedDir);
+  runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+  if (!extraBranch) return { remoteDir };
+  runOrThrow("git", ["checkout", "-b", extraBranch], seedDir);
+  await writeFile(join(seedDir, "feature.txt"), "feature\n", "utf8");
+  runOrThrow("git", ["add", "feature.txt"], seedDir);
+  runOrThrow("git", ["commit", "-m", "feature commit"], seedDir);
+  runOrThrow("git", ["push", "-u", "origin", extraBranch], seedDir);
+  return { remoteDir, extraHeadSha: runOrThrow("git", ["rev-parse", "HEAD"], seedDir) };
+}
+
+/** Stub lines that record the run's TMPDIR and leave scratch in it, as an agent would. */
+function recordTmpdirSnippet(tmpdirLogPath: string): string[] {
+  return [
+    `printf '%s\\n' "$TMPDIR" >> "${tmpdirLogPath}"`,
+    "mkdir -p \"$TMPDIR/node22\"",
+    "echo scratch > \"$TMPDIR/node22/download.tgz\"",
+  ];
+}
+
+async function recordedTmpdirs(tmpdirLogPath: string): Promise<string[]> {
+  const { readFile } = await import("node:fs/promises");
+  return (await readFile(tmpdirLogPath, "utf8")).split("\n").filter((line) => line !== "");
+}
+
+test("a reaped issue checkout keeps its branch in _main, is recreated by the next run, and each run's TMPDIR is gone after it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "yoke-reap-issue-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { remoteDir } = await seedRemote(root);
+  const checkoutRootDir = join(root, "checkouts");
+  const runTempRootDir = join(root, "run-tmp");
+  const tmpdirLogPath = join(root, "tmpdirs.txt");
+  const claudeStubPath = join(root, "claude-stub.sh");
+  const branch = "yoke/issue-401-reap-me";
+  await writeFile(
+    claudeStubPath,
+    [
+      "#!/bin/sh",
+      "set -eu",
+      ...recordTmpdirSnippet(tmpdirLogPath),
+      "git config user.name \"Claude Stub\"",
+      "git config user.email \"claude-stub@example.com\"",
+      "date +%s%N >> implementation.txt",
+      "git add implementation.txt",
+      "git commit -m \"agent implementation commit\"",
+      `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+      "echo '{\"title\":\"Reap me\",\"body\":\"Closes #401\"}'",
+      `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await chmod(claudeStubPath, 0o755);
+
+  const client = createClaudeAgentClient({
+    checkoutRootDir,
+    runTempRootDir,
+    claudeCommand: claudeStubPath,
+    githubToken: "test-token",
+    repositoryCloneUrl: remoteDir,
+    claudeTimeoutMs: 120000,
+  });
+  const implement = () =>
+    client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 401,
+      issueTitle: "Reap me",
+      issueBody: "Body",
+      baseBranch: "main",
+    });
+
+  const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+  const issueDir = join(checkoutRootDir, "example-repo", "issue-401");
+
+  assert.equal((await implement()).branch, branch);
+  const branchSha = runOrThrow("git", ["rev-parse", `refs/heads/${branch}`], canonicalDir);
+
+  await removeCheckout(canonicalDir, issueDir);
+  await assert.rejects(stat(issueDir), "the checkout directory is gone");
+  assert.equal(
+    runOrThrow("git", ["rev-parse", `refs/heads/${branch}`], canonicalDir),
+    branchSha,
+    "its branch and commits survive in _main",
+  );
+
+  assert.equal((await implement()).branch, branch);
+  assert.equal((await stat(issueDir)).isDirectory(), true, "the next run recreates the checkout");
+  assert.equal(runOrThrow("git", ["rev-parse", "--abbrev-ref", "HEAD"], issueDir), branch);
+
+  const tmpdirs = await recordedTmpdirs(tmpdirLogPath);
+  assert.equal(tmpdirs.length, 2);
+  assert.notEqual(tmpdirs[0], tmpdirs[1], "each run gets a fresh TMPDIR");
+  for (const dir of tmpdirs) {
+    assert.equal(dir.startsWith(runTempRootDir), true, `${dir} is under the run temp root`);
+    await assert.rejects(stat(dir), `${dir} was removed when its run ended`);
+  }
+});
+
+test("a reaped PR checkout keeps its branch in _main and is recreated by the next run", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "yoke-reap-pr-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const prBranch = "feature/reap-pr";
+  const prNumber = 402;
+  const { remoteDir, extraHeadSha } = await seedRemote(root, prBranch);
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(root, "claude-stub.sh");
+  await writeFile(claudeStubPath, "#!/bin/sh\necho LGTM\n", "utf8");
+  await chmod(claudeStubPath, 0o755);
+  mockSameRepoPullRequestFetch(t, {
+    owner: "example",
+    repo: "repo",
+    pullRequestNumber: prNumber,
+    branch: prBranch,
+    headSha: extraHeadSha!,
+    cloneUrl: remoteDir,
+  });
+
+  const client = createClaudeAgentClient({
+    checkoutRootDir,
+    runTempRootDir: join(root, "run-tmp"),
+    claudeCommand: claudeStubPath,
+    githubToken: "test-token",
+    repositoryCloneUrl: remoteDir,
+    claudeTimeoutMs: 120000,
+  });
+  const review = () =>
+    client.selfReview({
+      owner: "example",
+      repo: "repo",
+      pullRequestNumber: prNumber,
+      pullRequestTitle: "Reap PR",
+      pullRequestBody: "Body",
+      headRefName: prBranch,
+      baseRefName: "main",
+    });
+
+  const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+  const prDir = join(checkoutRootDir, "example-repo", `pr-${prNumber}`);
+
+  await review();
+  const localBranch = runOrThrow("git", ["rev-parse", "--abbrev-ref", "HEAD"], prDir);
+  const branchSha = runOrThrow("git", ["rev-parse", `refs/heads/${localBranch}`], canonicalDir);
+
+  await removeCheckout(canonicalDir, prDir);
+  await assert.rejects(stat(prDir));
+  assert.equal(runOrThrow("git", ["rev-parse", `refs/heads/${localBranch}`], canonicalDir), branchSha);
+
+  await review();
+  assert.equal((await stat(prDir)).isDirectory(), true, "the next run recreates the checkout");
+  assert.equal(runOrThrow("git", ["rev-parse", "--abbrev-ref", "HEAD"], prDir), localBranch);
+});
+
+test("a run killed on timeout still has its TMPDIR removed", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "yoke-run-tmp-timeout-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { remoteDir } = await seedRemote(root);
+  const runTempRootDir = join(root, "run-tmp");
+  const tmpdirLogPath = join(root, "tmpdirs.txt");
+  const claudeStubPath = join(root, "claude-stub.sh");
+  await writeFile(
+    claudeStubPath,
+    ["#!/bin/sh", "set -eu", ...recordTmpdirSnippet(tmpdirLogPath), "exec sleep 30", ""].join("\n"),
+    "utf8",
+  );
+  await chmod(claudeStubPath, 0o755);
+
+  const client = createClaudeAgentClient({
+    checkoutRootDir: join(root, "checkouts"),
+    runTempRootDir,
+    claudeCommand: claudeStubPath,
+    githubToken: "test-token",
+    repositoryCloneUrl: remoteDir,
+    claudeTimeoutMs: 1500,
+  });
+  let outcome: unknown;
+  try {
+    outcome = await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 403,
+      issueTitle: "Times out",
+      issueBody: "Body",
+      baseBranch: "main",
+    });
+  } catch (error) {
+    outcome = error;
+  }
+  assert.match(String(outcome instanceof Error ? outcome.message : JSON.stringify(outcome)), /timed out|incomplete/i);
+
+  const tmpdirs = await recordedTmpdirs(tmpdirLogPath);
+  assert.equal(tmpdirs.length, 1);
+  assert.equal(tmpdirs[0]!.startsWith(runTempRootDir), true);
+  await assert.rejects(stat(tmpdirs[0]!), "the timed-out run's TMPDIR was removed");
+});
+
+test("the startup sweep removes run temp dirs a dead yoke left, and this process's that are no longer running", async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), "yoke-run-tmp-sweep-"));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  const deadPid = spawnSync("true").pid!;
+  const deadYokes = join(rootDir, `${deadPid}-abc123`);
+  // A yoke restarted in a container often gets the pid the crashed one had.
+  const samePidLeftover = join(rootDir, `${process.pid}-left0ver`);
+  const notOurs = join(rootDir, "something-else");
+  for (const dir of [deadYokes, samePidLeftover, notOurs]) {
+    await mkdir(join(dir, "node22"), { recursive: true });
+  }
+  const live = await createRunTempDir(rootDir);
+  t.after(() => removeRunTempDir(live));
+
+  const removed = await sweepOrphanedRunTempDirs(rootDir);
+  assert.deepEqual(removed.sort(), [deadYokes, samePidLeftover].sort());
+  assert.deepEqual((await readdir(rootDir)).sort(), [basename(live), "something-else"].sort());
 });

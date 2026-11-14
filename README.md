@@ -237,6 +237,7 @@ The inbox is every interaction the Dashboard offers, in one place: down the righ
 
 It is federated: each kind of thing that needs a person comes from its own source, and they are listed together, the most pressing kind first and, within a kind, the longest-waiting on top:
 
+- **Disk almost full** — the disk Yoke keeps its checkouts on is below `min_free_disk_gb` even after every idle checkout was removed, so no new work starts until you free some space. It leaves by itself once there is room.
 - **Keep awake** — the browser refused to start the keep-awake loop; one tap starts it.
 - **Approve to merge** — a PR parked by the [`review` label](#the-review-label), with an **Approve** button (below).
 - **Ready for your review** — in [Project SDLC](#project-sdlc-human-in-the-loop), a PR Yoke has asked a person to review on GitHub, with a button that opens it there.
@@ -309,6 +310,8 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `projects` | — | **Required.** List of repositories to run; see the per-project keys below. |
 | `max_concurrency` | `3` | Total size of the shared engine-cylinder pool across all projects. |
 | `cycle_minimum_seconds` | `60` | Minimum seconds between engine cycle starts. |
+| `checkout_retention_hours` | `24` | How long a checkout under `~/.yoke/checkouts` for an issue or PR that is still open may sit unclaimed and untouched before Yoke removes it. A checkout whose issue or PR is closed or merged is removed on the next maintenance pass whatever its age. A removed checkout is recreated the next time it is needed; its branch and commits stay in the project's canonical clone. |
+| `min_free_disk_gb` | `10` | Free space, in GB, to keep on the filesystem that holds `~/.yoke/checkouts`. Below it, Yoke removes idle checkouts least recently used first; if that is still not enough, it starts no new work, and lists a **Disk almost full** card in the inbox, until there is room. Work already under way carries on. Global only. `0` turns it off. |
 | `claude_code_initial_model` | `claude-sonnet-4-6` | Claude model used during initial implementation. |
 | `claude_code_review_model` | `claude-opus-4-8` | Claude model used during self-review. |
 | `claude_code_initial_effort` | `high` | Reasoning effort for initial implementation. |
@@ -338,6 +341,7 @@ Per-project values override the global ones for that project.
 | `claude_describe_model` | global value | Per-project override for the final-description model. |
 | `claude_timeout_seconds` | global value | Per-project override of the per-run timeout. |
 | `cycle_minimum_seconds` | global value | Per-project override of the cycle minimum. |
+| `checkout_retention_hours` | global value | Per-project override of how long an idle checkout is kept. |
 | `session_store_path` | `<cwd>/.yoke/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 
 **CLI flags**

@@ -128,6 +128,7 @@ export class YokeApp extends LitElement {
       works,
       failures: [...s.failures.values()],
       keepAwake: this._keepAwake,
+      disk: s.disk,
       dismissed: this._dismissed,
       nowMs,
       failureShowMs: FAILURE_SHOW_MS,
