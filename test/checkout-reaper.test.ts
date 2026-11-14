@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -180,6 +180,33 @@ test("a snapshot whose listing failed vouches for nothing, so no checkout looks 
   assert.deepEqual([...work.issueNumbers!], [5]);
   assert.equal(work.pullRequestNumbers, undefined);
   assert.deepEqual(openWorkFromSnapshot(null), { issueNumbers: undefined, pullRequestNumbers: undefined });
+});
+
+test("a checkout used since its project's snapshot began loading is not taken for closed", async (t) => {
+  // The snapshot can be a whole cycle_minimum_seconds old, older if a later
+  // load failed: an issue filed, or a PR an engine opened, since then is
+  // missing from it without being closed.
+  const root = await mkdtemp(join(tmpdir(), "yoke-reaper-asof-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const canonicalDir = await makeCheckoutDirs(root, ["issue-1", "pr-2"]);
+  const usedAt = (await stat(join(root, "acme-widgets", "pr-2"))).mtimeMs;
+  const longAgo = new Date(usedAt - 2 * HOUR);
+  await utimes(join(root, "acme-widgets", "issue-1"), longAgo, longAgo);
+
+  const snapshot = { issues: [], pullRequests: [], agentSessions: [] } as unknown as RepositorySnapshot;
+  const found = await inspectProjectCheckouts(
+    {
+      repoKey: "acme/widgets",
+      canonicalDir,
+      openWork: openWorkFromSnapshot(snapshot, usedAt - HOUR),
+      retentionMs: 24 * HOUR,
+    },
+    new Set(),
+  );
+  assert.deepEqual(
+    found.checkouts.map((c) => [c.name, c.open]),
+    [["issue-1", false], ["pr-2", undefined]],
+  );
 });
 
 // ── runCheckoutReaper ────────────────────────────────────────────────────────

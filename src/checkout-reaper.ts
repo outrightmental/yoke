@@ -169,6 +169,12 @@ export interface OpenWork {
   issueNumbers: ReadonlySet<number> | undefined;
   /** Open PR numbers, or undefined when they could not be listed. */
   pullRequestNumbers: ReadonlySet<number> | undefined;
+  /**
+   * Epoch millis the snapshot began loading. A checkout used since then may be
+   * for work opened after the snapshot looked — an issue filed, or the PR an
+   * engine just opened — so the snapshot's silence about it means nothing.
+   */
+  asOfMs?: number;
 }
 
 /**
@@ -176,9 +182,13 @@ export interface OpenWork {
  * empty, and is reported as unknown here so that a GitHub hiccup cannot make
  * every checkout look finished.
  */
-export function openWorkFromSnapshot(snapshot: RepositorySnapshot | null | undefined): OpenWork {
+export function openWorkFromSnapshot(
+  snapshot: RepositorySnapshot | null | undefined,
+  asOfMs?: number,
+): OpenWork {
   if (!snapshot) return { issueNumbers: undefined, pullRequestNumbers: undefined };
   return {
+    ...(asOfMs !== undefined ? { asOfMs } : {}),
     issueNumbers: snapshot.listingFailed?.issues
       ? undefined
       : new Set(snapshot.issues.filter((i) => i.state === "open").map((i) => i.number)),
@@ -341,15 +351,21 @@ export async function inspectProjectCheckouts(
     }
     const openNumbers =
       kind === "issue" ? project.openWork.issueNumbers : project.openWork.pullRequestNumbers;
+    const usedMs = await lastUsedMs(dir, git);
+    const { asOfMs } = project.openWork;
+    // A checkout used since the snapshot began loading is newer than what the
+    // snapshot can vouch for: its absence there does not mean it is closed.
+    const snapshotPredatesUse = asOfMs !== undefined && usedMs >= asOfMs;
     checkouts.push({
       repoKey: project.repoKey,
       name,
       dir,
       kind,
       number,
-      open: openNumbers === undefined ? undefined : openNumbers.has(number),
+      open:
+        openNumbers === undefined || snapshotPredatesUse ? undefined : openNumbers.has(number),
       claimed: claimedActions.has(checkoutClaimKey(project.repoKey, kind, number)),
-      lastUsedMs: await lastUsedMs(dir, git),
+      lastUsedMs: usedMs,
       sizeBytes: 0,
       headReachable: git.kind === "worktree" ? await worktreeHeadReachable(dir, git.gitDir) : true,
       retentionMs: project.retentionMs,

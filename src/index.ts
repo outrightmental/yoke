@@ -325,7 +325,7 @@ interface ProjectContext {
    * The snapshot the project's last maintenance pass loaded: which of its
    * issues and PRs are open, for the checkout reaper. Null until the first.
    */
-  maintenanceSnapshot: RepositorySnapshot | null;
+  maintenanceSnapshot: { snapshot: RepositorySnapshot; loadStartedAtMs: number } | null;
   /**
    * Issues a just-merged PR closes, hidden from every snapshot until GitHub
    * reports them closed — see `MergedIssueGrace`.
@@ -631,6 +631,7 @@ async function runProjectMaintenance(
 
   section(`${repoKey}: Snapshot`);
   note("loading issues, pull requests, and agent sessions from GitHub…");
+  const snapshotLoadStartedAtMs = Date.now();
   const snapshot = await loadProjectSnapshot(ctx);
   const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
   bullet(
@@ -646,7 +647,7 @@ async function runProjectMaintenance(
   }
   snapshot.agentSessions = await ctx.sessionStore.load();
   ctx.snapshotCache = { snapshot, atMs: Date.now() };
-  ctx.maintenanceSnapshot = snapshot;
+  ctx.maintenanceSnapshot = { snapshot, loadStartedAtMs: snapshotLoadStartedAtMs };
 
   const activeSessions = snapshot.agentSessions.filter((s) => s.status === "in_progress");
   emitter.emit("snapshot-update", {
@@ -728,7 +729,10 @@ async function runCheckoutMaintenance(
     projects: contexts.map((ctx) => ({
       repoKey: ctx.repoKey,
       canonicalDir: path.join(upkeep.rootDir, `${ctx.config.owner}-${ctx.config.repo}`, "_main"),
-      openWork: openWorkFromSnapshot(ctx.maintenanceSnapshot),
+      openWork: openWorkFromSnapshot(
+        ctx.maintenanceSnapshot?.snapshot,
+        ctx.maintenanceSnapshot?.loadStartedAtMs,
+      ),
       retentionMs: ctx.config.checkoutRetentionMs,
     })),
     checkoutRootDir: upkeep.rootDir,
