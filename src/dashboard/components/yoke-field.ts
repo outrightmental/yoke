@@ -2,7 +2,7 @@ import { LitElement, html } from 'lit';
 import { Animator } from '../field/animator.js';
 import { clamp, type Point, type Rect } from '../field/geometry.js';
 import { hitTest, layoutField, maxScroll, type FieldLayout, type Hit } from '../field/layout.js';
-import { repoLabels, type FieldModel } from '../field/model.js';
+import { fieldRepoLabels, stratumLevel, type FieldModel } from '../field/model.js';
 import { Painter, type Frame, type Surface } from '../field/painter.js';
 import { readPalette } from '../field/palette.js';
 import { FONT_FACES, TextFitter, type TextStyle } from '../field/text.js';
@@ -21,8 +21,6 @@ const TAP_SLOP = 8;
 const SCROLL_FRICTION = 4.2;
 /** More boxes than this to put back, and it is cheaper to put back the lot. */
 const MAX_DIRTY_RECTS = 40;
-
-const LEVEL_NAMES = { queued: 'Queued', waiting: 'Waiting', cold: 'Cold' } as const;
 
 /**
  * The field: the state of the whole run, drawn on one canvas.
@@ -240,7 +238,7 @@ export class YokeField extends LitElement {
   private _relayout() {
     const model = this.model;
     if (!model || !this._canvas || this._width === 0) return;
-    this._labels = repoLabels([...model.works.map((work) => work.repo), ...model.ribbon.map((line) => line.repo)]);
+    this._labels = fieldRepoLabels(model);
     this._layout = layoutField(model, {
       width: this._width,
       height: this._height,
@@ -469,7 +467,13 @@ export class YokeField extends LitElement {
     this._invalidate();
   }
 
-  private _workItem(work: WorkView, multiProject: boolean) {
+  /**
+   * A piece of work as an item of a list. On a reactor it names its project
+   * when several share the dashboard; below the reactors its project is the
+   * heading it is under, and it says its level instead, which the canvas says
+   * only in how solid it draws the line (#290).
+   */
+  private _workItem(work: WorkView, said: { repo: boolean; level: boolean }) {
     const id = `work:${work.key}`;
     const number = work.number !== null ? `#${work.number} ` : '';
     const pr = work.pair.pr;
@@ -481,7 +485,7 @@ export class YokeField extends LitElement {
       ${pr && work.prUrl && work.issueUrl
         ? html` · <a class="gh-link" href="${work.prUrl}" target="_blank" rel="noopener noreferrer">PR #${pr.number}</a>`
         : ''}
-      · ${work.status.text}${multiProject && work.repo ? html` · ${work.repo}` : ''}
+      · ${work.status.text}${said.level ? html` · ${stratumLevel(work)}` : ''}${said.repo && work.repo ? html` · ${work.repo}` : ''}
     </li>`;
   }
 
@@ -512,10 +516,10 @@ export class YokeField extends LitElement {
         </ul>
         ${onReactors.length > 0 ? html`
           <h2>Burning (${onReactors.length})</h2>
-          <ul>${onReactors.map((work) => this._workItem(work, model.multiProject))}</ul>` : ''}
+          <ul>${onReactors.map((work) => this._workItem(work, { repo: model.multiProject, level: false }))}</ul>` : ''}
         ${model.strata.map((stratum) => html`
-          <h2>${LEVEL_NAMES[stratum.level]} (${stratum.works.length})</h2>
-          <ul>${stratum.works.map((work) => this._workItem(work, model.multiProject))}</ul>`)}
+          <h2>${stratum.repo || 'No project'} (${stratum.works.length})</h2>
+          <ul>${stratum.works.map((work) => this._workItem(work, { repo: false, level: true }))}</ul>`)}
       </div>`;
   }
 

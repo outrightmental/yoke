@@ -190,30 +190,32 @@ The Dashboard is two things. **The field** is one canvas the size of the window,
 
 ### The field
 
-- **Heat rises.** Work is laid out by how much token burn it stands for right now, hottest at the top and with the most room:
+- **Heat rises.** Work is laid out by how much token burn it stands for right now. At the top, with the most room:
   - **BURNING** — an engine is running an action on it. Each gets a *reactor*: the engine's ring with a comet turning on it and the action's running time inside, and beside it the action (`IMPLEMENTING`, `REVIEWING`, `FIXING CHECKS`, `RESOLVING CONFLICTS`, `MERGING`), the model running it, and the work's number and title.
-  - **QUEUED** — Yoke works it next, with nothing but its own pipeline in the way: the PR's checks are running, an approved PR waits for its squash-merge, or an open PR or ready issue waits for a free engine.
-  - **WAITING** — it waits on someone else first: a PR ready for review or parked for your approval, or an issue blocked by other issues.
-  - **COLD** — nothing is coming: a `manual` PR, a merged PR, an issue out of the queue (Backlog, Done) — and every piece of work once Yoke is shutting down.
 
-  A level with nothing in it takes no room at all. When the window cannot hold everything, the whole field steps down to denser sizes before it ever scrolls; when it does scroll, drag it or use the wheel.
+  Everything else is below the reactors, **grouped by repository** — a group for each project, headed by its name (without the owner when every project has the same one), how much of its work is there, and how much of that is at each level (`ATLAS 7  5 queued · 1 waiting · 1 cold`). There is a group even when Yoke runs a single project. Within a group, each piece of work says its level by how solidly it is drawn, hottest first:
+  - **queued** — drawn whole, at the head of its group. Yoke works it next, with nothing but its own pipeline in the way: the PR's checks are running, an approved PR waits for its squash-merge, or an open PR or ready issue waits for a free engine.
+  - **waiting** — drawn at 40% opacity, after the queued work. It waits on someone else first: a PR ready for review or parked for your approval, or an issue blocked by other issues.
+  - **cold** — at 40% opacity too, in smaller type, last. Nothing is coming: a `manual` PR, a merged PR, an issue out of the queue (Backlog, Done) — and every piece of work once Yoke is shutting down.
 
-- **A line for every piece of work.** Below the reactors, each piece of work is one line: a track of five marks saying how far along the lifecycle it is — *issue · build · draft · ready · merged*, filled in up to the one it has reached, which is a dot in the issue's own colour — then its number, its title, and the one thing it is waiting on (`checks running`, `blocked by #36`, `ready — waiting for your approval`, `approved — waiting for a free engine to squash-merge it`). A line that is only waiting its turn for an engine says nothing, since its stratum already does. At the end of the line a small mark says the same at a glance:
+  A dimmed line's status colour — red, orange, yellow or green, below — is never dimmed with it. Projects are in the order of their names, so a group never jumps past another; a project with nothing below the reactors takes no room at all. When the window cannot hold everything, the whole field steps down to denser sizes before it ever scrolls; when it does scroll, drag it or use the wheel.
+
+- **A line for every piece of work.** Below the reactors, each piece of work is one line: a track of five marks saying how far along the lifecycle it is — *issue · build · draft · ready · merged*, filled in up to the one it has reached, which is a dot in the issue's own colour — then its number, its title, and the one thing it is waiting on (`checks running`, `blocked by #36`, `ready — waiting for your approval`, `approved — waiting for a free engine to squash-merge it`). A line that is only waiting its turn for an engine says nothing on a crowded field, since a queued line drawn whole already does. At the end of the line a small mark says the same at a glance:
   - *three points in orbit* — its PR's GitHub Actions checks are queued or running, which is why no engine is working it
   - *blinking eye* — its PR is ready for review (yellow)
   - *person* — its PR is labelled `manual`, so Yoke leaves it to you
   - *check* — approved and waiting for its merge (green), or merged
   - *cross* — its checks are failing, or the last action an engine ran on it failed (red); *barred circle* — it is blocked by other issues (orange)
 
-  Every other line of a stratum lies on a faint band, so neighbouring lines are easy to tell apart and a line is easy to follow from its title to its status.
+  Every other line of a group lies on a faint band, so neighbouring lines are easy to tell apart and a line is easy to follow from its title to its status.
 
 - **Engines.** The header of the top stratum says how many engines of the pool are burning. The ones that are not sit on *the bench* under the reactors: a small ring with the engine's number, and what it is waiting on — the time to its next cycle, or the limit that is parking it. An engine keeps its place: reactors are set in engine order, in columns fixed by the size of the pool, so a reactor never changes width because the engine beside it stopped.
 
-- **The rainbow is for what is burning; below it, colour means a state.** Every issue has its own stable colour — derived from the issue number, so an issue keeps the same colour forever; work for a PR that closes no issue takes the PR number's own. That colour fills the burning stratum: each reactor, its engine's ring, and an engine on the bench still holding the work it has just finished. Everything below the reactors is gray, its heat said by how bright its lines are, and keeps the issue's colour only in the one dot on each line's track — the same colour as its inbox card and the line joining them, so a card can be matched to its work and a piece of work followed as it cools. The colour a line *is* says what state it is in: red for an error (its checks are failing, its last action failed, or its approval was refused), orange when it is blocked by other issues, yellow when it waits on your review or approval, and green for an approval going through. Merged and `manual` work stay gray. The event log's lines keep their engine's colour.
+- **The rainbow is for what is burning; below it, colour means a state.** Every issue has its own stable colour — derived from the issue number, so an issue keeps the same colour forever; work for a PR that closes no issue takes the PR number's own. That colour fills the burning stratum: each reactor, its engine's ring, and an engine on the bench still holding the work it has just finished. Everything below the reactors is gray, its heat said by how bright and how solid its lines are, and keeps the issue's colour only in the one dot on each line's track — the same colour as its inbox card and the line joining them, so a card can be matched to its work and a piece of work followed as it cools. The colour a line *is* says what state it is in: red for an error (its checks are failing, its last action failed, or its approval was refused), orange when it is blocked by other issues, yellow when it waits on your review or approval, and green for an approval going through. Merged and `manual` work stay gray. The event log's lines keep their engine's colour.
 
   Everything else on the Dashboard is plain gray with no hue at all: the field's ground and rules, its labels, the instruments along its top, the inbox's surfaces, idle engines. Elsewhere the same colours mean the same things: red for an error or a lost connection, orange for a hold or a shutdown, amber for a warning, and green for an approval going through. The canvas paints with the same colour tokens as the stylesheet, so the rule holds for what is painted as well as for what is styled.
 
-- **Things move when their state does.** A piece of work is the same thing wherever it is drawn, so when its checks pass it slides up a stratum, and when an engine takes it the engine's ring swings out from the bench to it, and back when the action is done. A ring spreads from the mark of any piece of work whose state has just changed. Nothing moves otherwise: an open Dashboard repaints only the comets and the few marks in motion, and nothing at all while no engine is burning. If your system asks for reduced motion, nothing loops and nothing glides.
+- **Things move when their state does.** A piece of work is the same thing wherever it is drawn, so when it is parked for your review it sinks below its project's queued work and dims, and when an engine takes it the engine's ring swings out from the bench to it, and back when the action is done. A ring spreads from the mark of any piece of work whose state has just changed. Nothing moves otherwise: an open Dashboard repaints only the comets and the few marks in motion, and nothing at all while no engine is burning. If your system asks for reduced motion, nothing loops and nothing glides.
 
 - **Instruments** run along the top: the Dashboard's title, the cycle number, the countdown to the next cycle, the Claude usage gauge, and the keep-awake lamp.
 
@@ -227,7 +229,7 @@ The Dashboard is two things. **The field** is one canvas the size of the window,
 
 - **Tap anything** on the field — a piece of work, an engine, the usage gauge, a hold — and a card at the foot of the inbox says the rest: the whole title, where it stands, and links to the issue and the PR on GitHub. (A touch screen has nothing to hover with, so nothing on the Dashboard depends on hovering.)
 
-Everything the field draws is also there as ordinary markup, out of sight, for a screen reader and the keyboard: the engines, each stratum, and every piece of work as a link to GitHub. Tabbing through it moves a focus ring across the canvas.
+Everything the field draws is also there as ordinary markup, out of sight, for a screen reader and the keyboard: the engines, the burning work, each project's work under the project's name, and every piece of work as a link to GitHub, saying its level in a word. Tabbing through it moves a focus ring across the canvas.
 
 ### The inbox
 
@@ -261,7 +263,7 @@ The list never moves a button under your finger. A card stays where it is howeve
 
 ### Shutting down
 
-Once a graceful shutdown is requested, the field goes cold: every piece of work sinks to the bottom stratum at its faintest, and its mark, if it had one, freezes in place — it stays the mark the work had when the shutdown was requested. An engine still finishing its action goes on burning beside its work, since it is; when it stops, its ring goes back to the bench in orange and reads *shut down*. The instruments say **STOPPING**, then **SHUT DOWN**. No engine starts new work after the request, and nothing will keep the field live, so whatever it shows from then on is no longer current.
+Once a graceful shutdown is requested, the field goes cold: every piece of work goes cold in its project's group, dimmed and at its faintest, and its mark, if it had one, freezes in place — it stays the mark the work had when the shutdown was requested. An engine still finishing its action goes on burning beside its work, since it is; when it stops, its ring goes back to the bench in orange and reads *shut down*. The instruments say **STOPPING**, then **SHUT DOWN**. No engine starts new work after the request, and nothing will keep the field live, so whatever it shows from then on is no longer current.
 
 To prevent the Dashboard from opening automatically, pass `--no-browser`:
 

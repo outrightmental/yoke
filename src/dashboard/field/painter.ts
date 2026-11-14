@@ -66,21 +66,18 @@ const GRAIN_SIZE = 96;
 
 const STAGE_LABELS = STAGES.map((stage) => stage.toUpperCase());
 
-const LEVEL_LABELS = { burning: 'BURNING', queued: 'QUEUED', waiting: 'WAITING', cold: 'COLD' } as const;
-const LEVEL_NOTES = {
-  burning: 'an engine is running an action on it',
-  queued: 'yoke works these next',
-  waiting: 'on someone else first',
-  cold: 'nothing coming',
-} as const;
+/** What a project's heading says when its work named no project at all. */
+const NO_PROJECT = 'NO PROJECT';
 
 /**
- * How bright the gray text of a line of work is, by the stratum it is in:
- * below the reactors heat is said in brightness, not in color (#286). Each is
- * an alpha over the ground — the title of `--trim-bright`, its status of
- * `--trim-dim`, its number of the work's gray — set so that on the darkest
- * ground a title and a number keep 4.5:1 or more at every level, and a
- * neutral status 3:1 or more (design/DASHBOARD.md, "Colour").
+ * How bright the gray text of a line of work is, by its level: below the
+ * reactors heat is said in brightness, not in color (#286). Each is an alpha
+ * over the ground — the title of `--trim-bright`, its status of `--trim-dim`,
+ * its number of the work's gray — set so that on the darkest ground a title
+ * and a number keep 4.5:1 or more at every level, and a neutral status 3:1 or
+ * more (design/DASHBOARD.md, "Colour"). A waiting or cold line is then drawn
+ * at its work's `opacity` (#290), which takes it below those floors on
+ * purpose: it is meant to recede. Its signal, if it has one, does not.
  */
 const INK: Readonly<Record<StratumLevel, { title: number; meta: number; number: number }>> = {
   queued: { title: 0.9, meta: 0.78, number: 1 },
@@ -89,7 +86,7 @@ const INK: Readonly<Record<StratumLevel, { title: number; meta: number; number: 
 };
 
 /**
- * Below the reactors, every other line of a stratum lies on a band: the
+ * Below the reactors, every other line of a project's group lies on a band: the
  * ground lifted by this much of `--trim-bright`. Two values of gray, ground
  * and band, take over from the hue the work of telling one line from the next
  * (#286). Enough to see — about 1.06:1 against the ground — and little enough
@@ -101,10 +98,11 @@ const BAND_ALPHA = 0.035;
  *  behind a line under the pointer, so the two line up. */
 const BAND_PAD_X = 8;
 const BAND_RADIUS = 4;
-/** A signal is drawn at full strength in every stratum: an alarm does not cool. */
+/** A signal is drawn at full strength at every level, a dimmed line's
+ *  included (#290): an alarm does not cool. */
 const SIGNAL_ALPHA = 1;
 
-/** The type a line of work is set in, by stratum. */
+/** The type a line of work is set in, by its level. */
 const ROW_TYPE: Readonly<Record<StratumLevel, { number: TextStyle; title: TextStyle; meta: TextStyle }>> = {
   queued: { number: mono(600, 12.5), title: sans(500, 14), meta: sans(400, 11.5) },
   waiting: { number: mono(600, 12), title: sans(500, 13.5), meta: sans(400, 11.5) },
@@ -210,7 +208,8 @@ export class Painter {
   }
 
   /** The ink of a line's status: its signal at full strength, or gray at the
-   *  stratum's brightness — a little brighter for something in progress. */
+   *  brightness of its level and its line's opacity — a little brighter for
+   *  something in progress. */
   private _statusInk(status: WorkStatus, alpha: number): string {
     const p = this._palette;
     if (status.signal) return rgba(this._signalColor(status.signal), SIGNAL_ALPHA);
@@ -223,6 +222,12 @@ export class Painter {
     if (!signal) return work.color.rgb;
     const [r, g, b] = this._signalColor(signal);
     return `${r},${g},${b}`;
+  }
+
+  /** How solid the glyph at the end of a line is: a signal at full strength,
+   *  and a gray one as solid as its line (#290). */
+  private _glyphAlpha(work: WorkView): number {
+    return work.status.signal ? SIGNAL_ALPHA : work.opacity;
   }
 
   /** The top-left of the scrolling content on the field. */
@@ -263,7 +268,7 @@ export class Painter {
           break;
         case 'work':
           if (node.mode === 'reactor') this._reactorText(ctx, frame, node, placed.x, placed.y);
-          else this._row(ctx, frame, node, placed.x, placed.y);
+          else this._row(ctx, node, placed.x, placed.y);
           break;
         case 'engine':
           if (placed.ring) this._engine(ctx, node, placed);
@@ -434,8 +439,8 @@ export class Painter {
 
   /**
    * The bands behind every other line of work below the reactors (#286),
-   * drawn where their stratum's heading is, so that they move only when the
-   * stratum does and the lines slide past them.
+   * drawn where their project's heading is, so that they move only when the
+   * group does and the lines slide past them.
    */
   private _bands(ctx: Ctx, frame: Frame): void {
     const { layout } = frame;
@@ -490,7 +495,10 @@ export class Painter {
     const p = this._palette;
     const { vitals, dark } = frame.model;
     const cy = y + node.rect.h - 12;
-    const label = LEVEL_LABELS[node.level];
+    // Below the reactors, the project's name (#290), as short as it goes.
+    const name = node.heads === 'burning' ? 'BURNING'
+      : node.repo ? frame.repoLabel(node.repo).toUpperCase() : NO_PROJECT;
+    const label = this._fitter.fit(name, HEADER_STYLE, Math.max(60, node.rect.w * 0.6));
     this._text(ctx, label, x, cy, HEADER_STYLE, rgba(p.trimBright, 0.86));
     let cursor = x + this._fitter.width(label, HEADER_STYLE) + 8;
 
@@ -498,15 +506,18 @@ export class Painter {
     this._text(ctx, count, cursor, cy, HEADER_COUNT_STYLE, rgba(p.trim, 0.9));
     cursor += this._fitter.width(count, HEADER_COUNT_STYLE) + 12;
 
-    let note: string = LEVEL_NOTES[node.level];
-    if (node.level === 'burning') {
+    let note: string;
+    if (node.heads === 'burning') {
       if (vitals.phase === 'shut-down') note = 'yoke has shut down';
       else if (vitals.phase === 'shutting-down') note = 'finishing what is in flight, then stopping';
       else if (vitals.hold) note = 'every engine is parked';
       else if (node.count === 0) note = 'no engine is running an action';
       else note = node.count === 1 ? 'an engine is running an action' : 'engines are running actions';
-    } else if (dark && node.level === 'cold') {
+    } else if (dark) {
       note = 'nothing coming — yoke is shutting down';
+    } else {
+      // The levels its lines are at, in words: they are said by weight, not by place.
+      note = node.levels.map(({ level, count: n }) => `${n} ${level}`).join(' · ');
     }
     const room = x + node.rect.w - cursor - 40;
     const fitted = this._fitter.fit(note, HEADER_NOTE_STYLE, room);
@@ -552,27 +563,31 @@ export class Painter {
   }
 
   /**
-   * A line of work in one of the strata below the reactors (#286): gray, on
-   * the ground or on a band; its issue's hue only in the mark on its track
-   * that says how far it has got; and a status signal, if it has one, in its
-   * status and the glyph at its end.
+   * A line of work in a project's group below the reactors: gray, on the
+   * ground or on a band (#286); its issue's hue only in the mark on its track
+   * that says how far it has got; a status signal, if it has one, in its
+   * status and the glyph at its end; and its level in its type, its ink and
+   * how solid it is — waiting and cold work dimmed against the queued work
+   * around it (#290). Its project is named by the heading it is under, so the
+   * line does not say it again.
    */
-  private _row(ctx: Ctx, frame: Frame, node: WorkNode, x: number, y: number): void {
+  private _row(ctx: Ctx, node: WorkNode, x: number, y: number): void {
     const p = this._palette;
     const { work } = node;
     const level = node.level as StratumLevel;
     const ink = INK[level];
     const type = ROW_TYPE[level];
+    const fade = work.opacity;
     const { w, h } = node.rect;
     const color = work.color.rgb;
     const two = node.lines === 2;
     const cy = two ? y + 15 : y + h / 2;
 
-    drawTrack(ctx, x + 2, cy, work.stage, STAGES.length, { ...ROW_TRACK, color, mark: work.hue.rgb, trim: p.trim, alpha: 1 });
+    drawTrack(ctx, x + 2, cy, work.stage, STAGES.length, { ...ROW_TRACK, color, mark: work.hue.rgb, trim: p.trim, alpha: fade });
 
     const numberX = x + ROW_TEXT_X;
     const number = work.number !== null ? `#${work.number}` : '';
-    this._text(ctx, number, numberX, cy, type.number, rgba(color, ink.number));
+    this._text(ctx, number, numberX, cy, type.number, rgba(color, ink.number * fade));
     const titleX = numberX + this._fitter.width(number, type.number) + 9;
 
     const glyph = workGlyph(work);
@@ -580,42 +595,37 @@ export class Painter {
     // A glyph that moves is drawn by the other pass — unless the work has gone
     // dark, when it stays, frozen as it stood (#268).
     if (glyph && !glyphAnimates(work, glyph)) {
-      drawGlyph(ctx, glyph, x + w - 10, y + h / 2, 0, { color: this._glyphInk(work), alpha: 1 });
+      drawGlyph(ctx, glyph, x + w - 10, y + h / 2, 0, { color: this._glyphInk(work), alpha: this._glyphAlpha(work) });
     }
 
-    const repo = frame.model.multiProject && work.repo ? frame.repoLabel(work.repo) : '';
     const pr = work.pair.pr && work.pair.issue ? `PR #${work.pair.pr.number}` : '';
-    const dim = rgba(p.trimDim, ink.meta);
+    const title = rgba(p.trimBright, ink.title * fade);
+    const status = this._statusInk(work.status, ink.meta * fade);
 
     if (two) {
-      this._text(ctx, this._fitter.fit(work.title, type.title, right - titleX), titleX, cy, type.title, rgba(p.trimBright, ink.title));
-      // Second line: which project, which PR, and where it stands.
+      this._text(ctx, this._fitter.fit(work.title, type.title, right - titleX), titleX, cy, type.title, title);
+      // Second line: which PR, and where it stands.
       let cursor = numberX;
       const cy2 = y + 33;
-      for (const part of [repo, pr]) {
-        if (part === '') continue;
-        this._text(ctx, part, cursor, cy2, type.meta, dim);
-        cursor += this._fitter.width(part, type.meta);
-        this._text(ctx, ' · ', cursor, cy2, type.meta, rgba(p.trimDim, ink.meta * 0.6));
+      if (pr !== '') {
+        this._text(ctx, pr, cursor, cy2, type.meta, rgba(p.trimDim, ink.meta * fade));
+        cursor += this._fitter.width(pr, type.meta);
+        this._text(ctx, ' · ', cursor, cy2, type.meta, rgba(p.trimDim, ink.meta * 0.6 * fade));
         cursor += this._fitter.width(' · ', type.meta);
       }
-      this._text(ctx, this._fitter.fit(work.status.text, type.meta, right - cursor), cursor, cy2, type.meta, this._statusInk(work.status, ink.meta));
+      this._text(ctx, this._fitter.fit(work.status.text, type.meta, right - cursor), cursor, cy2, type.meta, status);
       return;
     }
 
-    // One line: the status is set against the right-hand end, with the project
-    // before it, and the title has whatever is left.
+    // One line: the status is set against the right-hand end, and the title
+    // has whatever is left.
     // In a word or two: the sentence is on the inbox card, and a tap away.
     const statusRoom = Math.max(60, (w - ROW_TEXT_X) * 0.36);
-    const status = this._fitter.fit(briefStatus(work.status), type.meta, statusRoom);
-    const statusW = this._fitter.width(status, type.meta);
-    this._text(ctx, status, right, cy, type.meta, this._statusInk(work.status, ink.meta), 'right');
-    let titleEnd = status === '' ? right : right - statusW - 14;
-    if (repo !== '' && w >= 400) {
-      this._text(ctx, repo, titleEnd, cy, REPO_STYLE, rgba(p.trimDim, ink.meta * 0.72), 'right');
-      titleEnd -= this._fitter.width(repo, REPO_STYLE) + 14;
-    }
-    this._text(ctx, this._fitter.fit(work.title, type.title, titleEnd - titleX), titleX, cy, type.title, rgba(p.trimBright, ink.title));
+    const brief = this._fitter.fit(briefStatus(work.status), type.meta, statusRoom);
+    const briefW = this._fitter.width(brief, type.meta);
+    this._text(ctx, brief, right, cy, type.meta, status, 'right');
+    const titleEnd = brief === '' ? right : right - briefW - 14;
+    this._text(ctx, this._fitter.fit(work.title, type.title, titleEnd - titleX), titleX, cy, type.title, title);
   }
 
   /** The words of a reactor, to the right of its engine's ring. */
@@ -946,7 +956,7 @@ export class Painter {
       case 'problem': return { color: p.coral, alpha: 0.55 };
       case 'selected': return { color: p.trimBright, alpha: 0.45 };
       // Waiting on a person: the work's own hue, the same as its card's edge
-      // and the mark on its line, whatever stratum it is in (#286).
+      // and the mark on its line, whatever level it is at (#286).
       default: return { color: work.hue.rgb, alpha: 0.6 };
     }
   }
@@ -1032,7 +1042,7 @@ export class Painter {
         const cx = placed.x + origin.x + node.rect.w - 10;
         const cy = placed.y + origin.y + node.rect.h / 2;
         if (cy + 10 < windowTop || cy - 10 > windowBottom) continue;
-        drawGlyph(ctx, glyph, cx, cy, time, { color: this._glyphInk(node.work), alpha: placed.alpha });
+        drawGlyph(ctx, glyph, cx, cy, time, { color: this._glyphInk(node.work), alpha: placed.alpha * this._glyphAlpha(node.work) });
         touched.push(rect(cx - 11, cy - 11, 22, 22));
       }
     }
