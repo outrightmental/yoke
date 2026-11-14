@@ -170,6 +170,13 @@ export interface RepositorySnapshot {
   issues: Issue[];
   pullRequests: PullRequest[];
   agentSessions: AgentSession[];
+  /**
+   * Set when listing the open issues or the open pull requests failed, so that
+   * list is empty because nothing could be read, not because nothing is open.
+   * Planning carries on with what it has; anything that would act on an issue
+   * or PR being absent — the checkout reaper — must not.
+   */
+  listingFailed?: { issues: boolean; pullRequests: boolean };
 }
 
 export type OrchestratorAction =

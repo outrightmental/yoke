@@ -41,6 +41,32 @@ export function pullRequestClaimKey(repoKey: string, pullRequestNumber: number):
   return `${repoKey} ${pullRequestResourceKey(pullRequestNumber)}`;
 }
 
+/** The claim key an implementation of a project's issue holds — see `repoActionKey`. */
+export function issueClaimKey(repoKey: string, issueNumber: number): string {
+  return `${repoKey} issue:${issueNumber}`;
+}
+
+/**
+ * Take `key` for something other than an engine — the checkout reaper removing
+ * the resource's checkout — unless an engine already holds it.
+ *
+ * Synchronous on purpose: a claim (`tryClaimFromPlan`) is a synchronous
+ * check-and-add too, and nothing can run between this check and this add, so
+ * either the engine's claim lands first and this declines, or the reservation
+ * lands first and the engine passes the action over. An engine therefore never
+ * claims an action and starts preparing a checkout that is being deleted.
+ * Release the reservation with `reserved.delete(key)` once done.
+ */
+export function reserveUnclaimed(
+  key: string,
+  claimedActions: ReadonlySet<string>,
+  reserved: Set<string>,
+): boolean {
+  if (claimedActions.has(key) || reserved.has(key)) return false;
+  reserved.add(key);
+  return true;
+}
+
 /** Number of currently-claimed actions belonging to a given project. */
 export function claimsForRepo(claimedActions: ReadonlySet<string>, repoKey: string): number {
   const prefix = `${repoKey} `;
@@ -94,6 +120,12 @@ export function tryClaimFromPlan(
    */
   cooldownUntilMs?: ReadonlyMap<string, number>,
   now: number = Date.now(),
+  /**
+   * Keys held by something other than an engine — a checkout being removed
+   * (see `reserveUnclaimed`). Passed over like a claimed action, but not
+   * counted against the project's cap.
+   */
+  reservedKeys?: ReadonlySet<string>,
 ): OrchestratorAction | null {
   if (claimsForRepo(claimedActions, repoKey) >= cap) {
     return null;
@@ -101,6 +133,7 @@ export function tryClaimFromPlan(
   for (const action of actions) {
     const key = repoActionKey(repoKey, action);
     if (claimedActions.has(key)) continue;
+    if (reservedKeys?.has(key)) continue;
     const until = cooldownUntilMs?.get(key);
     if (until !== undefined && now < until) continue;
     claimedActions.add(key);
@@ -177,16 +210,26 @@ export async function claimNextAction<
   onPlanned?: (project: P, plan: Plan) => void;
   claimedActions: Set<string>;
   cooldownUntilMs?: ReadonlyMap<string, number>;
+  /** Keys reserved by the checkout reaper — see `reserveUnclaimed`. */
+  reservedKeys?: ReadonlySet<string>;
   shutdownSignal: ShutdownSignal;
 }): Promise<{ project: P; plan: Plan; action: OrchestratorAction } | null> {
-  const { projects, loadPlan, onPlanned, claimedActions, cooldownUntilMs, shutdownSignal } = params;
+  const { projects, loadPlan, onPlanned, claimedActions, cooldownUntilMs, reservedKeys, shutdownSignal } = params;
   for (const project of projects) {
     if (shutdownSignal.requested) return null;
     if (claimsForRepo(claimedActions, project.repoKey) >= project.cap) continue;
     const plan = await loadPlan(project);
     if (shutdownSignal.requested) return null;
     if (plan === undefined) continue;
-    const action = tryClaimFromPlan(project.repoKey, project.cap, plan.actions, claimedActions, cooldownUntilMs);
+    const action = tryClaimFromPlan(
+      project.repoKey,
+      project.cap,
+      plan.actions,
+      claimedActions,
+      cooldownUntilMs,
+      Date.now(),
+      reservedKeys,
+    );
     onPlanned?.(project, plan);
     if (action) return { project, plan, action };
   }

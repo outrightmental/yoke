@@ -14,6 +14,19 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+/** "1.4 GB", "312 MB": binary units, as `df -h` counts them (mirrors `formatBytes` in src/fs-utils.ts). */
+export function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits).replace(/\.0$/, '')} ${units[unit]}`;
+}
+
 // ── Wall-clock times ─────────────────────────────────────────────────────────
 //
 // Every wall-clock time the dashboard shows is rendered here, in the browser,
