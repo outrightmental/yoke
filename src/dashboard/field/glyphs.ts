@@ -23,7 +23,12 @@ export interface TrackStyle {
    *  keeps (#286). */
   mark?: string;
   trim: Rgb;
+  /** How solid the track is drawn. */
   alpha: number;
+  /** How solid the mark it has reached is, when that is not `alpha`: below
+   *  the burning stratum a dimmed line's mark of its hue is drawn whole, as
+   *  what the work is tracked by as it cools (#286). */
+  markAlpha?: number;
 }
 
 /** The x of the centre of mark `stage` on a track whose first mark starts at `x`. */
@@ -44,6 +49,7 @@ export function trackWidth(marks: number, style: Pick<TrackStyle, 'pitch' | 'dot
 export function drawTrack(ctx: Ctx, x: number, cy: number, stage: number, marks: number, style: TrackStyle): void {
   const { pitch, dot, color, trim, alpha } = style;
   const mark = style.mark ?? color;
+  const markAlpha = style.markAlpha ?? alpha;
   const first = trackMarkX(x, 0, style);
   const here = trackMarkX(x, stage, style);
   const last = trackMarkX(x, marks - 1, style);
@@ -68,7 +74,7 @@ export function drawTrack(ctx: Ctx, x: number, cy: number, stage: number, marks:
     const cx = first + i * pitch;
     ctx.beginPath();
     if (i === stage) {
-      ctx.fillStyle = rgba(mark, alpha);
+      ctx.fillStyle = rgba(mark, markAlpha);
       ctx.arc(cx, cy, dot, 0, TAU);
     } else if (i < stage) {
       ctx.fillStyle = rgba(color, 0.7 * alpha);

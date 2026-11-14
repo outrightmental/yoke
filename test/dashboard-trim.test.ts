@@ -142,7 +142,7 @@ test("the canvas paints with the dashboard's own tokens, and brings no color of 
   const palette = readPalette(tokenStyle());
   const named: Array<[keyof typeof palette, string]> = [
     ["bg", "bg-dark"], ["bgAlt", "bg-dark-alt"], ["trim", "trim"], ["trimBright", "trim-bright"], ["trimDim", "trim-dim"],
-    ["green", "color-green"], ["yellow", "color-yellow"], ["orange", "color-orange"], ["red", "color-red"], ["coral", "color-coral"],
+    ["green", "color-green"], ["turquoise", "color-turquoise"], ["yellow", "color-yellow"], ["orange", "color-orange"], ["red", "color-red"], ["coral", "color-coral"],
   ];
   for (const [key, token] of named) {
     assert.deepEqual([...palette[key]], tokenRgb(token, all.get(token)!), `${key} is --${token}`);
@@ -221,13 +221,15 @@ test("below the burning stratum the only saturated ink is a work's mark of its h
     { issue: { number: 11, title: "Failing", state: "open" }, pr: { number: 82, title: "Failing", state: "open", draft: true, checksStatus: "failure" }, prPhase: "active" },
     { issue: { number: 12, title: "Merged", state: "open" }, pr: { number: 83, title: "Merged", state: "open", checksStatus: "success" }, prPhase: "completed" },
     { issue: { number: 13, title: "Manual", state: "open" }, pr: { number: 84, title: "Manual", state: "open", draft: false, checksStatus: "success" }, prPhase: "review", disabled: true },
+    { issue: { number: 14, title: "Approved", state: "open" }, pr: { number: 85, title: "Approved", state: "open", draft: false, checksStatus: "success" }, prPhase: "review", approval: "approved" },
   ];
   const state = stateWith(pairs, "o/a", { cylinders: [cylinder({ ...issueColorOf(7) })] });
   const painted = paintField(state);
   const palette = tokensPalette();
-  const signals = new Set([palette.red, palette.orange, palette.yellow, palette.green].map(triplet));
+  // Green is not one of them: it is the inbox's, for a person's approval.
+  const signals = new Set([palette.red, palette.orange, palette.yellow, palette.turquoise].map(triplet));
   const below = painted.layout.nodes.filter((node) => node.kind === "work" && node.mode === "row");
-  assert.equal(below.length, 6, "everything but the reactor is on a line below it");
+  assert.equal(below.length, 7, "everything but the reactor is on a line below it");
   for (const node of below) {
     if (node.kind !== "work") continue;
     const { work } = node;
@@ -242,7 +244,7 @@ test("below the burning stratum the only saturated ink is a work's mark of its h
     assert.equal(marks[0]!.arcs.length, 1, "a dot");
     assert.ok(marks[0]!.arcs[0]![2]! <= 3, "a small one");
   }
-  // The signals say error, blocked and review, and nothing else is saturated.
+  // The signals say error, blocked, review and approved, and nothing else is saturated.
   // (A roomy line says the whole sentence, a tight one the first words of it.)
   const inkOf = (words: string) => {
     const fill = painted.fills.find((candidate) => candidate.text.startsWith(words));
@@ -251,6 +253,7 @@ test("below the burning stratum the only saturated ink is a work's mark of its h
   assert.equal(inkOf("checks failing")?.rgb, triplet(palette.red));
   assert.equal(inkOf("blocked by #8")?.rgb, triplet(palette.orange));
   assert.equal(inkOf("ready for review")?.rgb, triplet(palette.yellow));
+  assert.equal(inkOf("approved")?.rgb, triplet(palette.turquoise));
   for (const neutral of ["merged", "manual", "checks running"]) {
     const ink = inkOf(neutral);
     assert.ok(ink && hueFree(parseColor(ink.rgb)! as unknown as Rgb), `${neutral} is neutral`);
