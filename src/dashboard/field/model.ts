@@ -4,16 +4,16 @@ import { engineViews, type EngineView } from '../shared/engine-view.js';
 import { formatLogTime } from '../shared/format.js';
 import type { InboxCard, Selection } from '../shared/inbox.js';
 import { vitals, type Vitals } from '../shared/vitals.js';
-import { compareWork, workViews, type WorkView } from '../shared/work-view.js';
+import { compareProjectWork, workViews, type WorkView } from '../shared/work-view.js';
 
 /**
  * What the field draws, worked out from the dashboard's state and the clock.
  *
- * The field is a thermal picture of the run. Work is laid out by how much
- * token burn it stands for right now (`BurnLevel`, #281), hottest at the top
- * and with the most room: what an engine is burning on gets a reactor each,
- * what yoke works next a full line, what waits on someone else a narrower one,
- * and what nothing is coming for a line of small print at the bottom. Nothing
+ * The field is a thermal picture of the run. What an engine is burning on
+ * (`BurnLevel`, #281) is at the top with the most room: a reactor each.
+ * Everything else is below, grouped by the project it belongs to (#290), and
+ * within each project hottest first — what yoke works next drawn whole, then
+ * what waits on someone else and what nothing is coming for, dimmed. Nothing
  * has a box of fixed size to be fitted into — a piece of work takes the room
  * its state has earned, and gives it up when the state changes.
  */
@@ -23,7 +23,8 @@ export interface FieldModel {
   reactors: Reactor[];
   /** The engines that are not: idle, parked by a limit, finished, shut down. */
   bench: EngineView[];
-  /** The work no engine is on, by level, hottest first; empty levels left out. */
+  /** The work no engine is on, a group for each project, in the order of their
+   *  names; a project with none left out. */
   strata: Stratum[];
   /** Every piece of work, wherever it is drawn. */
   works: WorkView[];
@@ -47,10 +48,40 @@ export interface Reactor {
   work: WorkView | null;
 }
 
-/** One level's work that no engine is on. */
+/** A level a piece of work can be drawn at below the reactors. */
+export type StratumLevel = Exclude<BurnLevel, 'burning'>;
+
+/** The levels below the reactors, hottest first. */
+export const STRATUM_LEVELS: readonly StratumLevel[] = ['queued', 'waiting', 'cold'];
+
+/**
+ * One project's work that no engine is on (#290). Its level is no longer
+ * where it is drawn but how: each piece keeps its own (`stratumLevel`), and
+ * says it in its weight.
+ */
 export interface Stratum {
-  level: Exclude<BurnLevel, 'burning'>;
+  /** The project, "owner/repo"; empty only when neither its work nor the
+   *  dashboard named one. */
+  repo: string;
+  /** Queued first, then waiting, then cold; within each, `compareWork`'s order. */
   works: WorkView[];
+}
+
+/**
+ * The level a piece of work is drawn at below the reactors: its own. Work
+ * that is `burning` with no engine cannot happen while yoke runs, and is
+ * drawn as queued if it ever does rather than dropped.
+ */
+export function stratumLevel(work: WorkView): StratumLevel {
+  return work.level === 'burning' ? 'queued' : work.level;
+}
+
+/** How many of a project's pieces of work are at each level, hottest first;
+ *  a level with none left out. */
+export function levelCounts(works: readonly WorkView[]): Array<{ level: StratumLevel; count: number }> {
+  return STRATUM_LEVELS
+    .map((level) => ({ level, count: works.filter((work) => stratumLevel(work) === level).length }))
+    .filter((entry) => entry.count > 0);
 }
 
 export interface RibbonLine {
@@ -112,6 +143,25 @@ export function repoLabels(repos: Iterable<string>): Map<string, string> {
   return labels;
 }
 
+/** The label every project named on the field goes by: those of its work, its
+ *  groups and the log's lines, worked out together so that they agree. */
+export function fieldRepoLabels(model: Pick<FieldModel, 'works' | 'strata' | 'ribbon'>): Map<string, string> {
+  return repoLabels([
+    ...model.works.map((work) => work.repo),
+    ...model.strata.map((stratum) => stratum.repo),
+    ...model.ribbon.map((line) => line.repo),
+  ]);
+}
+
+/** The order the projects' groups are set in: by name, which nothing that
+ *  happens to their work can change. One with no name goes last. */
+function compareRepos(a: string, b: string): number {
+  if (a === '' || b === '') return a === b ? 0 : a === '' ? 1 : -1;
+  const [x, y] = [a.toLowerCase(), b.toLowerCase()];
+  if (x !== y) return x < y ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function fieldModel(
   state: DashboardState,
   nowMs: number,
@@ -137,15 +187,21 @@ export function fieldModel(
     reactors.push({ engine, work });
   }
 
-  const strata: Stratum[] = [];
-  for (const level of ['queued', 'waiting', 'cold'] as const) {
-    const at = works
-      // `burning` without an engine cannot happen while yoke runs, and is
-      // drawn as queued if it ever does rather than dropped.
-      .filter((work) => !onReactor.has(work.key) && (work.level === level || (level === 'queued' && work.level === 'burning')))
-      .sort(compareWork);
-    if (at.length > 0) strata.push({ level, works: at });
+  // Below the reactors, a group for every project with work no engine is on
+  // (#290) — a single project's included, so the field reads the same however
+  // many share it. Work that names no project is the dashboard's own.
+  const ownRepo = state.owner && state.repo ? `${state.owner}/${state.repo}` : '';
+  const byRepo = new Map<string, WorkView[]>();
+  for (const work of works) {
+    if (onReactor.has(work.key)) continue;
+    const repo = work.repo || ownRepo;
+    const group = byRepo.get(repo);
+    if (group) group.push(work);
+    else byRepo.set(repo, [work]);
   }
+  const strata: Stratum[] = [...byRepo]
+    .sort(([a], [b]) => compareRepos(a, b))
+    .map(([repo, group]) => ({ repo, works: group.sort(compareProjectWork) }));
 
   const tethers: Tether[] = [];
   const known = new Set(works.map((work) => work.key));

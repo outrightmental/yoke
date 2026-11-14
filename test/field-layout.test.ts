@@ -13,11 +13,11 @@ import {
   type Viewport,
   type WorkNode,
 } from "../src/dashboard/field/layout.js";
-import { fieldModel, repoLabels, RIBBON_MAX_LINES } from "../src/dashboard/field/model.js";
+import { fieldModel, fieldRepoLabels, levelCounts, repoLabels, RIBBON_MAX_LINES, stratumLevel } from "../src/dashboard/field/model.js";
 import { issueColor } from "../src/dashboard/shared/issue-colors.js";
 import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
 import type { CylinderState, DashboardState, LifecyclePair } from "../src/dashboard/store/types.js";
-import { cylinder, makeEvent, stateWith } from "./dashboard-helpers.js";
+import { cylinder, makeEvent, stateWith, withPairs } from "./dashboard-helpers.js";
 
 // The layout is where the field answers what it was built to answer: nothing
 // on it has a box of fixed size to be fitted into. These pin that a piece of
@@ -41,16 +41,34 @@ function idle(index: number): CylinderState {
   return cylinder({ index, status: "idle", actionType: null, issueNumber: null, nextCycleAtMs: NOW + 30_000 });
 }
 
-/** A dashboard with `engines` and `queued` unblocked issues, `waiting` blocked ones and `cold` out of the queue. */
-function fieldState(engines: CylinderState[], counts: { queued?: number; waiting?: number; cold?: number } = {}): DashboardState {
+type Counts = { queued?: number; waiting?: number; cold?: number };
+
+/** `queued` unblocked issues from #100, `waiting` blocked ones from #200 and `cold` out of the queue from #300. */
+function levelPairs(counts: Counts): LifecyclePair[] {
   const pairs: LifecyclePair[] = [];
-  for (const cyl of engines) {
-    if (cyl.status === "active" && cyl.issueNumber !== null) pairs.push(issue(cyl.issueNumber, { prPhase: "planning" }));
-  }
   for (let i = 0; i < (counts.queued ?? 0); i++) pairs.push(issue(100 + i));
   for (let i = 0; i < (counts.waiting ?? 0); i++) pairs.push(issue(200 + i, { blockedByIssueNumbers: [100] }));
   for (let i = 0; i < (counts.cold ?? 0); i++) pairs.push(issue(300 + i, { prPhase: "inactive", projectStatus: "Backlog" }));
-  return stateWith(pairs, "o/a", { cylinders: engines });
+  return pairs;
+}
+
+/** What each engine burning in project o/a is implementing. */
+function burningPairs(engines: CylinderState[]): LifecyclePair[] {
+  return engines.flatMap((cyl) => (cyl.status === "active" && cyl.issueNumber !== null ? [issue(cyl.issueNumber, { prPhase: "planning" })] : []));
+}
+
+/** A dashboard of one project, o/a, with `engines` and work at each level. */
+function fieldState(engines: CylinderState[], counts: Counts = {}): DashboardState {
+  return stateWith([...burningPairs(engines), ...levelPairs(counts)], "o/a", { cylinders: engines });
+}
+
+/** A dashboard shared by several projects, each with work at each level; the engines burn on o/a's. */
+function projectsState(engines: CylinderState[], projects: ReadonlyArray<readonly [string, Counts]>): DashboardState {
+  let state = stateWith(burningPairs(engines), "o/a", { cylinders: engines, multiProject: true });
+  for (const [repo, counts] of projects) {
+    state = withPairs(state, repo, [...(repo === "o/a" ? burningPairs(engines) : []), ...levelPairs(counts)]);
+  }
+  return state;
 }
 
 function lay(state: DashboardState, viewport: Viewport = DESK): FieldLayout {
@@ -59,6 +77,8 @@ function lay(state: DashboardState, viewport: Viewport = DESK): FieldLayout {
 
 const works = (layout: FieldLayout): WorkNode[] => layout.nodes.filter((node): node is WorkNode => node.kind === "work");
 const rowsAt = (layout: FieldLayout, level: string): WorkNode[] => works(layout).filter((node) => node.mode === "row" && node.level === level);
+const rowsOf = (layout: FieldLayout, repo: string): WorkNode[] => works(layout).filter((node) => node.mode === "row" && node.work.repo === repo);
+const headerIds = (layout: FieldLayout): string[] => layout.nodes.filter((node) => node.kind === "header").map((node) => node.id);
 const byId = (layout: FieldLayout, id: string): FieldNode => {
   const node = layout.nodes.find((candidate) => candidate.id === id);
   assert.ok(node, `${id} is on the field`);
@@ -77,9 +97,55 @@ test("the model: an engine running an action is a reactor with its work; the res
 
   assert.deepEqual(model.reactors.map((reactor) => [reactor.engine.index, reactor.work?.number]), [[0, 7], [2, 9]]);
   assert.deepEqual(model.bench.map((engine) => engine.index), [1]);
-  assert.deepEqual(model.strata.map((stratum) => [stratum.level, stratum.works.length]), [["queued", 2], ["waiting", 1]], "an empty level is left out");
+  assert.deepEqual(model.strata.map((stratum) => [stratum.repo, stratum.works.length]), [["o/a", 3]], "one project: one group, under its own name");
   assert.ok(model.strata.every((stratum) => stratum.works.every((work) => work.number !== 7 && work.number !== 9)), "burning work is drawn once, on its reactor");
   assert.equal(model.loaded, true);
+});
+
+test("the model: below the reactors work is grouped by project, in the order of the projects' names (#290)", () => {
+  const state = projectsState([burning(1, 7)], [
+    ["northwind/ledger", { queued: 1, waiting: 1 }],
+    ["northwind/atlas", { cold: 2 }],
+    ["o/a", {}],
+    ["Northwind/beacon", { waiting: 1 }],
+  ]);
+  const model = fieldModel(state, NOW);
+  assert.deepEqual(model.strata.map((stratum) => stratum.repo), ["northwind/atlas", "Northwind/beacon", "northwind/ledger"],
+    "by name, whatever order they reported in, and o/a — whose only work is burning — has no group");
+  for (const stratum of model.strata) {
+    assert.ok(stratum.works.every((work) => work.repo === stratum.repo), `${stratum.repo} holds only its own work`);
+  }
+  assert.equal(model.strata.reduce((n, stratum) => n + stratum.works.length, 0), model.works.length - 1, "everything but the reactor, once");
+
+  // The order holds as the work changes: it is the projects' names that set it.
+  const later = withPairs(state, "northwind/atlas", levelPairs({ queued: 3 }));
+  assert.deepEqual(fieldModel(later, NOW).strata.map((stratum) => stratum.repo), model.strata.map((stratum) => stratum.repo));
+});
+
+test("the model: within a project, queued work comes ahead of waiting work, and waiting ahead of cold", () => {
+  const pairs = [
+    issue(300, { prPhase: "inactive", projectStatus: "Backlog" }),
+    issue(201, { blockedByIssueNumbers: [100] }),
+    issue(101),
+    { issue: { number: 50, title: "Merged", state: "open" }, pr: { number: 51, title: "Merged", state: "open", checksStatus: "success" }, prPhase: "completed" },
+    issue(200, { blockedByIssueNumbers: [100] }),
+    issue(100),
+  ] satisfies LifecyclePair[];
+  const [stratum] = fieldModel(stateWith(pairs, "o/a", { cylinders: [idle(1)] }), NOW).strata;
+  assert.deepEqual(stratum!.works.map((work) => [stratumLevel(work), work.number]), [
+    ["queued", 100], ["queued", 101], ["waiting", 200], ["waiting", 201], ["cold", 50], ["cold", 300],
+  ]);
+  assert.deepEqual(levelCounts(stratum!.works), [{ level: "queued", count: 2 }, { level: "waiting", count: 2 }, { level: "cold", count: 2 }]);
+  assert.deepEqual(levelCounts(stratum!.works.slice(0, 2)), [{ level: "queued", count: 2 }], "a level with none is left out");
+});
+
+test("the model: work that names no project is grouped under the dashboard's own", () => {
+  const state: DashboardState = { ...stateWith([issue(4), issue(5, { blockedByIssueNumbers: [4] })], "", { cylinders: [idle(1)] }), owner: "acme", repo: "app" };
+  const model = fieldModel(state, NOW);
+  assert.deepEqual(model.strata.map((stratum) => [stratum.repo, stratum.works.length]), [["acme/app", 2]]);
+  assert.equal(fieldRepoLabels(model).get("acme/app"), "app", "and goes by its name, like any other project");
+  const nameless = fieldModel({ ...state, owner: "", repo: "" }, NOW);
+  assert.deepEqual(nameless.strata.map((stratum) => stratum.repo), [""], "with no name to give it, still one group rather than none");
 });
 
 test("the model: a project goes by its name alone when every project has the same owner", () => {
@@ -101,7 +167,7 @@ test("the model: the ribbon is the last few lines of the log, stamped and labell
 
 // ── room by what a state has earned ──────────────────────────────────────────
 
-test("the hotter a piece of work, the higher it is set and the more room it has", () => {
+test("the hotter a piece of work, the higher it is set within its project, and a reactor has the most room", () => {
   const layout = lay(fieldState([burning(1, 7), idle(2)], { queued: 2, waiting: 2, cold: 2 }));
   const reactor = works(layout).find((node) => node.mode === "reactor")!;
   const [queued] = rowsAt(layout, "queued");
@@ -109,26 +175,71 @@ test("the hotter a piece of work, the higher it is set and the more room it has"
   const [cold] = rowsAt(layout, "cold");
 
   assert.ok(reactor.rect.y < queued!.rect.y && queued!.rect.y < waiting!.rect.y && waiting!.rect.y < cold!.rect.y, "heat rises");
-  assert.ok(reactor.rect.h > queued!.rect.h && queued!.rect.h > waiting!.rect.h && waiting!.rect.h > cold!.rect.h, "and has the most room");
+  assert.ok(reactor.rect.h > queued!.rect.h, "a reactor has the most room");
   assert.equal(layout.density, 0, "with room to spare, the roomiest sizes");
   assert.equal(queued!.lines, 2, "where work yoke does next has a second line of detail");
+  assert.deepEqual([queued!.level, waiting!.level, cold!.level], ["queued", "waiting", "cold"], "each line keeps its own level, to be drawn at its weight");
 });
 
-test("an empty level takes no room at all: no header, no gap", () => {
-  const withWaiting = lay(fieldState([idle(1)], { queued: 2, waiting: 2 }));
-  const without = lay(fieldState([idle(1)], { queued: 2 }));
+test("a project's lines are all one size, that of the hottest level it holds (#290)", () => {
+  const layout = lay(projectsState([idle(1)], [["o/a", { queued: 1, waiting: 2, cold: 2 }], ["o/b", { waiting: 2, cold: 1 }], ["o/c", { cold: 3 }]]));
+  const sizes = (repo: string) => [...new Set(rowsOf(layout, repo).map((node) => `${node.rect.w}×${node.rect.h}/${node.lines}`))];
+  const density = DENSITIES[layout.density]!;
+  for (const repo of ["o/a", "o/b", "o/c"]) assert.equal(sizes(repo).length, 1, `${repo}: one size, so its bands rule it evenly`);
+  assert.equal(rowsOf(layout, "o/a")[0]!.rect.h, density.rowH.queued, "a project with queued work is set at the queued size");
+  assert.equal(rowsOf(layout, "o/b")[0]!.rect.h, density.rowH.waiting, "one that waits at most, at the waiting size");
+  assert.equal(rowsOf(layout, "o/c")[0]!.rect.h, density.rowH.cold, "and one that nothing is coming for in small print");
+});
 
-  assert.ok(without.nodes.every((node) => node.id !== "header:waiting"));
-  assert.ok(without.contentHeight < withWaiting.contentHeight);
-  assert.deepEqual(
-    without.nodes.filter((node) => node.kind === "header").map((node) => node.id),
-    ["header:burning", "header:queued"],
-  );
+test("each project is headed by its name, and its work lies between its heading and the next (#290)", () => {
+  const layout = lay(projectsState([burning(1, 7), idle(2)], [["o/b", { queued: 3, waiting: 2 }], ["o/a", { queued: 1, cold: 4 }]]));
+  assert.deepEqual(headerIds(layout), ["header:burning", "header:project:o/a", "header:project:o/b"], "no heading for a level");
+  const heading = byId(layout, "header:project:o/a");
+  assert.ok(heading.kind === "header" && heading.heads === "project" && heading.repo === "o/a");
+  assert.deepEqual(heading.kind === "header" && [heading.count, heading.levels], [5, [{ level: "queued", count: 1 }, { level: "cold", count: 4 }]]);
+
+  const a = byId(layout, "header:project:o/a").rect;
+  const b = byId(layout, "header:project:o/b").rect;
+  for (const row of rowsOf(layout, "o/a")) assert.ok(row.rect.y >= a.y + a.h && row.rect.y + row.rect.h <= b.y, `${row.id} is under o/a`);
+  for (const row of rowsOf(layout, "o/b")) assert.ok(row.rect.y >= b.y + b.h, `${row.id} is under o/b`);
+  assert.ok(rowsOf(layout, "o/a").every((row) => row.id === `work:${row.work.key}`), "every line is still known by its work");
+
+  const single = lay(fieldState([idle(1)], { queued: 2, waiting: 1 }));
+  assert.deepEqual(headerIds(single), ["header:burning", "header:project:o/a"], "one project is headed by its name just the same");
+});
+
+test("a project with nothing below the reactors takes no room at all: no header, no gap", () => {
+  const withB = lay(projectsState([burning(1, 7)], [["o/a", { queued: 2 }], ["o/b", { waiting: 2 }]]));
+  const without = lay(projectsState([burning(1, 7)], [["o/a", { queued: 2 }], ["o/b", {}]]));
+  assert.ok(without.contentHeight < withB.contentHeight);
+  assert.deepEqual(headerIds(without), ["header:burning", "header:project:o/a"]);
+
+  // o/a's only work below the reactors is taken up by an engine: its group goes too.
+  const allBurning = lay(stateWith([issue(7, { prPhase: "planning" })], "o/a", { cylinders: [burning(1, 7)] }));
+  assert.deepEqual(headerIds(allBurning), ["header:burning"]);
+});
+
+test("work that changes level stays in its project: it moves within the group, and the groups below stay put", () => {
+  const before = projectsState([idle(1)], [["o/a", { queued: 4, waiting: 1 }], ["o/b", { queued: 2 }]]);
+  // #101 is blocked: it is waiting now, after the rest of o/a's queued work.
+  const after = withPairs(before, "o/a", before.lifecycleByRepo.get("o/a")!.map((pair) =>
+    pair.issue?.number === 101 ? { ...pair, blockedByIssueNumbers: [100] } : pair));
+  const first = lay(before);
+  const second = lay(after);
+
+  const moved = byId(second, "work:o/a#101");
+  assert.ok(moved.kind === "work" && moved.level === "waiting");
+  assert.ok(moved.rect.y > byId(first, "work:o/a#101").rect.y, "it sinks below the queued work, in its own group");
+  assert.deepEqual(rowsOf(second, "o/a").map((row) => row.work.number), [100, 102, 103, 101, 200]);
+  assert.deepEqual(byId(second, "work:o/a#100").rect, byId(first, "work:o/a#100").rect, "what was above it does not move");
+  assert.deepEqual(byId(second, "header:project:o/b").rect, byId(first, "header:project:o/b").rect, "nor does the next project");
+  assert.deepEqual(byId(second, "work:o/b#100").rect, byId(first, "work:o/b#100").rect);
 });
 
 test("nothing on the field overlaps anything else, at any size or density", () => {
   const states = [
     fieldState([burning(1, 7), burning(2, 8), idle(3), burning(4, 9), idle(5), burning(6, 10)], { queued: 9, waiting: 8, cold: 3 }),
+    projectsState([burning(1, 7), idle(2)], [["o/a", { queued: 5, waiting: 3 }], ["o/b", { waiting: 7, cold: 2 }], ["o/c", { cold: 9 }]]),
     fieldState([idle(1), idle(2), idle(3)], { queued: 1 }),
     fieldState([burning(1, 7), burning(2, 8), burning(3, 9), burning(4, 10), burning(5, 11), burning(6, 12)], { queued: 40, waiting: 30, cold: 30 }),
   ];
@@ -312,7 +423,7 @@ test("hitTest: a point on the field is a piece of work, an engine, an instrument
   assert.deepEqual(at(byId(layout, "engine:0")), { kind: "engine", index: 0, node: byId(layout, "engine:0") });
   assert.equal(at(byId(layout, "engine:1"))?.kind, "engine", "an engine on the bench can be picked out too");
   assert.equal(at(byId(layout, "hold"))?.kind, "hold");
-  assert.equal(at(byId(layout, "header:queued")), null, "a heading is not something to pick out");
+  assert.equal(at(byId(layout, "header:project:o/a")), null, "a heading is not something to pick out");
 
   const usage = layout.hud.slots.find((slot) => slot.kind === "usage")!;
   assert.deepEqual(hitTest(layout, usage.rect.x + 10, 30, 0), { kind: "usage" });
