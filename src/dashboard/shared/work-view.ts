@@ -84,13 +84,15 @@ export type StatusTone = 'plain' | 'progress' | 'approved' | 'problem';
  *   refused.
  * - `blocked` (orange): held up by the issues it is blocked by.
  * - `review` (yellow): waiting on a person to review or approve it.
- * - `approved` (green): an approval going through — approved, and waiting
- *   for its merge or being merged.
+ * - `approved` (turquoise): an approval going through — approved, and
+ *   waiting for its merge or being merged. Not green, which is the inbox's
+ *   for the person's own act: the Approve button, and the point travelling
+ *   back along a tether.
  *
  * Everything else — merged, manual, out of the queue, checks running,
  * waiting its turn, shut down — is neutral. A line has at most one signal,
  * which colors its status and the mark at its end alike. The next state to
- * earn a color of its own takes blue or turquoise, not one of these.
+ * earn a color of its own takes blue, not one of these.
  */
 export type WorkSignal = 'error' | 'blocked' | 'review' | 'approved';
 

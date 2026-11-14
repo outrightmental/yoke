@@ -18,10 +18,12 @@ export interface Palette {
   trim: Rgb;
   trimBright: Rgb;
   trimDim: Rgb;
-  /** Status signals: an approval going through; waiting on a person, or a
-   *  warning; something held up — a block, a hold, a shutdown; an error or a
-   *  lost connection; and, in the inbox, a card's problem (#286). */
+  /** Status signals: in the inbox and on a tether, an approval a person has
+   *  made; below the reactors, an approval going through (#286); waiting on a
+   *  person, or a warning; something held up — a block, a hold, a shutdown;
+   *  an error or a lost connection; and, in the inbox, a card's problem. */
   green: Rgb;
+  turquoise: Rgb;
   yellow: Rgb;
   orange: Rgb;
   red: Rgb;
@@ -67,6 +69,7 @@ export function readPalette(style: { getPropertyValue(name: string): string }): 
     trimBright: token('--trim-bright', FALLBACK),
     trimDim: token('--trim-dim', FALLBACK),
     green: token('--color-green', FALLBACK),
+    turquoise: token('--color-turquoise', FALLBACK),
     yellow: token('--color-yellow', FALLBACK),
     orange: token('--color-orange', FALLBACK),
     red: token('--color-red', FALLBACK),

@@ -327,15 +327,25 @@ test("the painter: waiting and cold work is drawn at 40% against the queued work
   assert.equal(DIMMED_OPACITY, 0.4);
   assert.deepEqual([8, 9, 10, 11, 12].map((n) => [n, work(n).opacity]), [[8, 1], [9, 1], [10, 0.4], [11, 0.4], [12, 0.4]]);
 
-  // Its issue's mark on its track is as solid as its line: whole for queued
-  // work, 40% for the rest.
+  // Its issue's mark on its track is whole at every level: it is what the
+  // work is tracked by as it cools (#286). The rest of its track — the gray
+  // marks behind it and ahead of it — is as solid as its line.
   const markAlpha = (n: number) => {
     const mark = painted.shapes.find((shape) => parseRgba(shape.fill)?.rgb === work(n).hue.rgb)!;
     return mark.alpha * parseRgba(mark.fill)!.alpha;
   };
-  assert.equal(markAlpha(9), 1);
-  assert.equal(markAlpha(11), DIMMED_OPACITY);
-  assert.equal(markAlpha(12), DIMMED_OPACITY);
+  for (const n of [9, 10, 11, 12]) assert.equal(markAlpha(n), 1, `#${n}'s mark of its hue`);
+  const trackOf = (n: number) => {
+    const node = painted.layout.nodes.find((candidate) => candidate.id === `work:${work(n).key}`)!;
+    const cy = node.kind === "work" && node.lines === 2 ? node.rect.y + 15 : node.rect.y + node.rect.h / 2;
+    const xs = [0, 1, 2, 3, 4].map((stage) => trackMarkX(node.rect.x + 2, stage, { pitch: 8, dot: 2.6 }));
+    return painted.shapes.filter((shape) => shape.arcs.length === 1 && shape.arcs[0]![1] === cy && xs.includes(shape.arcs[0]![0]!));
+  };
+  const gray = (n: number) => trackOf(n).filter((shape) => parseRgba(shape.fill)?.rgb !== work(n).hue.rgb);
+  assert.equal(trackOf(10).length, 5, "#10's track is five marks");
+  assert.equal(gray(10).length, 4, "four of them gray");
+  for (const shape of gray(10)) assert.ok(parseRgba(shape.fill)!.alpha <= 0.7 * DIMMED_OPACITY + 1e-9, `${shape.fill} is dimmed with its line`);
+  assert.ok(gray(9).some((shape) => parseRgba(shape.fill)!.alpha > DIMMED_OPACITY * 0.34 + 1e-9), "a queued line's track is not");
 
   // Its words, beside queued words: at 40% of what its level would draw them at.
   const queuedTitle = painted.inkOf("Snap the compass to north")!.alpha;
@@ -478,7 +488,7 @@ test("the painter: a line's one signal colors its status and the mark at its end
     ["implementing failed", PALETTE.red],
     ["checks failing", PALETTE.red],
     ["ready for review", PALETTE.yellow],
-    ["approved", PALETTE.green],
+    ["approved", PALETTE.turquoise],
     ["merged", null],
   ];
   for (const [text, color] of expected) {
@@ -508,7 +518,7 @@ test("the painter: a line's one signal colors its status and the mark at its end
   assert.deepEqual([...saturatedStrokes(byNumber(11))], [triplet(PALETTE.orange)], "a barred circle, orange");
   assert.deepEqual([...saturatedStrokes(byNumber(12))], [triplet(PALETTE.red)], "a failed action's cross, red");
   assert.deepEqual([...saturatedStrokes(byNumber(13))], [triplet(PALETTE.red)], "failing checks' cross, red");
-  assert.deepEqual([...saturatedStrokes(byNumber(15))], [triplet(PALETTE.green)], "an approval's check, green");
+  assert.deepEqual([...saturatedStrokes(byNumber(15))], [triplet(PALETTE.turquoise)], "an approval's check, turquoise");
   assert.deepEqual([...saturatedStrokes(byNumber(16))], [], "a merge's check, gray");
 });
 

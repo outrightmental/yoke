@@ -101,6 +101,12 @@ const BAND_RADIUS = 4;
 /** A signal is drawn at full strength at every level, a dimmed line's
  *  included (#290): an alarm does not cool. */
 const SIGNAL_ALPHA = 1;
+/** The one mark of its issue's hue a line keeps below the reactors — the
+ *  dot its track has reached — is drawn whole at every level too (#286): it
+ *  is what a piece of work is tracked by as it cools, from its reactor into
+ *  its project's group, and to its inbox card. At a waiting line's 40% a blue
+ *  or violet issue's dot would be 1.3:1 on the ground, and lost. */
+const IDENTITY_ALPHA = 1;
 
 /** The type a line of work is set in, by its level. */
 const ROW_TYPE: Readonly<Record<StratumLevel, { number: TextStyle; title: TextStyle; meta: TextStyle }>> = {
@@ -203,7 +209,10 @@ export class Painter {
       case 'error': return p.red;
       case 'blocked': return p.orange;
       case 'review': return p.yellow;
-      case 'approved': return p.green;
+      // Not green: below the reactors an approval going through is a state
+      // of its own, and green is the inbox's — the Approve button, and the
+      // point travelling back along a tether — for the person's act (#286).
+      case 'approved': return p.turquoise;
     }
   }
 
@@ -568,7 +577,8 @@ export class Painter {
    * that says how far it has got; a status signal, if it has one, in its
    * status and the glyph at its end; and its level in its type, its ink and
    * how solid it is — waiting and cold work dimmed against the queued work
-   * around it (#290). Its project is named by the heading it is under, so the
+   * around it (#290), all but its signal and its mark of hue, which are what
+   * it is watched for and tracked by. Its project is named by the heading it is under, so the
    * line does not say it again.
    */
   private _row(ctx: Ctx, node: WorkNode, x: number, y: number): void {
@@ -583,7 +593,9 @@ export class Painter {
     const two = node.lines === 2;
     const cy = two ? y + 15 : y + h / 2;
 
-    drawTrack(ctx, x + 2, cy, work.stage, STAGES.length, { ...ROW_TRACK, color, mark: work.hue.rgb, trim: p.trim, alpha: fade });
+    drawTrack(ctx, x + 2, cy, work.stage, STAGES.length, {
+      ...ROW_TRACK, color, mark: work.hue.rgb, markAlpha: IDENTITY_ALPHA, trim: p.trim, alpha: fade,
+    });
 
     const numberX = x + ROW_TEXT_X;
     const number = work.number !== null ? `#${work.number}` : '';
