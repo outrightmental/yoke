@@ -12,6 +12,7 @@ import { mono, sans, TextFitter } from "../src/dashboard/field/text.js";
 import { buildInbox } from "../src/dashboard/shared/inbox.js";
 import type { Rgb } from "../src/dashboard/field/palette.js";
 import { issueColor } from "../src/dashboard/shared/issue-colors.js";
+import { DIMMED_OPACITY } from "../src/dashboard/shared/burn-level.js";
 import { briefStatus, workViews } from "../src/dashboard/shared/work-view.js";
 import { dashboardReducer, FAILURE_SHOW_MS, initialState } from "../src/dashboard/store/dashboard-store.js";
 import type { CylinderState, DashboardState, LifecyclePair } from "../src/dashboard/store/types.js";
@@ -27,6 +28,7 @@ import {
   stateWith,
   tokensPalette,
   triplet,
+  withPairs,
 } from "./dashboard-helpers.js";
 
 // The field is painted, so there is no markup to read back. These paint it on
@@ -277,14 +279,25 @@ test("the painter: a reactor says what its engine is doing, on what, for how lon
   assert.ok(painted.texts.includes("BUILD"), "the stage it has reached");
 });
 
-test("the painter: every stratum is headed by its level and how much is in it", () => {
+test("the painter: the reactors are headed by how many engines burn, and each project below by its name and its work's levels (#290)", () => {
   const painted = paint(busyState());
-  for (const heading of ["BURNING", "QUEUED", "WAITING", "COLD"]) assert.ok(painted.texts.includes(heading), heading);
+  assert.ok(painted.texts.includes("BURNING"));
   assert.ok(painted.texts.includes("1/2"), "one engine of two is burning");
   assert.ok(painted.texts.includes("an engine is running an action"));
-  assert.ok(painted.texts.includes("yoke works these next"));
-  assert.ok(painted.texts.includes("on someone else first"));
-  assert.ok(painted.texts.includes("nothing coming"));
+  assert.ok(painted.texts.includes("A"), "the one project is headed by its name, as any project is");
+  assert.ok(painted.texts.includes("5"), "and how much of its work is below the reactors");
+  assert.ok(painted.texts.includes("2 queued · 2 waiting · 1 cold"), "the levels are said in words, since they are no longer headings");
+  for (const level of ["QUEUED", "WAITING", "COLD"]) assert.ok(!painted.texts.includes(level), `no ${level} heading`);
+
+  let shared = stateWith([{ ...issue(9, "Snap the compass"), repo: "northwind/atlas" }], "northwind/atlas", { cylinders: [idle(1)], multiProject: true });
+  shared = withPairs(shared, "northwind/ledger", [issue(4, "Balance the books", { blockedByIssueNumbers: [3] })]);
+  const two = paint(shared);
+  assert.ok(two.texts.includes("ATLAS") && two.texts.includes("LEDGER"), "a project goes by its name alone when every one has the same owner");
+  assert.ok(two.texts.includes("1 queued") && two.texts.includes("1 waiting"));
+  assert.ok(two.texts.indexOf("ATLAS") < two.texts.indexOf("LEDGER"), "in the order of their names");
+
+  const dark = paint(busyState({ shutdownRequested: true }));
+  assert.ok(dark.texts.includes("nothing coming — yoke is shutting down"), "once yoke is shutting down, that is what a project's heading says");
 });
 
 test("the painter: a line of work is its number, its title, and where it stands", () => {
@@ -296,12 +309,57 @@ test("the painter: a line of work is its number, its title, and where it stands"
   assert.ok(painted.texts.includes("Cache tiles by content hash"));
   assert.equal(painted.inkOf("blocked by #9")?.rgb, triplet(PALETTE.orange), "a block is orange");
   assert.equal(painted.inkOf("checks running")?.rgb, triplet(PALETTE.trimBright));
-  assert.ok(painted.texts.includes("awaiting approval"), "in a word or two on a one-line row: the sentence is on its inbox card");
+  assert.ok(painted.texts.includes("ready — waiting for your approval"), "a waiting line has the second line its project's queued work earns, and says the whole sentence");
   assert.ok(painted.texts.includes("Backlog"));
   assert.ok(painted.texts.includes("PR #80"), "a line with room for a second says which PR");
-  // Heat is brightness too: the hotter the stratum, the firmer the ink.
+  // Heat is weight: the hotter the level, the firmer the ink.
   assert.ok(painted.inkOf("Snap the compass to north")!.alpha > painted.inkOf("Cache tiles by content hash")!.alpha);
   assert.ok(painted.inkOf("Cache tiles by content hash")!.alpha > painted.inkOf("Paginate the digest")!.alpha);
+
+  const dense = paint(busyState(), { viewport: { height: 360 } });
+  assert.ok(dense.layout.density > 0 && dense.texts.includes("awaiting approval"), "on a one-line row, in a word or two: the sentence is on its inbox card");
+});
+
+test("the painter: waiting and cold work is drawn at 40% against the queued work around it, and its signal at full strength (#290)", () => {
+  const state = busyState();
+  const painted = paint(state);
+  const work = (n: number) => workViews(state, NOW).find((candidate) => candidate.number === n)!;
+  assert.equal(DIMMED_OPACITY, 0.4);
+  assert.deepEqual([8, 9, 10, 11, 12].map((n) => [n, work(n).opacity]), [[8, 1], [9, 1], [10, 0.4], [11, 0.4], [12, 0.4]]);
+
+  // Its issue's mark on its track is as solid as its line: whole for queued
+  // work, 40% for the rest.
+  const markAlpha = (n: number) => {
+    const mark = painted.shapes.find((shape) => parseRgba(shape.fill)?.rgb === work(n).hue.rgb)!;
+    return mark.alpha * parseRgba(mark.fill)!.alpha;
+  };
+  assert.equal(markAlpha(9), 1);
+  assert.equal(markAlpha(11), DIMMED_OPACITY);
+  assert.equal(markAlpha(12), DIMMED_OPACITY);
+
+  // Its words, beside queued words: at 40% of what its level would draw them at.
+  const queuedTitle = painted.inkOf("Snap the compass to north")!.alpha;
+  for (const title of ["Refer to a Top Model", "Cache tiles by content hash", "Paginate the digest"]) {
+    assert.ok(painted.inkOf(title)!.alpha <= queuedTitle * DIMMED_OPACITY + 1e-9, `"${title}" recedes`);
+  }
+  assert.ok(painted.inkOf("#11")!.alpha <= DIMMED_OPACITY && painted.inkOf("#9")!.alpha === 1, "and its number");
+  // Its signal does not: an alarm does not cool (#286).
+  assert.deepEqual(painted.inkOf("blocked by #9"), { rgb: triplet(PALETTE.orange), alpha: 1 });
+  assert.deepEqual(painted.inkOf("ready — waiting for your approval"), { rgb: triplet(PALETTE.yellow), alpha: 1 });
+
+  // A line with no signal has a gray glyph, as faint as the line.
+  const merged = paint(stateWith([
+    { issue: { number: 16, title: "Merged", state: "open" }, pr: { number: 94, title: "Merged", state: "open", checksStatus: "success" }, prPhase: "completed" },
+  ], "o/a", { cylinders: [] }), { viewport: { width: 700 } }); // too narrow for the ribbon's key to its track
+  assert.ok(merged.strokes.length > 0);
+  for (const stroke of merged.strokes) assert.ok(parseRgba(stroke)!.alpha <= DIMMED_OPACITY + 1e-9, `${stroke} is dimmed with its line`);
+
+  // A moving glyph is drawn as the line's signal says too: the eye on a PR
+  // waiting for review, at full strength.
+  const again = fakeCanvas();
+  painted.painter.paintDynamic(again.ctx, painted.frame, 1.5);
+  const yellow = again.strokes.map((stroke) => parseRgba(stroke)).filter((ink) => ink?.rgb === triplet(PALETTE.yellow));
+  assert.ok(yellow.length > 0 && yellow.some((ink) => ink!.alpha === 1), "the eye, in yellow, undimmed");
 });
 
 // ── colour below the reactors (#286) ────────────────────────────────────────
@@ -321,47 +379,51 @@ function contrastOver(fill: string, ground: number): number {
 test("the painter: below the reactors every other line lies on a band, counted down each column", () => {
   const pairs = Array.from({ length: 7 }, (_, i) => issue(100 + i, `Queued ${i}`))
     .concat(Array.from({ length: 3 }, (_, i) => issue(200 + i, `Blocked ${i}`, { blockedByIssueNumbers: [100] })));
-  const painted = paint(stateWith(pairs, "o/a", { cylinders: [idle(1)] }), { viewport: { width: 1600 } });
+  let state = stateWith(pairs, "o/a", { cylinders: [idle(1)], multiProject: true });
+  state = withPairs(state, "o/b", [issue(1, "One"), issue(2, "Two"), issue(3, "Three", { blockedByIssueNumbers: [1] })]);
+  const painted = paint(state, { viewport: { width: 1600 } });
   const headers = painted.layout.nodes.filter((node) => node.kind === "header");
-  const bandsOf = (level: string) => {
-    const header = headers.find((node) => node.kind === "header" && node.level === level);
+  const bandsOf = (id: string) => {
+    const header = headers.find((node) => node.id === id);
     assert.ok(header && header.kind === "header");
     return header.bands;
   };
-  assert.deepEqual(bandsOf("burning"), [], "the reactors have their hue, and no bands");
+  assert.deepEqual(bandsOf("header:burning"), [], "the reactors have their hue, and no bands");
 
-  // Seven lines in two columns are four and three: the second and fourth of
-  // the first, and the second of the next.
-  const queued = painted.layout.nodes.filter((node) => node.kind === "work" && node.level === "queued");
-  const columns = [...new Set(queued.map((node) => node.rect.x))];
+  // Ten lines in two columns are five and five, queued and waiting alike:
+  // the second and fourth of each.
+  const lines = painted.layout.nodes.filter((node) => node.kind === "work" && node.mode === "row" && node.work.repo === "o/a");
+  const columns = [...new Set(lines.map((node) => node.rect.x))];
   assert.equal(columns.length, 2);
-  const banded = (node: (typeof queued)[number]) => bandsOf("queued").some((band) => band.x === node.rect.x && band.y === node.rect.y);
+  const banded = (node: (typeof lines)[number]) => bandsOf("header:project:o/a").some((band) => band.x === node.rect.x && band.y === node.rect.y);
   for (const x of columns) {
-    const column = queued.filter((node) => node.rect.x === x).sort((a, b) => a.rect.y - b.rect.y);
+    const column = lines.filter((node) => node.rect.x === x).sort((a, b) => a.rect.y - b.rect.y);
+    assert.equal(column.length, 5);
     column.forEach((node, i) => assert.equal(banded(node), i % 2 === 1, `line ${i} of its column`));
   }
-  assert.equal(bandsOf("waiting").length, 1, "and the same in every stratum below");
+  assert.equal(bandsOf("header:project:o/b").length, 1, "and the same in every project's group");
 
   // Each band is painted once, as a soft lift of the trim, behind its line.
   const bands = painted.shapes.filter((shape) => shape.boxes.length === 1 && parseRgba(shape.fill)?.rgb === triplet(PALETTE.trimBright));
-  assert.equal(bands.length, bandsOf("queued").length + bandsOf("waiting").length);
+  assert.equal(bands.length, bandsOf("header:project:o/a").length + bandsOf("header:project:o/b").length);
   for (const band of bands) assert.ok(parseRgba(band.fill)!.alpha < 0.05, "felt more than seen");
   const ground = PALETTE.bg[0];
   const lifted = Math.round(ground + (PALETTE.trimBright[0] - ground) * parseRgba(bands[0]!.fill)!.alpha);
   const step = contrastOver(`rgba(${lifted},${lifted},${lifted},1)`, ground);
   assert.ok(step > 1.04 && step < 1.1, `a band is a step off the ground (${step.toFixed(3)}:1)`);
+  assert.ok(bands.every((band) => band.alpha === 1), "a band is not dimmed with the waiting line on it: it rules the group");
   const firstBand = painted.calls.findIndex((call) => call.method === "roundRect");
   const firstWord = painted.calls.findIndex((call) => call.method === "fillText" && call.args[0] === "Queued 0");
   assert.ok(firstBand < firstWord, "under the words");
 });
 
-test("the painter: a band belongs to its stratum, so it moves with the stratum and not with the lines sliding past it", () => {
+test("the painter: a band belongs to its project's group, so it moves with the group and not with the lines sliding past it", () => {
   const before = stateWith([issue(1, "A"), issue(2, "B"), issue(3, "C"), issue(4, "D")], "o/a", { cylinders: [idle(1)] });
   const after = stateWith([issue(2, "B"), issue(3, "C"), issue(4, "D")], "o/a", { cylinders: [idle(1)] });
   const viewport = { width: 700, height: 900, railWidth: 0, lampWidth: 0 };
   const first = layoutField(fieldModel(before, NOW), viewport);
   const second = layoutField(fieldModel(after, NOW), viewport);
-  const header = (layout: FieldLayout) => layout.nodes.find((node) => node.id === "header:queued");
+  const header = (layout: FieldLayout) => layout.nodes.find((node) => node.id === "header:project:o/a");
   const bandYs = (layout: FieldLayout) => {
     const node = header(layout);
     return node && node.kind === "header" ? node.bands.map((band) => band.y) : [];
@@ -374,9 +436,9 @@ test("the painter: a band belongs to its stratum, so it moves with the stratum a
   animator.step(0.05);
   const placed = animator.placed();
   const line = placed.find((p) => p.node.id === "work:o/a#3")!;
-  const head = placed.find((p) => p.node.id === "header:queued")!;
+  const head = placed.find((p) => p.node.id === "header:project:o/a")!;
   assert.ok(line.y > line.node.rect.y, "#3 is still sliding up");
-  assert.equal(head.y, head.node.rect.y, "while its stratum, and so its bands, stay put");
+  assert.equal(head.y, head.node.rect.y, "while its group, and so its bands, stay put");
 });
 
 test("the painter: below the reactors a line keeps its issue's hue in one mark — the one its track has reached", () => {
@@ -450,26 +512,58 @@ test("the painter: a line's one signal colors its status and the mark at its end
   assert.deepEqual([...saturatedStrokes(byNumber(16))], [], "a merge's check, gray");
 });
 
-test("the painter: below the reactors every word clears its contrast floor on the ground", () => {
-  const state = busyState({ cylinders: [idle(1), idle(2)] });
-  const painted = paint(state);
+test("the painter: below the reactors every word of queued work clears its contrast floor, on the ground and on a band; dimmed work keeps its signal's", () => {
+  // Every signal, and a neutral line, at every level below the reactors.
+  const pr = (number: number, checksStatus: "success" | "failure" | "pending", draft = false) =>
+    ({ number, title: `PR ${number}`, state: "open", draft, checksStatus }) as const;
+  const state = stateWith([
+    issue(9, "Snap the compass to north"),
+    issue(13, "Fix the failing tiles", { pr: pr(83, "failure", true), prPhase: "active" }),
+    issue(10, "Refer to a Top Model", { pr: pr(81, "success"), prPhase: "review", approval: "awaiting-approval" }),
+    issue(14, "Review the legend", { pr: pr(84, "success"), prPhase: "review" }),
+    issue(15, "Ship the merged one", { pr: pr(85, "success"), prPhase: "review", approval: "approved" }),
+    issue(8, "Draw constellation rays", { pr: pr(80, "pending", true), prPhase: "active" }),
+    issue(11, "Cache tiles by content hash", { blockedByIssueNumbers: [9] }),
+    issue(12, "Paginate the digest", { prPhase: "inactive", projectStatus: "Backlog" }),
+    issue(16, "Land the projection", { pr: pr(86, "success"), prPhase: "completed" }),
+    issue(17, "Hand-tune the kerning", { pr: pr(87, "success"), prPhase: "review", disabled: true }),
+  ], "o/a", { cylinders: [idle(1)] });
+  const painted = paint(state, { viewport: { width: 1600 } });
   const ground = PALETTE.bg[0];
+  const lifted = Math.round(ground + (PALETTE.trimBright[0] - ground) * 0.035);
+  const banded = new Set<string>();
+  for (const node of painted.layout.nodes) {
+    if (node.kind === "header") for (const band of node.bands) banded.add(`${band.x},${band.y}`);
+  }
+  const signals = new Set<string>();
+  const levels = new Set<string>();
+  let onBands = 0;
   for (const node of painted.layout.nodes) {
     if (node.kind !== "work" || node.mode !== "row") continue;
     const { work } = node;
-    for (const [text, floor] of [[work.title, 4.5], [`#${work.number}`, 4.5]] as const) {
+    levels.add(node.level);
+    if (work.status.signal) signals.add(work.status.signal);
+    const grounds = [ground, lifted];
+    if (banded.has(`${node.rect.x},${node.rect.y}`)) onBands++;
+    const status = node.lines === 2 ? work.status.text : briefStatus(work.status) || work.status.text;
+    // Waiting and cold work is dimmed to recede (#290), below the floors on
+    // purpose; a signal on it is not.
+    const words = node.level === "queued"
+      ? [[work.title, 4.5], [`#${work.number}`, 4.5], [status, work.status.signal ? 4.5 : 3]] as const
+      : work.status.signal ? [[status, 4.5]] as const : [] as const;
+    for (const [text, floor] of words) {
       const fill = painted.fills.find((candidate) => candidate.text === text)?.fill;
+      if (text === status && !fill) continue;
       assert.ok(fill, text);
-      const ratio = contrastOver(fill, ground);
-      assert.ok(ratio >= floor, `${node.level}: "${text}" at ${ratio.toFixed(2)}:1`);
+      for (const under of grounds) {
+        const ratio = contrastOver(fill, under);
+        assert.ok(ratio >= floor, `${node.level}: "${text}" at ${ratio.toFixed(2)}:1 on ${under === ground ? "the ground" : "a band"}`);
+      }
     }
-    const status = briefStatus(work.status) || work.status.text;
-    const fill = painted.fills.find((candidate) => candidate.text === status)?.fill;
-    if (!fill) continue;
-    const ratio = contrastOver(fill, ground);
-    const floor = work.status.signal ? 4.5 : 3;
-    assert.ok(ratio >= floor, `${node.level}: status "${status}" at ${ratio.toFixed(2)}:1`);
   }
+  assert.deepEqual([...levels].sort(), ["cold", "queued", "waiting"], "every level below the reactors is checked");
+  assert.deepEqual([...signals].sort(), ["approved", "blocked", "error", "review"], "and every signal");
+  assert.ok(onBands > 0, "some of them on a band");
 });
 
 test("the painter: a reactor keeps its hue while its work has gone dark, and a tether keeps the hue of its work (#286)", () => {
@@ -504,12 +598,14 @@ test("the painter: a status that says only what its stratum says is left unsaid 
   assert.ok(roomy.texts.includes("waiting for an engine"), "with a second line to say it on, it is said");
 });
 
-test("the painter: a project is named on its work only when several share the dashboard", () => {
-  const pairs = [{ ...issue(9, "Snap the compass"), repo: "northwind/atlas" }];
-  const single = paint(stateWith(pairs, "northwind/atlas", { cylinders: [idle(1)] }));
-  assert.ok(!single.texts.includes("atlas"));
-  const multi = paint(stateWith(pairs, "northwind/atlas", { cylinders: [idle(1)], multiProject: true }));
-  assert.ok(multi.texts.includes("atlas"), "by its name alone, when every project has the one owner");
+test("the painter: below the reactors a project is named by its heading, not on every line; a reactor names its own when several share the dashboard", () => {
+  const pairs = [{ ...issue(9, "Snap the compass"), repo: "northwind/atlas" }, { ...issue(7, "Record working time", { prPhase: "planning" }), repo: "northwind/atlas" }];
+  const engines = [burning(1, 7, { repo: "northwind/atlas" }), idle(2)];
+  const single = paint(stateWith(pairs, "northwind/atlas", { cylinders: engines }));
+  assert.ok(!single.texts.includes("atlas"), "one project: its reactor does not say it");
+  assert.ok(single.texts.includes("ATLAS"), "its group is headed by it all the same");
+  const multi = paint(stateWith(pairs, "northwind/atlas", { cylinders: engines, multiProject: true }));
+  assert.deepEqual(multi.texts.filter((text) => text === "atlas").length, 1, "by its name alone, once: on the reactor, and not on the line below its heading");
 });
 
 test("the painter: the bench says each idle engine's number and what it waits on, in trim", () => {
@@ -672,12 +768,19 @@ test("the field renders everything it paints as markup too, for a screen reader 
   assert.match(html, /<h2>Engines: 1 of 2 burning<\/h2>/);
   assert.match(html, /<li data-node="engine:0"> Engine 1: implementing #7 · [\dms ]+ · Claude Sonnet 5\.5 <\/li>/);
   assert.match(html, /<h2>Burning \(1\)<\/h2>/);
-  assert.match(html, /<h2>Queued \(2\)<\/h2>/);
-  assert.match(html, /<h2>Waiting \(2\)<\/h2>/);
-  assert.match(html, /<h2>Cold \(1\)<\/h2>/);
-  assert.match(html, /<a class="gh-link" data-node="work:o\/a#8" href="https:\/\/github\.com\/o\/a\/issues\/8" target="_blank" rel="noopener noreferrer">#8 Draw constellation rays<\/a> · <a class="gh-link" href="https:\/\/github\.com\/o\/a\/pull\/80" target="_blank" rel="noopener noreferrer">PR #80<\/a> · checks running/);
-  assert.match(html, /blocked by #9/);
+  assert.match(html, /<h2>o\/a \(5\)<\/h2>/, "below the reactors, each project under its name (#290)");
+  assert.ok(!/<h2>(Queued|Waiting|Cold)/.test(html), "and no level has a heading of its own");
+  assert.match(html, /<a class="gh-link" data-node="work:o\/a#8" href="https:\/\/github\.com\/o\/a\/issues\/8" target="_blank" rel="noopener noreferrer">#8 Draw constellation rays<\/a> · <a class="gh-link" href="https:\/\/github\.com\/o\/a\/pull\/80" target="_blank" rel="noopener noreferrer">PR #80<\/a> · checks running · queued <\/li>/);
+  assert.match(html, /blocked by #9 · waiting <\/li>/, "each line says its level in words, which the canvas says by how solid it is");
+  assert.match(html, /Backlog · cold <\/li>/);
   assert.equal(html.match(/data-node="work:/g)?.length, 6, "every piece of work, once");
+
+  let shared = stateWith([{ ...issue(9, "Snap the compass"), repo: "northwind/atlas" }], "northwind/atlas", { cylinders: [idle(1)], multiProject: true });
+  shared = withPairs(shared, "northwind/ledger", [issue(4, "Balance the books")]);
+  field.model = fieldModel(shared, NOW);
+  const two = flatten(field.render()).replace(/\s+/g, " ");
+  assert.ok(two.indexOf("<h2>northwind/atlas (1)</h2>") < two.indexOf("<h2>northwind/ledger (1)</h2>"), "projects in the order the field draws them, by their whole names");
+  assert.match(two, /Balance the books<\/a> · waiting for an engine · queued <\/li>/, "a line does not repeat the project it is under");
 });
 
 test("the field's markup says a hold and a shutdown in words", () => {

@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 
 import { engineView, engineViews } from "../src/dashboard/shared/engine-view.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
-import { burnColor } from "../src/dashboard/shared/burn-level.js";
+import { burnColor, DIMMED_OPACITY } from "../src/dashboard/shared/burn-level.js";
 import { liveHold, vitals } from "../src/dashboard/shared/vitals.js";
 import {
   actionTarget,
   actionVerb,
   briefStatus,
+  compareProjectWork,
   compareWork,
   pairStage,
   STAGES,
@@ -130,6 +131,25 @@ test("an action that failed on a piece of work is an error on its line until an 
 
   const [merged] = workViews(failed(prPair(7, 10, { repo: "o/a", prPhase: "completed" })), NOW);
   assert.equal(merged?.status.text, "merged", "merged outranks a failure on the way");
+  assert.equal(merged && workGlyph(merged), "merged");
+
+  for (const [name, pair] of [
+    ["ready for review", prPair(7, 10, { repo: "o/a", prPhase: "review" }, { draft: false })],
+    ["checks running", prPair(7, 10, { repo: "o/a" }, { checksStatus: "pending" })],
+  ] as const) {
+    const [busy] = workViews(failed(pair), NOW);
+    assert.equal(busy?.status.signal, "error", `${name}: its status says the failure`);
+    assert.equal(busy && workGlyph(busy), "failing", `${name}: so does its mark, not the mark of what it waited on`);
+  }
+
+  // An approval's line outranks a failure in the status, so it does in the
+  // mark too: no cross beside a line that says something else.
+  const sentLine = {
+    ...work,
+    activity: null,
+    approval: { ...work.approval, line: { text: "queued — sent to yoke…", tone: "progress" as const } },
+  };
+  assert.notEqual(workGlyph(sentLine), "failing", "an approval's line, not a failure, says what the line is waiting on");
 
   const [other] = workViews(failed(prPair(8, 11, { repo: "o/a" })), NOW);
   assert.equal(other?.failure, null, "another PR's failure is not this one's");
@@ -263,7 +283,7 @@ test("the glyph at the end of a line says what the work is doing or waiting on",
   assert.equal(glyph(prPair(7, 70), { cylinders: [cylinder({ issueNumber: 7 })] }), "engine");
 });
 
-test("within a stratum, work is ordered nearest to moving first, then by number, and stays put", () => {
+test("within a level, work is ordered nearest to moving first, then by number, and stays put", () => {
   const pairs: LifecyclePair[] = [
     issuePair(9),
     issuePair(3),
@@ -276,6 +296,44 @@ test("within a stratum, work is ordered nearest to moving first, then by number,
   assert.deepEqual(works.map((work) => work.number), [4, 6, 5, 2, 3, 9], "approved, checks running, drafts, claimed, then issues by number");
   const shuffled = [...works].reverse().sort(compareWork);
   assert.deepEqual(shuffled.map((work) => work.key), works.map((work) => work.key), "the same order whatever order it arrives in");
+});
+
+test("within a project, queued work comes first, then waiting, then cold, each in its own order (#290)", () => {
+  const pairs: LifecyclePair[] = [
+    prPair(1, 10, { prPhase: "completed" }),
+    issuePair(2, { prPhase: "inactive", projectStatus: "Backlog" }),
+    issuePair(3, { blockedByIssueNumbers: [9] }),
+    prPair(4, 40, { prPhase: "review" }, { draft: false }),
+    issuePair(9),
+    prPair(5, 50),
+    prPair(6, 60, {}, { checksStatus: "pending" }),
+    prPair(8, 80, { prPhase: "review", disabled: true }, { draft: false }),
+  ];
+  const works = workViews(stateWith(pairs), NOW).sort(compareProjectWork);
+  assert.deepEqual(works.map((work) => [work.level, work.number]), [
+    ["queued", 6], ["queued", 5], ["queued", 9],
+    ["waiting", 4], ["waiting", 3],
+    ["cold", 1], ["cold", 8], ["cold", 2],
+  ], "a merge would lead the lot by its order alone; by level it follows what yoke works next");
+  const shuffled = [...works].reverse().sort(compareProjectWork);
+  assert.deepEqual(shuffled.map((work) => work.key), works.map((work) => work.key), "the same order whatever order it arrives in");
+
+  // An engine's work that is somehow drawn below the reactors is drawn as queued.
+  const [burning, queued] = workViews(stateWith([issuePair(7), issuePair(2)], "o/a", { cylinders: [cylinder({ issueNumber: 7 })] }), NOW);
+  assert.equal(burning!.level, "burning");
+  assert.ok(compareProjectWork(burning!, queued!) > 0, "ranked with the queued work, then by its own order");
+});
+
+test("a piece of work is drawn whole while queued or burning, and at 40% while it waits or is cold (#290)", () => {
+  assert.equal(only(issuePair(9)).opacity, 1, "queued: what yoke works next");
+  assert.equal(only(prPair(9, 90, {}, { checksStatus: "pending" })).opacity, 1, "queued on its checks");
+  assert.equal(only(issuePair(9, { blockedByIssueNumbers: [8] })).opacity, DIMMED_OPACITY, "waiting on other issues");
+  assert.equal(only(prPair(9, 90, { prPhase: "review", approval: "awaiting-approval" }, { draft: false })).opacity, DIMMED_OPACITY, "waiting on a person");
+  assert.equal(only(issuePair(9, { prPhase: "inactive", projectStatus: "Backlog" })).opacity, DIMMED_OPACITY, "cold: nothing is coming");
+  assert.equal(only(issuePair(9), { shutdownRequested: true }).opacity, DIMMED_OPACITY, "shut down, it is cold");
+  assert.equal(only(issuePair(7, { prPhase: "planning" }), { cylinders: [cylinder({ issueNumber: 7 })] }).opacity, 1, "burning: on its reactor");
+  const blocked = only(issuePair(9, { blockedByIssueNumbers: [8] }));
+  assert.equal(blocked.status.signal, "blocked", "its signal is still worked out, to be drawn at full strength");
 });
 
 // ── engines ──────────────────────────────────────────────────────────────────

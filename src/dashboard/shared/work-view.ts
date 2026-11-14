@@ -1,5 +1,5 @@
 import type { ActionFailure, CylinderState, DashboardState, LifecyclePair } from '../store/types.js';
-import { burnColor, pillBurnLevel, type BurnLevel } from './burn-level.js';
+import { burnColor, burnOpacity, pillBurnLevel, type BurnLevel } from './burn-level.js';
 import { failureOn } from './failures.js';
 import { NEUTRAL_COLOR, NEUTRAL_COLOR_RGB, workColor, type IssueColor } from './issue-colors.js';
 import { pillActivity, pillKey, pillsDark, type PillActivity } from './pill-activity.js';
@@ -39,6 +39,10 @@ export interface WorkView {
   /** The color it is drawn in: its hue for as long as an engine is on it, and
    *  hue-free gray below the burning stratum, where color means a signal (#286). */
   color: IssueColor;
+  /** How solid its line is drawn below the reactors (`burnOpacity`): whole
+   *  while it is queued, 40% while it waits or is cold (#290). A signal on
+   *  its line is drawn at full strength whatever this is. */
+  opacity: number;
   /** How far along the lifecycle it is: an index into `STAGES`. */
   stage: number;
   /** One line saying where it stands. */
@@ -95,8 +99,9 @@ export interface WorkStatus {
   tone: StatusTone;
   /** The state it is colored for below the burning stratum; null for none. */
   signal: WorkSignal | null;
-  /** True when the line says only what its stratum already does — waiting its
-   *  turn for an engine — so that a list of such lines can leave it unsaid
+  /** True when the line says only what its level already does — waiting its
+   *  turn for an engine, as a queued line drawn whole under its project's
+   *  heading does (#290) — so that a list of such lines can leave it unsaid
    *  rather than say it eight times over. */
   routine?: boolean;
   /** The same in a word or two, for a line with no room for the sentence:
@@ -295,6 +300,7 @@ export function workViews(state: DashboardState, nowMs: number): WorkView[] {
       // Drawn as a reactor, in its hue, for as long as an engine is on it —
       // dark ones included, while the engine finishes its action (#268).
       color: burnColor(hue, engine ? 'burning' : level),
+      opacity: burnOpacity(engine ? 'burning' : level),
       stage: pairStage(pair),
       status: workStatus({ pair, activity, approval, engine, dark, failure }),
       checks: checksOf(pair),
@@ -325,18 +331,27 @@ export function workGlyph(
   switch (work.activity) {
     case 'working': return 'engine';
     case 'manual': return 'person';
+  }
+  // A failed action outranks what the work was waiting on when it failed,
+  // as it does in its status (`workStatus`), so a failed action's red is on a
+  // cross and never on an eye or a ring of checks. (A PR that is ready for
+  // review with failing checks keeps its eye, in red: its status says both.)
+  if (work.failure && !work.approval.line && work.pair.prPhase !== 'completed' && work.pair.prPhase !== 'inactive') {
+    return 'failing';
+  }
+  switch (work.activity) {
     case 'waiting-ci': return 'checks';
     case 'review': return 'eye';
   }
   if (work.pair.prPhase === 'completed') return 'merged';
   if (work.pair.approval === 'approved' || work.approval.approved) return 'approved';
-  if (work.checks === 'failure' || work.failure) return 'failing';
+  if (work.checks === 'failure') return 'failing';
   if (work.blockedBy.length > 0) return 'blocked';
   return null;
 }
 
 /**
- * Where a level's work sorts within its own stratum: the nearest to moving
+ * Where a level's work sorts within its own level: the nearest to moving
  * first. Within `queued` that is an approved merge, then a PR waiting on its
  * checks, then one waiting for an engine, then an issue; within `waiting`, a PR
  * waiting on a person ahead of an issue waiting on other issues; within
@@ -354,12 +369,25 @@ function tier(work: WorkView): number {
   return work.blockedBy.length > 0 ? 8 : 7;
 }
 
-/** The order work is laid out in within one stratum, stable from one update
- *  to the next so that nothing changes place unless its state did. */
+/** The order work is laid out in within one level, stable from one update to
+ *  the next so that nothing changes place unless its state did. */
 export function compareWork(a: WorkView, b: WorkView): number {
   const byTier = tier(a) - tier(b);
   if (byTier !== 0) return byTier;
   const byNumber = (a.number ?? 0) - (b.number ?? 0);
   if (byNumber !== 0) return byNumber;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+}
+
+/** Where each level sorts within a project's group: hottest first. `burning`
+ *  work below the reactors has no engine, and is drawn as queued. */
+const LEVEL_RANK: Readonly<Record<BurnLevel, number>> = { burning: 0, queued: 0, waiting: 1, cold: 2 };
+
+/**
+ * The order a project's work is laid out in below the reactors (#290): queued
+ * ahead of waiting, and waiting ahead of cold, so that what yoke works next
+ * still leads; then `compareWork` within each level.
+ */
+export function compareProjectWork(a: WorkView, b: WorkView): number {
+  return LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || compareWork(a, b);
 }

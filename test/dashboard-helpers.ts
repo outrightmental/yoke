@@ -6,7 +6,7 @@ import { YokeInbox } from "../src/dashboard/components/yoke-inbox.js";
 import { Animator } from "../src/dashboard/field/animator.js";
 import type { Point } from "../src/dashboard/field/geometry.js";
 import { layoutField, type FieldLayout, type Viewport } from "../src/dashboard/field/layout.js";
-import { fieldModel, repoLabels, type FieldModel } from "../src/dashboard/field/model.js";
+import { fieldModel, fieldRepoLabels, type FieldModel } from "../src/dashboard/field/model.js";
 import { Painter, type Frame, type Surface } from "../src/dashboard/field/painter.js";
 import { readPalette, type Palette } from "../src/dashboard/field/palette.js";
 import { TextFitter, type TextStyle } from "../src/dashboard/field/text.js";
@@ -334,7 +334,7 @@ export function paintField(
   const layout = layoutField(model, { width: 1400, height: 900, railWidth: 0, lampWidth: 132, ...options.viewport });
   const animator = new Animator();
   animator.sync(layout, 0, true);
-  const labels = repoLabels(model.works.map((work) => work.repo));
+  const labels = fieldRepoLabels(model);
   const frame: Frame = {
     layout,
     model,
