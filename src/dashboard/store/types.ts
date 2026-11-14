@@ -43,6 +43,22 @@ export interface WorkHold {
 }
 
 /**
+ * The latest reading of the free space where yoke keeps its checkouts (#288).
+ * `low` means even removing every idle checkout left it below the floor, so no
+ * new work starts until there is room — the inbox lists it as a card.
+ */
+export interface DiskSpace {
+  /** The directory whose filesystem was read: the checkout root. */
+  path: string;
+  freeBytes: number;
+  /** `min_free_disk_gb`, in bytes. */
+  minFreeBytes: number;
+  low: boolean;
+  /** Epoch millis of the reading. */
+  atMs: number;
+}
+
+/**
  * A Claude account's usage windows, by their key in Anthropic's response: the
  * rolling 5-hour window and the weekly one (mirrors `UsageWindow` in
  * src/anthropic-usage.ts).
@@ -261,6 +277,8 @@ export interface DashboardState {
   hold: WorkHold | null;
   /** Latest Claude account usage reading, or null until the first arrives. */
   usage: AccountUsage | null;
+  /** Latest reading of the checkout disk's free space, or null until the first. */
+  disk: DiskSpace | null;
   /** Each PR's latest dashboard approval (#276), keyed like the pill's
    *  `approveKey` ("owner/repo#n"). Outcomes drop out once they are stale. */
   approvals: Map<string, PullRequestApprovalStatus>;

@@ -20,8 +20,25 @@ import {
   writeLogLine,
   setLogSink,
   countLiveClaudeRuns,
+  defaultCheckoutRootDir,
+  defaultRunTempRootDir,
+  sweepOrphanedRunTempDirs,
 } from "./claude-agent.js";
-import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
+import {
+  describeRemovalOutcome,
+  DiskSpaceHold,
+  openWorkFromSnapshot,
+  runCheckoutReaper,
+} from "./checkout-reaper.js";
+import { formatBytes } from "./fs-utils.js";
+import {
+  loadEnvConfig,
+  resolveGitHubToken,
+  resolveMinFreeDiskBytes,
+  applyProjectDefaults,
+  type EnvConfig,
+  type ProjectEnvConfig,
+} from "./env-config.js";
 import {
   buildDefaultSessionStorePath,
   buildLegacySessionStorePath,
@@ -305,6 +322,11 @@ interface ProjectContext {
   snapshotCache: { snapshot: RepositorySnapshot; atMs: number } | null;
   lastMaintenanceAtMs: number;
   /**
+   * The snapshot the project's last maintenance pass loaded: which of its
+   * issues and PRs are open, for the checkout reaper. Null until the first.
+   */
+  maintenanceSnapshot: RepositorySnapshot | null;
+  /**
    * Issues a just-merged PR closes, hidden from every snapshot until GitHub
    * reports them closed — see `MergedIssueGrace`.
    */
@@ -489,6 +511,8 @@ interface Config {
   /** Per-project concurrency cap (a subset of the global pool). */
   maxConcurrency: number;
   cycleMinimumMs: number;
+  /** How long an unclaimed checkout for open work is kept after its last use. */
+  checkoutRetentionMs: number;
   once: boolean;
   dryRun: boolean;
   noBrowser: boolean;
@@ -547,6 +571,7 @@ function buildProjectConfig(
     claudeTimeoutMs: resolved.claude_timeout_seconds * 1000,
     maxConcurrency: resolved.max_concurrency,
     cycleMinimumMs: Math.round(resolved.cycle_minimum_seconds * 1000),
+    checkoutRetentionMs: Math.round(resolved.checkout_retention_hours * 3_600_000),
     once: runtimeFlags.once,
     dryRun: runtimeFlags.dryRun,
     noBrowser: runtimeFlags.noBrowser,
@@ -621,6 +646,7 @@ async function runProjectMaintenance(
   }
   snapshot.agentSessions = await ctx.sessionStore.load();
   ctx.snapshotCache = { snapshot, atMs: Date.now() };
+  ctx.maintenanceSnapshot = snapshot;
 
   const activeSessions = snapshot.agentSessions.filter((s) => s.status === "in_progress");
   emitter.emit("snapshot-update", {
@@ -661,6 +687,101 @@ async function runProjectMaintenance(
     emitter,
     repoKey,
   );
+}
+
+/**
+ * The pool's share of checkout upkeep (#288): where checkouts live, the
+ * free-space floor, the keys the reaper holds while it removes a checkout, and
+ * the hold that stops new work while the disk is short of space.
+ */
+interface CheckoutUpkeep {
+  rootDir: string;
+  /** `min_free_disk_gb`, in bytes; 0 turns the low-disk eviction and hold off. */
+  minFreeBytes: number;
+  /** Shared with the planner — see `reserveUnclaimed`. */
+  reservations: Set<string>;
+  diskHold: DiskSpaceHold;
+  dryRun: boolean;
+}
+
+/**
+ * Engine 0's checkout upkeep, once per maintenance sweep over the projects:
+ * remove every checkout whose issue or PR is no longer open in the snapshot
+ * the project's maintenance just loaded, and every one left unused past its
+ * project's `checkout_retention_hours`; then, if the disk is still short of
+ * `min_free_disk_gb`, evict idle ones least recently used first, across every
+ * project, and if even that is not enough hold new work until there is room.
+ * Each removal, and the space it freed, is a maintenance bullet.
+ */
+async function runCheckoutMaintenance(
+  contexts: readonly ProjectContext[],
+  claimedActions: ReadonlySet<string>,
+  upkeep: CheckoutUpkeep,
+  shutdownSignal: ShutdownSignal,
+  emitter: EventEmitter,
+): Promise<void> {
+  const { write, section, bullet, note } = createLogger(emitter);
+  section("Checkouts");
+  note(`looking for finished and idle checkouts under ${upkeep.rootDir}…`);
+  const nowMs = Date.now();
+  const report = await runCheckoutReaper({
+    projects: contexts.map((ctx) => ({
+      repoKey: ctx.repoKey,
+      canonicalDir: path.join(upkeep.rootDir, `${ctx.config.owner}-${ctx.config.repo}`, "_main"),
+      openWork: openWorkFromSnapshot(ctx.maintenanceSnapshot),
+      retentionMs: ctx.config.checkoutRetentionMs,
+    })),
+    checkoutRootDir: upkeep.rootDir,
+    minFreeBytes: upkeep.minFreeBytes,
+    claimedActions,
+    reservations: upkeep.reservations,
+    dryRun: upkeep.dryRun,
+    nowMs,
+    shouldStop: () => shutdownSignal.requested,
+    onOutcome: (outcome) => bullet(describeRemovalOutcome(outcome, nowMs)),
+  });
+
+  const removed = report.outcomes.filter((o) => o.status === "removed").length;
+  const remaining = report.checkoutCount - removed;
+  const freeText =
+    report.freeBytesAfter !== undefined
+      ? `${formatBytes(report.freeBytesAfter)} free` +
+        (upkeep.minFreeBytes > 0 ? ` (keeps at least ${formatBytes(upkeep.minFreeBytes)})` : "")
+      : "free space unknown";
+  bullet(
+    (removed > 0 ? `removed ${removed} checkout(s), freed ${formatBytes(report.freedBytes)} · ` : "") +
+      `${remaining} checkout(s) on disk · ${freeText}`,
+  );
+  for (const checkout of report.unreachable) {
+    bullet(
+      `kept checkout ${checkout.repoKey} ${checkout.name} — its detached HEAD holds commits no branch has, ` +
+        `so removing it would lose them; remove it by hand once they are saved or not wanted`,
+    );
+  }
+  if (report.ownClones.length > 0) {
+    bullet(
+      `kept ${report.ownClones.length} standalone clone(s) from an older yoke — their branches are their own: ` +
+        report.ownClones.map((dir) => path.basename(dir)).join(", "),
+    );
+  }
+
+  if (report.freeBytesAfter === undefined) return;
+  const reading = { path: upkeep.rootDir, freeBytes: report.freeBytesAfter, minFreeBytes: upkeep.minFreeBytes };
+  if (upkeep.dryRun) {
+    if (report.low) bullet(`[dry-run] would hold new work: the disk is short of space`);
+    return;
+  }
+  const change = upkeep.diskHold.update(reading, report.low);
+  emitter.emit("disk-space", { ...reading, low: report.low });
+  if (change === "held") {
+    write(
+      `⏸ only ${formatBytes(reading.freeBytes)} free for checkouts, below min_free_disk_gb ` +
+        `(${formatBytes(reading.minFreeBytes)}), with every idle checkout already removed — ` +
+        `no new work will be planned or started until there is room. Work under way carries on.`,
+    );
+  } else if (change === "released") {
+    write(`▶ ${formatBytes(reading.freeBytes)} free for checkouts again — resuming work.`);
+  }
 }
 
 /**
@@ -758,6 +879,7 @@ async function planNextAction(
   emitter: EventEmitter,
   actionCooldowns: ActionCooldowns,
   shutdownSignal: ShutdownSignal,
+  reservedKeys: ReadonlySet<string>,
 ): Promise<PlannedWork | null> {
   const claimed = await claimNextAction({
     projects: contexts,
@@ -787,6 +909,7 @@ async function planNextAction(
     },
     claimedActions,
     cooldownUntilMs: actionCooldowns.until,
+    reservedKeys,
     shutdownSignal,
   });
   if (!claimed) return null;
@@ -805,6 +928,7 @@ async function runEngine(
   shutdownSignal: ShutdownSignal,
   cancelSignal: { requested: boolean },
   poolWake: PoolWake,
+  upkeep: CheckoutUpkeep,
   emitter: EventEmitter,
 ): Promise<void> {
   const { write, blank, section, bullet, note, failure } = createLogger(emitter);
@@ -943,13 +1067,24 @@ async function runEngine(
 
       // ── Per-project maintenance (engine 0 only, outside the mutex) ──────────
       if (engineIndex === 0) {
+        let maintained = false;
         for (const ctx of contexts) {
           if (Date.now() - ctx.lastMaintenanceAtMs < ctx.config.cycleMinimumMs) continue;
           ctx.lastMaintenanceAtMs = Date.now();
+          maintained = true;
           try {
             await runProjectMaintenance(ctx, claimedActions, emitter);
           } catch (error) {
             bullet(`${ctx.repoKey}: maintenance failed: ${(error as Error).message}`);
+          }
+        }
+        // Across every project at once: they share the disk, so eviction
+        // under pressure goes least recently used first over all of them.
+        if (maintained) {
+          try {
+            await runCheckoutMaintenance(contexts, claimedActions, upkeep, shutdownSignal, emitter);
+          } catch (error) {
+            bullet(`checkout upkeep failed: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
       }
@@ -1001,6 +1136,28 @@ async function runEngine(
         continue;
       }
 
+      // ── Low-disk hold ──────────────────────────────────────────────────────
+      // Engine 0's checkout upkeep found the disk short of space even after
+      // removing every idle checkout. A run started now would fail partway —
+      // git, or a dependency install, on a full disk — so start none until a
+      // later pass finds room. Engine 0 keeps maintaining (and re-reading the
+      // free space) every cycle; work already under way carries on.
+      if (upkeep.diskHold.active !== undefined) {
+        const waitMs = Math.max(globalCycleMinimumMs, 5000);
+        emitter.emit("engine-idle", {
+          engineIndex,
+          reason: "low disk space",
+          nextCycleAtMs: Date.now() + waitMs,
+        });
+        if (isOnceMode) {
+          write(`Engine ${engineIndex + 1}: shutdown — the disk is short of space in --once mode.`);
+          emitter.emit("engine-shutdown", { engineIndex });
+          return;
+        }
+        await idleWait(waitMs);
+        continue;
+      }
+
       // Nothing is holding this engine back, so the hold (if there was one) is
       // over. Announced once for the pool, by whichever engine gets here first.
       exitHold();
@@ -1009,7 +1166,14 @@ async function runEngine(
       // An engine can queue here behind every other engine's planning pass, so
       // the stop order is re-read inside the lock, not just above it.
       const planned = await planningMutex.withLock(() =>
-        planNextAction(contexts, claimedActions, emitter, actionCooldowns, shutdownSignal),
+        planNextAction(
+          contexts,
+          claimedActions,
+          emitter,
+          actionCooldowns,
+          shutdownSignal,
+          upkeep.reservations,
+        ),
       );
 
       // ── Fire gate ───────────────────────────────────────────────────────────
@@ -1333,6 +1497,7 @@ async function main(): Promise<void> {
       cap: Math.min(config.maxConcurrency, globalMaxConcurrency),
       snapshotCache: null,
       lastMaintenanceAtMs: 0,
+      maintenanceSnapshot: null,
       mergedIssueGrace: new MergedIssueGrace(),
     } satisfies ProjectContext;
   });
@@ -1403,7 +1568,27 @@ async function main(): Promise<void> {
     `cycle-minimum: ${formatDuration(globalCycleMinimumMs)} · pool: ${globalMaxConcurrency} cylinder(s)` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
+  const minFreeBytes = resolveMinFreeDiskBytes(envConfig);
+  write(
+    `checkouts: ${defaultCheckoutRootDir()} · idle ones kept ${formatDuration(first.config.checkoutRetentionMs)}` +
+      (contexts.some((c) => c.config.checkoutRetentionMs !== first.config.checkoutRetentionMs)
+        ? " (varies by project)"
+        : "") +
+      ` · ${minFreeBytes > 0 ? `keeps at least ${formatBytes(minFreeBytes)} free` : "no free-space floor"}`,
+  );
   write(HEAVY_RULE);
+
+  // ── Agent scratch left by a yoke that did not get to clean up ─────────────
+  // Each Claude run's TMPDIR is removed when the run ends; one that was still
+  // running when its yoke crashed or was killed is removed here instead.
+  try {
+    const swept = await sweepOrphanedRunTempDirs();
+    if (swept.length > 0) {
+      write(`removed ${swept.length} agent scratch dir(s) left in ${defaultRunTempRootDir()} by a yoke that is no longer running`);
+    }
+  } catch (error) {
+    write(`could not sweep ${defaultRunTempRootDir()}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // ── Per-project startup: ensure the "manual"/"focus" labels exist ─────────
   for (const ctx of contexts) {
@@ -1454,6 +1639,13 @@ async function main(): Promise<void> {
 
   const poolWake = new PoolWake();
   const approvals = new DashboardApprovals(emitter);
+  const upkeep: CheckoutUpkeep = {
+    rootDir: defaultCheckoutRootDir(),
+    minFreeBytes,
+    reservations: new Set<string>(),
+    diskHold: new DiskSpaceHold(),
+    dryRun,
+  };
 
   emitter.subscribe((event) => {
     if (event.type === "cylinder-cancel") {
@@ -1495,6 +1687,7 @@ async function main(): Promise<void> {
       shutdownSignal,
       cancelSignals[i]!,
       poolWake,
+      upkeep,
       emitter,
     ),
   );

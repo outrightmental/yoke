@@ -1,5 +1,5 @@
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, unlink, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { GitHubApiGateway } from "./github-gateway.js";
@@ -497,11 +497,103 @@ interface ClaudeAgentClientOptions {
   claudeCommitModel?: string;
   /** Maximum milliseconds the Claude CLI is allowed to run before being killed. Defaults to 3 hours; set `claude_timeout_seconds` in env.yaml to change it. */
   claudeTimeoutMs?: number;
+  /** Directory under which each Claude run gets its own `TMPDIR`. Defaults to `~/.yoke/tmp`. */
+  runTempRootDir?: string;
 }
 
-function defaultCheckoutRootDir(): string {
+export function defaultCheckoutRootDir(): string {
   return join(homedir(), ".yoke", "checkouts");
 }
+
+// ─── Per-run scratch space ──────────────────────────────────────────────────
+//
+// Agents put scratch files wherever they like, and left to themselves they
+// invent `/tmp/<name>` paths — Node and Terraform downloads, whole copies of a
+// repository, verify logs. Nothing ever removed them: on 2026-11-13 the shared
+// `/tmp` held 52 GB in ~28,000 such entries and the disk filled (#288). Each run
+// now gets a private `TMPDIR` that is deleted when the run ends, however it ends.
+
+export function defaultRunTempRootDir(): string {
+  return join(homedir(), ".yoke", "tmp");
+}
+
+/**
+ * The yoke process a run temp dir belongs to. Named `<pid>-<random>` so a
+ * startup sweep can tell a crashed yoke's leftovers from a live yoke's runs,
+ * including those of a second yoke sharing the same home directory.
+ */
+function runTempDirOwnerPid(name: string): number | undefined {
+  const match = /^(\d+)-/.exec(name);
+  if (!match) return undefined;
+  const pid = Number.parseInt(match[1]!, 10);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: it exists but belongs to someone else — alive all the same.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Create a fresh, private temp dir for one Claude run. */
+export async function createRunTempDir(rootDir: string = defaultRunTempRootDir()): Promise<string> {
+  await mkdir(rootDir, { recursive: true });
+  return mkdtemp(join(rootDir, `${process.pid}-`));
+}
+
+/** Remove a run's temp dir and everything the agent left in it. Never throws. */
+export async function removeRunTempDir(dir: string): Promise<void> {
+  try {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    writeLogLine(
+      `[yoke] Could not remove the run's temp dir ${dir}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Remove the run temp dirs a yoke that is no longer running left behind — one
+ * that crashed, or was killed, before its runs' cleanup could happen. Dirs of a
+ * yoke that is still alive, this one included, are left alone, and so is
+ * anything in the root that yoke did not name. Returns the dirs removed.
+ */
+export async function sweepOrphanedRunTempDirs(
+  rootDir: string = defaultRunTempRootDir(),
+): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(rootDir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const name of names) {
+    const pid = runTempDirOwnerPid(name);
+    if (pid === undefined || pid === process.pid || isProcessAlive(pid)) continue;
+    const dir = join(rootDir, name);
+    try {
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      removed.push(dir);
+    } catch {
+      // Left for the next sweep.
+    }
+  }
+  return removed;
+}
+
+/**
+ * The line every action prompt carries about scratch files, so an agent puts
+ * them in its run's `TMPDIR` — which yoke deletes afterwards — rather than in a
+ * `/tmp/<name>` of its own invention that nothing ever removes.
+ */
+export const SCRATCH_SPACE_INSTRUCTION =
+  "Scratch space: put every temporary file — downloads, toolchains, copies of other repositories, logs — under `$TMPDIR`, " +
+  "a directory private to this run that is deleted when the run ends. Do not invent paths such as `/tmp/<name>`: nothing cleans those up.";
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -1301,6 +1393,8 @@ function buildImplementationPrompt(
     "2. Commit every change you make to the current branch with descriptive commit messages.",
     "3. After all commits are made, output a JSON object containing the proposed pull-request title and body, wrapped between the exact sentinel lines below.",
     "",
+    SCRATCH_SPACE_INSTRUCTION,
+    "",
     `${IMPLEMENTATION_PAYLOAD_START_MARKER}`,
     `{`,
     `  "title": "<concise PR title summarizing the change>",`,
@@ -1373,6 +1467,8 @@ function buildSelfReviewPrompt(params: SelfReviewParams): string {
     "5. If you find nothing that needs to change, make no commits and output only a brief 'LGTM' message.",
     ...payloadSection,
     "",
+    SCRATCH_SPACE_INSTRUCTION,
+    "",
     "Be honest and thorough — this is your own code and the goal is to ship high-quality work that fully satisfies the issue.",
   ].join("\n");
 }
@@ -1392,6 +1488,8 @@ function buildResolveConflictsPrompt(params: ResolveMergeConflictsParams): strin
     "5. Do not push — the orchestrator handles pushing.",
     "",
     "If you cannot resolve a conflict safely, abort the rebase/merge (`git rebase --abort` / `git merge --abort`) and exit with a clear explanation.",
+    "",
+    SCRATCH_SPACE_INSTRUCTION,
   ].join("\n");
 }
 
@@ -1416,6 +1514,8 @@ function buildAddressFailingChecksPrompt(params: AddressFailingChecksParams): st
     "3. If there are human comments on the PR (shown above), address any requests or concerns raised in them.",
     "4. Commit every change with a descriptive commit message.",
     "5. Do not push — the orchestrator handles pushing.",
+    "",
+    SCRATCH_SPACE_INSTRUCTION,
   ].join("\n");
 }
 
@@ -1433,6 +1533,8 @@ function buildPushConflictResolutionPrompt(branch: string): string {
     "5. Do not run `git push` yourself; stop after the merge commit succeeds.",
     "",
     "If a safe resolution is not possible, stop and explain why.",
+    "",
+    SCRATCH_SPACE_INSTRUCTION,
   ].join("\n");
 }
 
@@ -1848,6 +1950,17 @@ function buildPushRecoveryBackupBranchName(branch: string): string {
 export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
 
 /**
+ * Stamp a checkout's directory with the time it was last prepared for a run.
+ * The checkout reaper ages idle checkouts out by when they were last used, and
+ * a directory's own mtime otherwise moves only when an entry directly inside it
+ * is added or removed. Best effort: a failed stamp only makes it look older.
+ */
+async function markCheckoutUsed(repoDir: string): Promise<void> {
+  const now = new Date();
+  await utimes(repoDir, now, now).catch(() => {});
+}
+
+/**
  * Serializes canonical-clone setup per `_main` directory.
  *
  * `ensureCanonicalClone` is a read-modify-write over a shared `.git`, and its
@@ -1869,7 +1982,7 @@ export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
  */
 const canonicalCloneLocks = new Map<string, Promise<unknown>>();
 
-function withCanonicalCloneLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+export function withCanonicalCloneLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const prior = canonicalCloneLocks.get(dir) ?? Promise.resolve();
   // Chained onto both settle paths: a plain `.then(fn)` would poison the queue
   // for every later waiter as soon as one engine's clone failed.
@@ -1901,9 +2014,11 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeReviewEffort: string | undefined;
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
+  private readonly runTempRootDir: string;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
+    this.runTempRootDir = options.runTempRootDir ?? defaultRunTempRootDir();
     this.claudeCommand = options.claudeCommand ?? "claude";
     if (!options.githubToken && !options.githubGateway) {
       throw new Error("ClaudeAgentClient requires either githubToken or githubGateway.");
@@ -2491,6 +2606,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // before they were committed or pushed. Discard any leftover state so the
     // subsequent `git checkout -B` can switch branches cleanly.
     await this.resetWorkingTreeToClean(repoDir);
+    await markCheckoutUsed(repoDir);
     return repoDir;
   }
 
@@ -2693,6 +2809,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     });
 
     await this.resetWorkingTreeToClean(repoDir);
+    await markCheckoutUsed(repoDir);
 
     const pullRequest = await this.fetchPullRequestForCheckout(
       params.owner,
@@ -2906,6 +3023,15 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       );
     }
 
+    // A private scratch dir for this run, removed in the `finally` below
+    // whether the run succeeds, fails, or is killed on timeout (runCommand
+    // settles only once the killed tree has closed). TMP and TEMP are what
+    // Windows tools read instead of TMPDIR.
+    const runTempDir = await createRunTempDir(this.runTempRootDir);
+    env.TMPDIR = runTempDir;
+    env.TMP = runTempDir;
+    env.TEMP = runTempDir;
+
     const slotId = statusBoard.allocate(modelDisplay);
 
     const runClaudeCli = (useStdinPrompt: boolean): Promise<string> =>
@@ -2975,6 +3101,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         );
       }
       throw error;
+    } finally {
+      await removeRunTempDir(runTempDir);
     }
   }
 }

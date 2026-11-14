@@ -87,7 +87,7 @@ function withFailure(
 // ── the sources ──────────────────────────────────────────────────────────────
 
 test("the inbox lists its sources in one order, the most pressing first", () => {
-  assert.deepEqual([...INBOX_SOURCES], ["keep-awake", "approval", "review", "failure", "manual"]);
+  assert.deepEqual([...INBOX_SOURCES], ["disk", "keep-awake", "approval", "review", "failure", "manual"]);
 });
 
 test("approval: a PR parked by the review label has a card, and so has every approval under way", () => {
