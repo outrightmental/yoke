@@ -6,14 +6,17 @@
 // visually distant hues instead of colliding on a small palette.
 //
 // These are the engine colors: every one is fully saturated, because a gray
-// engine just looks inactive (issue #280). Saturation on the dashboard means
-// live computing burn; everything else is hue-free trim gray. Where the work
-// is not burning at full heat it is drawn at a lower saturation of the same
-// hue (`atSaturation`), on the scale in shared/burn-level.ts (issue #281).
+// engine just looks inactive (issue #280). The rainbow they make is kept for
+// the burning stratum at the top of the field (issue #286): an engine's ring,
+// its reactor, and the work it is on. Below it, work is hue-free gray, and an
+// issue's color survives there only as the one small mark on its line that
+// says which issue it is — the same color as its inbox card and its tether,
+// so either can be matched to the line. Everything else is trim gray, and the
+// only other saturated colors are the status signals in styles/tokens.css.
 
 /** Hue-free trim gray (`--trim-dim` in styles/tokens.css) for anything that
- *  is not work an engine can take on: idle cylinders, commits, CI/workflow
- *  events, log chrome. */
+ *  is not burning: idle cylinders, commits, CI/workflow events, log chrome,
+ *  and every line of work below the burning stratum (issue #286). */
 export const NEUTRAL_COLOR = '#8c8c8c';
 export const NEUTRAL_COLOR_RGB = '140,140,140';
 
@@ -50,22 +53,6 @@ function hslColor(h: number, s: number, l: number): IssueColor {
 /** The stable color an issue keeps forever. */
 export function issueColor(issueNumber: number): IssueColor {
   return hslColor(issueHue(issueNumber), SATURATION, LIGHTNESS);
-}
-
-/**
- * The same color at another HSL saturation (0..1), keeping its hue and
- * lightness, so it still reads as the same issue's — only cooler or hotter
- * (issue #281). A gray has no hue to keep, so it comes back as it is.
- */
-export function atSaturation(color: IssueColor, saturation: number): IssueColor {
-  const [r, g, b] = color.rgb.split(',').map((c) => Number(c) / 255) as [number, number, number];
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const chroma = max - min;
-  if (chroma === 0) return color;
-  const sector = max === r ? (g - b) / chroma : max === g ? (b - r) / chroma + 2 : (r - g) / chroma + 4;
-  const h = (sector * 60 + 360) % 360;
-  return hslColor(h, Math.max(0, Math.min(1, saturation)), (max + min) / 2);
 }
 
 /**

@@ -4,10 +4,16 @@
   /* UI trim (issue #280): fully desaturated grays, r = g = b with no hue at
      all. Everything structural — the field's ground, its labels and rules,
      the instruments along its top, the inbox's surfaces, scrollbars, body
-     text — is drawn in these, so that saturated color on screen means live
-     computing burn: the per-issue engine colors in shared/issue-colors.ts.
-     The canvas reads these same properties (field/palette.ts), so the rule
-     holds for what is painted as well as for what is styled. */
+     text — is drawn in these, and so is every line of work below the burning
+     stratum (issue #286). Saturated color on screen is either the per-issue
+     colors in shared/issue-colors.ts — kept for the burning stratum, and for
+     the one mark, card edge and tether that say which issue a piece of work
+     is — or a status signal below. The canvas reads these same properties
+     (field/palette.ts), so the rule holds for what is painted as well as for
+     what is styled. Below the reactors the field alternates its lines between
+     two grays, the ground and a band: the ground lifted by a step of
+     --trim-bright (BAND_ALPHA in field/painter.ts). Each gray's contrast is
+     set out under "Colour" in design/DASHBOARD.md. */
   --trim-bright: #e0e0e0;
   --trim: #b4b4b4;
   --trim-rgb: 180, 180, 180;
@@ -21,9 +27,14 @@
   --bg-panel: rgba(24, 24, 24, 0.6);
   --bg-bar: rgba(14, 14, 14, 0.95);
 
-  /* Status signals: the only saturated colors that are not an engine's. They
-     mark an outcome or an alarm — an error, a hold, a warning, a merge — and
-     are never used for trim. */
+  /* Status signals: the only saturated colors that are not an issue's. They
+     mark an outcome or an alarm, and are never used for trim. Below the
+     burning stratum they are the only color a line of work has (issue #286):
+     red an error (a failed action, failing checks, a refused approval),
+     orange something held up (a block, a hold, a shutdown), yellow waiting
+     on a person or a warning, green an approval going through. Coral is the
+     inbox's for a card's problem. The next state that needs a color of its
+     own takes a blue or a turquoise, not one of these. */
   --color-green: #00ff88;
   --color-green-rgb: 0, 255, 136;
   --color-yellow: #ffcc00;

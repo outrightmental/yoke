@@ -206,6 +206,11 @@ export interface FakeCanvas {
   texts: string[];
   /** Every fill color a string was drawn in, alongside it. */
   fills: Array<{ text: string; fill: string }>;
+  /** Every path filled, in order: its fill color, the global alpha it was
+   *  filled at, and the circles and rounded boxes it was made of. */
+  shapes: Array<{ fill: string; alpha: number; arcs: number[][]; boxes: number[][] }>;
+  /** The stroke color of every path stroked, in order. */
+  strokes: string[];
 }
 
 /** The size, in pixels, of the font in a CSS font shorthand. */
@@ -223,7 +228,11 @@ export function fakeCanvas(): FakeCanvas {
   const calls: FakeCanvas["calls"] = [];
   const texts: string[] = [];
   const fills: FakeCanvas["fills"] = [];
-  const state: Record<string, unknown> = { font: "12px monospace", fillStyle: "", strokeStyle: "" };
+  const shapes: FakeCanvas["shapes"] = [];
+  const strokes: string[] = [];
+  let arcs: number[][] = [];
+  let boxes: number[][] = [];
+  const state: Record<string, unknown> = { font: "12px monospace", fillStyle: "", strokeStyle: "", globalAlpha: 1 };
   const gradient = { addColorStop: () => {} };
   const special: Record<string, (...args: unknown[]) => unknown> = {
     measureText: (text) => ({ width: String(text).length * fontSize(String(state["font"])) * 0.6 }),
@@ -236,6 +245,14 @@ export function fakeCanvas(): FakeCanvas {
       texts.push(String(text));
       fills.push({ text: String(text), fill: String(state["fillStyle"]) });
     },
+    beginPath: () => {
+      arcs = [];
+      boxes = [];
+    },
+    arc: (...args) => void arcs.push(args.map(Number)),
+    roundRect: (...args) => void boxes.push(args.map(Number)),
+    fill: () => void shapes.push({ fill: String(state["fillStyle"]), alpha: Number(state["globalAlpha"]), arcs: [...arcs], boxes: [...boxes] }),
+    stroke: () => void strokes.push(String(state["strokeStyle"])),
   };
   const ctx = new Proxy(state, {
     get(target, key) {
@@ -252,7 +269,7 @@ export function fakeCanvas(): FakeCanvas {
     },
     has: (target, key) => typeof key === "string" && key in target,
   }) as unknown as CanvasRenderingContext2D;
-  return { ctx, calls, texts, fills };
+  return { ctx, calls, texts, fills, shapes, strokes };
 }
 
 /** A text fitter that measures as `fakeCanvas` does. */
