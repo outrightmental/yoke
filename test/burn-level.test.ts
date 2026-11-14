@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { burnColor, cylinderColor, pillBurnLevel, type BurnLevel } from "../src/dashboard/shared/burn-level.js";
+import { burnColor, burnOpacity, cylinderColor, DIMMED_OPACITY, pillBurnLevel, type BurnLevel } from "../src/dashboard/shared/burn-level.js";
 import { issueColor, NEUTRAL_COLOR, NEUTRAL_COLOR_RGB } from "../src/dashboard/shared/issue-colors.js";
 import type { PillActivity } from "../src/dashboard/shared/pill-activity.js";
 import type { CylinderState, LifecyclePair } from "../src/dashboard/store/types.js";
@@ -87,6 +87,11 @@ test("only the burning level is drawn in the work's hue; every level below it is
   }
 });
 
+test("below the reactors a level is said in how solid its line is: queued whole, waiting and cold at 40% (#290)", () => {
+  assert.equal(DIMMED_OPACITY, 0.4);
+  assert.deepEqual(LEVELS.map((level) => [level, burnOpacity(level)]), [["burning", 1], ["queued", 1], ["waiting", 0.4], ["cold", 0.4]]);
+});
+
 // ── engine cylinders ─────────────────────────────────────────────────────────
 
 test("a cylinder keeps its work's hue for as long as it holds the work, and is trim gray with none", () => {
@@ -148,7 +153,7 @@ test("work below the burning stratum keeps its hue as its identity, not as its c
   }
 });
 
-test("a piece of work is laid out in the stratum of its level, and an engine's work beside its ring", () => {
+test("a piece of work is drawn at its level below the reactors, and an engine's work beside its ring", () => {
   const stratumOf = (p: LifecyclePair, activity: PillActivity | null, dark = false) => {
     const model = fieldModel(stateFor(p, activity, dark), Date.now());
     const layout = layoutField(model, { width: 1400, height: 900, railWidth: 0, lampWidth: 0 });

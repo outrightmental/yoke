@@ -2,7 +2,9 @@ import type { BurnLevel } from '../shared/burn-level.js';
 import type { EngineView } from '../shared/engine-view.js';
 import type { WorkView } from '../shared/work-view.js';
 import { contains, rect, type Rect } from './geometry.js';
-import { RIBBON_MAX_LINES, type FieldModel } from './model.js';
+import { levelCounts, RIBBON_MAX_LINES, STRATUM_LEVELS, stratumLevel, type FieldModel, type StratumLevel } from './model.js';
+
+export type { StratumLevel };
 
 /**
  * Where everything on the field goes.
@@ -14,9 +16,11 @@ import { RIBBON_MAX_LINES, type FieldModel } from './model.js';
  *
  * It answers the complaint the field exists to answer — fixed rectangles with
  * content forced into them — by giving nothing a fixed place. Each level of
- * burn has its own line height and column width; an empty level takes no
- * room at all; and when the window cannot hold everything, the whole field
- * steps down to a denser set of sizes before it ever asks to be scrolled.
+ * burn has its own line height and column width, and a project's group below
+ * the reactors is set at those of the hottest level it holds; a project with
+ * nothing below the reactors takes no room at all; and when the window cannot
+ * hold everything, the whole field steps down to a denser set of sizes before
+ * it ever asks to be scrolled.
  */
 
 /** The window the field is drawn in, in CSS pixels. */
@@ -28,8 +32,6 @@ export interface Viewport {
   /** The width the keep-awake lamp takes at the top right of the field. */
   lampWidth: number;
 }
-
-export type StratumLevel = Exclude<BurnLevel, 'burning'>;
 
 /** One set of sizes the field can be laid out at. */
 export interface Density {
@@ -47,7 +49,7 @@ export interface Density {
   colMinW: Readonly<Record<StratumLevel, number>>;
   headerH: number;
   benchH: number;
-  /** Space between one stratum and the next. */
+  /** Space between one group and the next. */
   gap: number;
 }
 
@@ -99,7 +101,7 @@ const RIBBON_PAD_TOP = 12;
 const RIBBON_PAD_BOTTOM = 10;
 /** How wide an engine on the bench is drawn: a small ring and a few words. */
 const BENCH_SLOT_W = 210;
-/** The most columns a level's rows are ever set in, however wide the window. */
+/** The most columns a project's rows are ever set in, however wide the window. */
 const MAX_COLUMNS = 4;
 /** No reactor is drawn wider than this: past it, a title is a line too long to read. */
 const REACTOR_MAX_W = 760;
@@ -134,7 +136,9 @@ export interface WorkNode {
   rect: Rect;
   /** Title lines for a reactor; text lines for a row. */
   lines: 1 | 2;
-  /** The stratum it is drawn in. */
+  /** The level it is drawn at: `burning` for a reactor, and below the
+   *  reactors its own (`stratumLevel`), which a row says in the weight of its
+   *  type and ink rather than in where it is (#290). */
   level: BurnLevel;
   work: WorkView;
   /** The engine on it, for a reactor. */
@@ -157,18 +161,27 @@ export interface HeaderNode {
   kind: 'header';
   id: string;
   rect: Rect;
-  level: BurnLevel;
-  /** How many pieces of work the stratum holds; for `burning`, how many engines are. */
+  /** What it heads: the reactors (`burning`), or one project's work below
+   *  them (`project`, #290). */
+  heads: 'burning' | 'project';
+  /** The project, "owner/repo", for a project's heading; empty for the
+   *  reactors', and for work that named no project. */
+  repo: string;
+  /** How many pieces of work the project has below the reactors; for
+   *  `burning`, how many engines are burning. */
   count: number;
   /** For `burning`: the size of the pool. */
   total: number | null;
+  /** For a project: how much of its work is at each level, hottest first,
+   *  levels with none left out. Empty for `burning`. */
+  levels: Array<{ level: StratumLevel; count: number }>;
   /**
-   * The bands of a stratum below the reactors: a box behind every other line
-   * of its work, counted down each column, so that two neighbouring lines —
-   * gray, with no hue to tell them apart (#286) — are always on two different
-   * grays. They belong to the stratum rather than to its lines, so they stay
-   * put while the lines slide past them, and move only when the stratum does.
-   * Empty for `burning`.
+   * The bands of a project's group below the reactors: a box behind every
+   * other line of its work, counted down each column, so that two
+   * neighbouring lines — gray, with no hue to tell them apart (#286) — are
+   * always on two different grays. They belong to the group rather than to
+   * its lines, so they stay put while the lines slide past them, and move
+   * only when the group does. Empty for `burning`.
    */
   bands: Rect[];
 }
@@ -225,7 +238,7 @@ function layoutContent(model: FieldModel, width: number, density: Density): { no
   if (engineCount > 0) {
     nodes.push({
       kind: 'header', id: 'header:burning', rect: rect(0, y, width, density.headerH),
-      level: 'burning', count: model.reactors.length, total: engineCount, bands: [],
+      heads: 'burning', repo: '', count: model.reactors.length, total: engineCount, levels: [], bands: [],
     });
     y += density.headerH;
   }
@@ -295,25 +308,30 @@ function layoutContent(model: FieldModel, width: number, density: Density): { no
     y += Math.ceil(model.bench.length / perRow) * density.benchH;
   }
 
-  // ── The strata below: a line for every piece of work no engine is on ────
+  // ── Below: a group for each project, a line for every piece of work no engine is on ──
   for (const stratum of model.strata) {
-    const { level, works } = stratum;
+    const { repo, works } = stratum;
     y += density.gap;
     const bands: Rect[] = [];
     nodes.push({
-      kind: 'header', id: `header:${level}`, rect: rect(0, y, width, density.headerH),
-      level, count: works.length, total: null, bands,
+      kind: 'header', id: `header:project:${repo}`, rect: rect(0, y, width, density.headerH),
+      heads: 'project', repo, count: works.length, total: null, levels: levelCounts(works), bands,
     });
     y += density.headerH;
+    // Every line of a project is the one size — that of the hottest level it
+    // holds — so its bands rule it evenly, and a line that changes level keeps
+    // its size as it moves to its new place in the group. Its level is said in
+    // its type, its ink and how solid it is instead (#290).
+    const size = STRATUM_LEVELS.find((level) => works.some((work) => stratumLevel(work) === level)) ?? 'queued';
     // As many columns as fit, but never more than there is work to put in
     // them: three lines of work are three columns, not three quarters of four.
     const cols = Math.min(
       MAX_COLUMNS,
       works.length,
-      Math.max(1, Math.floor((width + COLUMN_GAP) / (density.colMinW[level] + COLUMN_GAP))),
+      Math.max(1, Math.floor((width + COLUMN_GAP) / (density.colMinW[size] + COLUMN_GAP))),
     );
     const colW = Math.min(ROW_MAX_W, (width - COLUMN_GAP * (cols - 1)) / cols);
-    const rowH = density.rowH[level];
+    const rowH = density.rowH[size];
     // Down each column in turn, like a newspaper: when a piece of work leaves,
     // the ones under it close up by a line, and nothing else has to move.
     const rows = Math.ceil(works.length / cols);
@@ -326,8 +344,8 @@ function layoutContent(model: FieldModel, width: number, density: Density): { no
         id: `work:${work.key}`,
         mode: 'row',
         rect: box,
-        lines: density.rowLines[level],
-        level,
+        lines: density.rowLines[size],
+        level: stratumLevel(work),
         work,
         engine: null,
       });

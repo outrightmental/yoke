@@ -20,11 +20,14 @@ import type { PillActivity } from './pill-activity.js';
  * Only `burning` is drawn in the work's own hue (#286). The rainbow of issue
  * colors is kept for the top of the field, where engines are spending tokens,
  * so that it says one thing: this is burning. Every level below is hue-free
- * gray, the level saying itself in how bright the ink is and how much room a
- * line has; there the hue survives only as the small mark on each line's
- * track that says which issue it is, and saturated color is otherwise a
- * status signal (`WorkSignal` in shared/work-view.ts). See "Colour" in
- * design/DASHBOARD.md for the whole scheme.
+ * gray, the level saying itself in how bright the ink is and how solid the
+ * line is (`burnOpacity`); there the hue survives only as the small mark on
+ * each line's track that says which issue it is, and saturated color is
+ * otherwise a status signal (`WorkSignal` in shared/work-view.ts). See
+ * "Colour" in design/DASHBOARD.md for the whole scheme.
+ *
+ * Below the reactors the field groups work by project, not by level (#290),
+ * so the levels there are told apart by weight rather than by place.
  */
 export type BurnLevel = 'burning' | 'queued' | 'waiting' | 'cold';
 
@@ -37,6 +40,25 @@ const BELOW_BURNING: IssueColor = { hex: NEUTRAL_COLOR, rgb: NEUTRAL_COLOR_RGB }
  */
 export function burnColor(hue: IssueColor, level: BurnLevel): IssueColor {
   return level === 'burning' ? hue : BELOW_BURNING;
+}
+
+/**
+ * How solid a line of work below the reactors is drawn: at 40% (#290) once
+ * it is waiting on someone else, so that it recedes against the queued work
+ * around it in its project's group.
+ */
+export const DIMMED_OPACITY = 0.4;
+
+/**
+ * The opacity a piece of work is drawn at, at a level (#290): whole while it
+ * burns or is queued — what yoke is spending tokens on now or next — and
+ * `DIMMED_OPACITY` while it waits. Cold work, which nothing is coming for, is
+ * dimmed the same: it shares a project's group with the waiting work, and a
+ * cold line drawn whole would stand out above it; its own smaller, dimmer
+ * type keeps it the faintest of the three.
+ */
+export function burnOpacity(level: BurnLevel): number {
+  return level === 'burning' || level === 'queued' ? 1 : DIMMED_OPACITY;
 }
 
 /**

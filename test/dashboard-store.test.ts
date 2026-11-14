@@ -13,7 +13,7 @@ import type { LifecyclePair } from "../src/dashboard/store/types.js";
 import { issueColor, NEUTRAL_COLOR } from "../src/dashboard/shared/issue-colors.js";
 import { workingCylinder } from "../src/dashboard/shared/working-cylinder.js";
 import { pillActivity, pillKey, pillsDark, waitingOnChecks } from "../src/dashboard/shared/pill-activity.js";
-import { fieldModel } from "../src/dashboard/field/model.js";
+import { fieldModel, stratumLevel } from "../src/dashboard/field/model.js";
 import { layoutField } from "../src/dashboard/field/layout.js";
 import { workGlyph, workViews } from "../src/dashboard/shared/work-view.js";
 import { formatClockTime } from "../src/dashboard/shared/format.js";
@@ -1091,7 +1091,7 @@ test("pillActivity: follows a PR through its checks, an engine's action and revi
 /**
  * How the field sets `pair`: "working" when an engine is on it, which is what
  * earns it a reactor at the top of the field; nothing otherwise, when it is a
- * dimmer line in the stratum of its level.
+ * line in its project's group below, drawn at the weight of its level.
  */
 function renderedPillClasses(s: DashboardState, pair: LifecyclePair): string[] {
   const model = fieldModel(s, Date.now());
@@ -1283,7 +1283,7 @@ test("the field: dark work is cold and still, keeping the icon it was frozen wit
   assert.deepEqual(renderedPillClasses(s, pillFor(s, 5)), [], "no engine is on it any more");
 
   const model = fieldModel(s, Date.now());
-  assert.deepEqual(model.strata.map((stratum) => stratum.level), ["cold"], "everything has gone cold");
+  assert.deepEqual([...new Set(model.strata.flatMap((stratum) => stratum.works.map(stratumLevel)))], ["cold"], "everything has gone cold");
   assert.equal(model.dark, true);
 });
 
