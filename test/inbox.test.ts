@@ -160,6 +160,24 @@ test("keep-awake: only a loop the browser refused to start is something to tap",
   assert.equal(card?.workKey, null, "it is about no piece of work");
 });
 
+test("disk: a card while the disk is too full to start new work, gone once there is room", () => {
+  const GB = 1024 ** 3;
+  let state = stateWith([]);
+  state = dashboardReducer(state, event("disk-space", { path: "/home/me/.yoke/checkouts", freeBytes: 20 * GB, minFreeBytes: 10 * GB, low: false }));
+  assert.deepEqual(buildInbox(inputFor(state, { disk: state.disk })), []);
+
+  state = dashboardReducer(state, event("disk-space", { path: "/home/me/.yoke/checkouts", freeBytes: 2 * GB, minFreeBytes: 10 * GB, low: true }));
+  const [card] = buildInbox(inputFor(state, { disk: state.disk }));
+  assert.equal(card?.id, "disk");
+  assert.equal(card?.accent, "alarm");
+  assert.equal(card?.title, "2 GB free — new work is on hold");
+  assert.equal(card?.dismissible, false, "only room on the disk puts it away");
+  assert.equal(card?.workKey, null, "it is about no piece of work");
+
+  state = dashboardReducer(state, event("disk-space", { path: "/home/me/.yoke/checkouts", freeBytes: 30 * GB, minFreeBytes: 10 * GB, low: false }));
+  assert.deepEqual(buildInbox(inputFor(state, { disk: state.disk })), []);
+});
+
 // ── failures ─────────────────────────────────────────────────────────────────
 
 test("failure: the store keeps a failed action, which the engine itself forgets at once", () => {

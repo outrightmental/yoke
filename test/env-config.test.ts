@@ -5,7 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dump as dumpYaml } from "js-yaml";
 
-import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "../src/env-config.js";
+import {
+  loadEnvConfig,
+  resolveGitHubToken,
+  resolveMinFreeDiskBytes,
+  applyProjectDefaults,
+  DEFAULT_CHECKOUT_RETENTION_HOURS,
+  DEFAULT_MIN_FREE_DISK_GB,
+  type EnvConfig,
+  type ProjectEnvConfig,
+} from "../src/env-config.js";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -459,6 +468,84 @@ test("applyProjectDefaults falls back to global cycle_minimum_seconds", () => {
 test("applyProjectDefaults defaults cycle_minimum_seconds to 60", () => {
   const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
   assert.equal(result.cycle_minimum_seconds, 60);
+});
+
+test("checkout_retention_hours defaults to 24, falls back to the global value, and is overridable per project", () => {
+  assert.equal(DEFAULT_CHECKOUT_RETENTION_HOURS, 24);
+  assert.equal(
+    applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig).checkout_retention_hours,
+    24,
+  );
+  assert.equal(
+    applyProjectDefaults(
+      { github_repository: "o/r" },
+      { ...baseEnvConfig, checkout_retention_hours: 72 },
+    ).checkout_retention_hours,
+    72,
+  );
+  assert.equal(
+    applyProjectDefaults(
+      { github_repository: "o/r", checkout_retention_hours: 6 },
+      { ...baseEnvConfig, checkout_retention_hours: 72 },
+    ).checkout_retention_hours,
+    6,
+  );
+  assert.equal(
+    applyProjectDefaults(
+      { github_repository: "o/r", checkout_retention_hours: 0 },
+      { ...baseEnvConfig, checkout_retention_hours: 72 },
+    ).checkout_retention_hours,
+    0,
+    "0 is an override, not a missing value",
+  );
+});
+
+test("min_free_disk_gb defaults to 10 GB and 0 turns the floor off", () => {
+  assert.equal(DEFAULT_MIN_FREE_DISK_GB, 10);
+  assert.equal(resolveMinFreeDiskBytes({}), 10 * 1024 ** 3);
+  assert.equal(resolveMinFreeDiskBytes({ min_free_disk_gb: 2.5 }), 2.5 * 1024 ** 3);
+  assert.equal(resolveMinFreeDiskBytes({ min_free_disk_gb: 0 }), 0);
+});
+
+test("loadEnvConfig reads checkout_retention_hours globally and per project, and min_free_disk_gb globally", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      checkout_retention_hours: 48,
+      min_free_disk_gb: 20,
+      projects: [{ github_repository: "owner/repo", checkout_retention_hours: 12 }],
+    });
+    const config = loadEnvConfig(filePath);
+    assert.equal(config.checkout_retention_hours, 48);
+    assert.equal(config.min_free_disk_gb, 20);
+    assert.equal(config.projects[0]!.checkout_retention_hours, 12);
+  });
+});
+
+test("loadEnvConfig rejects negative or non-numeric checkout_retention_hours and min_free_disk_gb", async () => {
+  for (const [content, pattern] of [
+    [{ ...minimalValidConfig, checkout_retention_hours: -1 }, /"checkout_retention_hours" must be a number of 0 or more/],
+    [{ ...minimalValidConfig, min_free_disk_gb: "lots" }, /"min_free_disk_gb" must be a number of 0 or more/],
+    [
+      { ...minimalValidConfig, projects: [{ github_repository: "owner/repo", checkout_retention_hours: "1d" }] },
+      /"projects\[0\]\.checkout_retention_hours" must be a number of 0 or more/,
+    ],
+  ] as const) {
+    await withTempDir(async (dir) => {
+      const filePath = await writeEnvYaml(dir, content);
+      assert.throws(() => loadEnvConfig(filePath), pattern);
+    });
+  }
+});
+
+test("loadEnvConfig rejects min_free_disk_gb on a project: every project's checkouts share one disk", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      projects: [{ github_repository: "owner/repo", min_free_disk_gb: 5 }],
+    });
+    assert.throws(() => loadEnvConfig(filePath), /"projects\[0\]\.min_free_disk_gb" is not a per-project key/);
+  });
 });
 
 test("applyProjectDefaults applies focus_mode from project config", () => {
