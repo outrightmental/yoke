@@ -1,6 +1,6 @@
 import { issueColor, NEUTRAL_COLOR, workColor } from '../shared/issue-colors.js';
-import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus, ActionFailure } from './types.js';
-import { formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
+import type { DashboardState, CylinderState, BroadcastEventData, EventLine, LifecyclePair, IssueCard, PRCard, WorkHold, AccountUsage, ClockTimeRef, ApprovalPress, PullRequestApprovalState, PullRequestApprovalStatus, ActionFailure, DiskSpace } from './types.js';
+import { formatBytes, formatClockTime, formatDuration, localizeClockTimes } from '../shared/format.js';
 import { freezePillActivity, pillsDark } from '../shared/pill-activity.js';
 import { approvalStatusExpired, approveKey, approveRequestMessage, isApprovalOutcome, type ApproveTarget } from '../shared/pill-approval.js';
 import { WsClient } from './ws-client.js';
@@ -125,6 +125,7 @@ export function initialState(): DashboardState {
     frozenPillActivity: null,
     hold: null,
     usage: null,
+    disk: null,
     approvals: new Map(),
     approvalPresses: new Map(),
     failures: new Map(),
@@ -165,6 +166,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'work-hold':         return applyWorkHold(state, event.data, atMs);
     case 'work-hold-cleared': return applyWorkHoldCleared(state, atMs);
     case 'usage-update':      return applyUsageUpdate(state, event.data);
+    case 'disk-space':        return applyDiskSpace(state, event.data, atMs);
     // An Approve click relayed to the engine pool, which answers it with
     // `pull-request-approval` events (#276).
     case 'pull-request-approve': return state;
@@ -622,6 +624,30 @@ function applyWorkHold(state: DashboardState, data: Record<string, unknown>, atM
 function applyWorkHoldCleared(state: DashboardState, atMs: number): DashboardState {
   if (state.hold === null) return state;
   return addToStream({ ...state, hold: null }, atMs, '▶ Done waiting — resuming work', -1, 'success');
+}
+
+/** A fresh free-space reading replaces the last. The log says so only when the
+ *  disk turns short or recovers: a reading arrives on every upkeep pass. */
+function applyDiskSpace(state: DashboardState, data: Record<string, unknown>, atMs: number): DashboardState {
+  const freeBytes = finiteOrNull(data['freeBytes']);
+  const minFreeBytes = finiteOrNull(data['minFreeBytes']);
+  if (freeBytes === null || minFreeBytes === null) return state;
+  const disk: DiskSpace = {
+    path: typeof data['path'] === 'string' ? data['path'] : '',
+    freeBytes,
+    minFreeBytes,
+    low: data['low'] === true,
+    atMs,
+  };
+  const next = { ...state, disk };
+  const wasLow = state.disk?.low === true;
+  if (disk.low && !wasLow) {
+    return addToStream(next, atMs, `⏸ Disk almost full: ${formatBytes(freeBytes)} free for checkouts — no new work starts until there is room`, -1, 'warning');
+  }
+  if (!disk.low && wasLow) {
+    return addToStream(next, atMs, `▶ ${formatBytes(freeBytes)} free for checkouts again — resuming work`, -1, 'success');
+  }
+  return next;
 }
 
 function finiteOrNull(value: unknown): number | null {

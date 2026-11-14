@@ -1857,13 +1857,16 @@ export async function loadSnapshot(
   sessionStore: FileSessionStore,
   projectConfig?: { projectNumber: number },
 ): Promise<RepositorySnapshot> {
+  const listingFailed = { issues: false, pullRequests: false };
   const [issues, pullRequests, agentSessions] = await Promise.all([
     gitHubClient.listOpenIssues().catch((error) => {
       console.warn(`[yoke] Could not list open issues: ${String(error)}`);
+      listingFailed.issues = true;
       return [];
     }),
     gitHubClient.listOpenPullRequests().catch((error) => {
       console.warn(`[yoke] Could not list open pull requests: ${String(error)}`);
+      listingFailed.pullRequests = true;
       return [];
     }),
     sessionStore.load(),
@@ -1926,7 +1929,12 @@ export async function loadSnapshot(
     }),
   );
 
-  return { issues: issuesWithStatus, pullRequests: pullRequestsWithNewComments, agentSessions };
+  return {
+    issues: issuesWithStatus,
+    pullRequests: pullRequestsWithNewComments,
+    agentSessions,
+    ...(listingFailed.issues || listingFailed.pullRequests ? { listingFailed } : {}),
+  };
 }
 
 export function buildDefaultSessionStorePath(owner: string, repo: string): string {

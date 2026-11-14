@@ -35,6 +35,11 @@ export interface ProjectEnvConfig {
   claude_timeout_seconds?: number;
   /** Minimum seconds between engine cycle starts. Defaults to global cycle_minimum_seconds. */
   cycle_minimum_seconds?: number;
+  /**
+   * Hours a checkout for open work may sit unclaimed and untouched before it is
+   * removed. Defaults to global checkout_retention_hours.
+   */
+  checkout_retention_hours?: number;
   /** @deprecated Use the top-level `dashboard_port` instead. Honoured only as a fallback. */
   dashboard_port?: number;
   /** Path for persisted agent-session state. Defaults to .yoke/<owner>-<repo>-sessions.json. */
@@ -63,6 +68,19 @@ export interface EnvConfig {
   max_concurrency?: number;
   /** Global minimum seconds between engine cycle starts (default: 60). */
   cycle_minimum_seconds?: number;
+  /**
+   * Hours a checkout for open work may sit unclaimed and untouched before it is
+   * removed (default: 24). A checkout for an issue or PR that is no longer open
+   * is removed on the next maintenance pass whatever its age. Overridable per
+   * project.
+   */
+  checkout_retention_hours?: number;
+  /**
+   * Free space, in GB, below which yoke evicts idle checkouts least recently
+   * used first, and holds new work if that is not enough (default: 10). Global
+   * only: every project's checkouts share the one disk. 0 turns it off.
+   */
+  min_free_disk_gb?: number;
   /** Port for the single shared dashboard (default: 3000). */
   dashboard_port?: number;
   /** Title shown in the dashboard header. Defaults to "Outright Mental". */
@@ -132,10 +150,23 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
         `Replace it with "claude_code_initial_model" and "claude_code_review_model".`,
     );
   }
+  assertNonNegativeNumber(filePath, "checkout_retention_hours", config.checkout_retention_hours);
+  assertNonNegativeNumber(filePath, "min_free_disk_gb", config.min_free_disk_gb);
   for (let i = 0; i < config.projects.length; i++) {
     const p = config.projects[i] as Record<string, unknown>;
     if (!p || typeof p !== "object") {
       throw new Error(`${filePath}: "projects[${i}]" must be an object.`);
+    }
+    assertNonNegativeNumber(
+      filePath,
+      `projects[${i}].checkout_retention_hours`,
+      p.checkout_retention_hours,
+    );
+    if ("min_free_disk_gb" in p) {
+      throw new Error(
+        `${filePath}: "projects[${i}].min_free_disk_gb" is not a per-project key. ` +
+          `Every project's checkouts share one disk, so set "min_free_disk_gb" at the top level.`,
+      );
     }
     if (typeof p.github_repository !== "string" || !p.github_repository.trim()) {
       throw new Error(`${filePath}: "projects[${i}].github_repository" must be a non-empty string.`);
@@ -150,6 +181,13 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   return raw as EnvConfig;
 }
 
+function assertNonNegativeNumber(filePath: string, key: string, value: unknown): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${filePath}: "${key}" must be a number of 0 or more.`);
+  }
+}
+
 export interface ResolvedProjectDefaults {
   max_concurrency: number;
   claude_code_initial_model: string;
@@ -159,12 +197,32 @@ export interface ResolvedProjectDefaults {
   claude_describe_model: string | undefined;
   claude_timeout_seconds: number;
   cycle_minimum_seconds: number;
+  checkout_retention_hours: number;
   reviewers: string[];
   focus_mode: boolean;
 }
 
 /** Default ceiling on one Claude run, in seconds. Mirrors DEFAULT_CLAUDE_TIMEOUT_MS. */
 export const DEFAULT_CLAUDE_TIMEOUT_SECONDS = 3 * 60 * 60;
+
+/**
+ * Default hours an idle checkout for open work is kept. A day keeps everything
+ * worked on daily, while an issue left waiting longer costs only a fresh
+ * worktree and a dependency install when it is picked up again.
+ */
+export const DEFAULT_CHECKOUT_RETENTION_HOURS = 24;
+
+/**
+ * Default free-space floor, in GB, for the checkout root's filesystem. Enough
+ * headroom for several engines to each install dependencies at once.
+ */
+export const DEFAULT_MIN_FREE_DISK_GB = 10;
+
+/** The global `min_free_disk_gb`, in bytes. 0 means the safety valve is off. */
+export function resolveMinFreeDiskBytes(globalConfig: Pick<EnvConfig, "min_free_disk_gb">): number {
+  const gb = globalConfig.min_free_disk_gb ?? DEFAULT_MIN_FREE_DISK_GB;
+  return Math.round(gb * 1024 ** 3);
+}
 
 /**
  * Merges per-project overrides with global defaults.
@@ -205,6 +263,10 @@ export function applyProjectDefaults(
       DEFAULT_CLAUDE_TIMEOUT_SECONDS,
     cycle_minimum_seconds:
       projectConfig.cycle_minimum_seconds ?? globalConfig.cycle_minimum_seconds ?? 60,
+    checkout_retention_hours:
+      projectConfig.checkout_retention_hours ??
+      globalConfig.checkout_retention_hours ??
+      DEFAULT_CHECKOUT_RETENTION_HOURS,
     reviewers: projectConfig.reviewers ?? [],
     focus_mode: projectConfig.focus_mode ?? false,
   };

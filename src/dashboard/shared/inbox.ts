@@ -1,5 +1,5 @@
-import type { ActionFailure } from '../store/types.js';
-import { formatDuration } from './format.js';
+import type { ActionFailure, DiskSpace } from '../store/types.js';
+import { formatBytes, formatDuration } from './format.js';
 import type { IssueColor } from './issue-colors.js';
 import { approveKey, type ApproveButtonStep, type ApproveTarget } from './pill-approval.js';
 import type { KeepAwakeStatus } from './keep-awake.js';
@@ -12,6 +12,9 @@ import { actionVerb, STAGES, type StatusTone, type WorkView } from './work-view.
  * It is federated — each kind of thing a person can do comes from its own
  * source, and they are all drawn the same way, as cards, in one list:
  *
+ * - `disk`: the disk yoke keeps its checkouts on is short of space even after
+ *   every idle checkout was removed, so no new work starts until someone makes
+ *   room (#288).
  * - `keep-awake`: the browser refused to play the keep-awake loop; one tap
  *   starts it (#246).
  * - `approval`: a PR parked by the `review` label, to approve and merge here
@@ -24,10 +27,10 @@ import { actionVerb, STAGES, type StatusTone, type WorkView } from './work-view.
  * A new source is one more function from the dashboard's state to cards, added
  * to `buildInbox`; nothing that draws the inbox has to know of it.
  */
-export type InboxSource = 'keep-awake' | 'approval' | 'review' | 'failure' | 'manual';
+export type InboxSource = 'disk' | 'keep-awake' | 'approval' | 'review' | 'failure' | 'manual';
 
 /** The sources in the order their cards are listed, most pressing first. */
-export const INBOX_SOURCES: readonly InboxSource[] = ['keep-awake', 'approval', 'review', 'failure', 'manual'];
+export const INBOX_SOURCES: readonly InboxSource[] = ['disk', 'keep-awake', 'approval', 'review', 'failure', 'manual'];
 
 /** The one thing a card's big button does. */
 export type InboxAction =
@@ -267,6 +270,33 @@ function failureCards(
   return cards;
 }
 
+/**
+ * The card for a disk too full to start new work on (#288). Yoke has already
+ * removed every checkout it could, so only a person can make room; work under
+ * way carries on, and new work starts by itself once there is enough.
+ */
+function diskCards(disk: DiskSpace | null | undefined): InboxCard[] {
+  if (!disk?.low) return [];
+  return [{
+    id: 'disk',
+    source: 'disk',
+    workKey: null,
+    color: null,
+    accent: 'alarm',
+    eyebrow: 'Disk almost full',
+    repo: '',
+    title: `${formatBytes(disk.freeBytes)} free — new work is on hold`,
+    facts: [`needs ${formatBytes(disk.minFreeBytes)}`, disk.path].filter(Boolean),
+    line: {
+      text: 'every idle checkout is already removed — free some space and yoke resumes by itself',
+      tone: 'problem',
+    },
+    action: null,
+    links: [],
+    dismissible: false,
+  }];
+}
+
 /** The card for a keep-awake loop the browser would not autoplay (#246). */
 function keepAwakeCards(status: KeepAwakeStatus): InboxCard[] {
   if (status !== 'blocked') return [];
@@ -296,6 +326,8 @@ export interface InboxInput {
   /** The failed actions the store still holds (`DashboardState.failures`). */
   failures: readonly ActionFailure[];
   keepAwake: KeepAwakeStatus;
+  /** The latest free-space reading (`DashboardState.disk`); a card while it is low. */
+  disk?: DiskSpace | null;
   /** Ids of the cards a person has put away. */
   dismissed: ReadonlySet<string>;
   /** When each card was first listed (`InboxLedger`), by id. */
@@ -317,6 +349,7 @@ export interface InboxInput {
 export function buildInbox(input: InboxInput): InboxCard[] {
   const { works, arrivals } = input;
   const cards = [
+    ...diskCards(input.disk),
     ...keepAwakeCards(input.keepAwake),
     ...approvalCards(works),
     ...reviewCards(works),
