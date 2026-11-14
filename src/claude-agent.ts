@@ -539,16 +539,27 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * The run temp dirs this process has created and not yet removed. The sweep
+ * consults this rather than skipping every dir named with this process's pid:
+ * a yoke restarted in a container is usually given the same pid as the one
+ * that crashed, and its leftovers would otherwise never be swept.
+ */
+const liveRunTempDirs = new Set<string>();
+
 /** Create a fresh, private temp dir for one Claude run. */
 export async function createRunTempDir(rootDir: string = defaultRunTempRootDir()): Promise<string> {
   await mkdir(rootDir, { recursive: true });
-  return mkdtemp(join(rootDir, `${process.pid}-`));
+  const dir = await mkdtemp(join(rootDir, `${process.pid}-`));
+  liveRunTempDirs.add(resolve(dir));
+  return dir;
 }
 
 /** Remove a run's temp dir and everything the agent left in it. Never throws. */
 export async function removeRunTempDir(dir: string): Promise<void> {
   try {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    liveRunTempDirs.delete(resolve(dir));
   } catch (error) {
     writeLogLine(
       `[yoke] Could not remove the run's temp dir ${dir}: ${error instanceof Error ? error.message : String(error)}`,
@@ -558,9 +569,10 @@ export async function removeRunTempDir(dir: string): Promise<void> {
 
 /**
  * Remove the run temp dirs a yoke that is no longer running left behind — one
- * that crashed, or was killed, before its runs' cleanup could happen. Dirs of a
- * yoke that is still alive, this one included, are left alone, and so is
- * anything in the root that yoke did not name. Returns the dirs removed.
+ * that crashed, or was killed, before its runs' cleanup could happen. Dirs of
+ * another yoke that is still alive are left alone, and so are this process's
+ * own runs still under way, and anything in the root that yoke did not name.
+ * Returns the dirs removed.
  */
 export async function sweepOrphanedRunTempDirs(
   rootDir: string = defaultRunTempRootDir(),
@@ -574,8 +586,9 @@ export async function sweepOrphanedRunTempDirs(
   const removed: string[] = [];
   for (const name of names) {
     const pid = runTempDirOwnerPid(name);
-    if (pid === undefined || pid === process.pid || isProcessAlive(pid)) continue;
+    if (pid === undefined) continue;
     const dir = join(rootDir, name);
+    if (pid === process.pid ? liveRunTempDirs.has(resolve(dir)) : isProcessAlive(pid)) continue;
     try {
       await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       removed.push(dir);
