@@ -11,16 +11,30 @@ The README's [Dashboard](../README.md#dashboard) section says what each shows. T
 
 ## The idea: heat rises
 
-`shared/burn-level.ts` answers "how much token burn does this piece of work stand for right now?" with four levels — `burning`, `queued`, `waiting`, `cold` — and the field is built on the answer. A level is a stratum; the strata are stacked hottest first; and the hotter a stratum, the more room each piece of work in it has and the brighter its ink:
+`shared/burn-level.ts` answers "how much token burn does this piece of work stand for right now?" with four levels — `burning`, `queued`, `waiting`, `cold` — and the field is built on the answer. What is burning is at the top, with the most room. Everything below the reactors is grouped by the project it belongs to (#290), and within each project the hotter a piece of work, the higher it is set and the more solidly it is drawn:
 
 | Level | What it is | How it is drawn | In colour |
 | --- | --- | --- | --- |
 | `burning` | an engine is running an action on it | a *reactor*: the engine's ring, and the work in large type beside it | the work's own hue |
-| `queued` | Yoke works it next | a line, with a second line of detail while there is room | gray, banded; a status signal if it has one |
-| `waiting` | on someone else first | a line | gray, banded; a status signal if it has one |
-| `cold` | nothing is coming | a line of small print | gray, banded; a status signal if it has one |
+| `queued` | Yoke works it next | a line, whole, at the head of its project's group | gray, banded; a status signal if it has one |
+| `waiting` | on someone else first | a line at 40% opacity, after its project's queued work | gray, banded; a status signal, at full strength, if it has one |
+| `cold` | nothing is coming | a line of smaller, dimmer type at 40% opacity, last in its project | gray, banded; a status signal, at full strength, if it has one |
 
-Nothing has a box of fixed size. An empty stratum takes no room at all, not even a heading. A stratum is never set in more columns than it has work for. And when the window cannot hold everything, the whole field steps down to a denser set of sizes (`DENSITIES` in `field/layout.ts`) before it asks to be scrolled.
+Nothing has a box of fixed size. A project with no work below the reactors takes no room at all, not even a heading. A group is never set in more columns than it has work for. And when the window cannot hold everything, the whole field steps down to a denser set of sizes (`DENSITIES` in `field/layout.ts`) before it asks to be scrolled.
+
+### Below the reactors: a group for each project
+
+The lower section used to be a stratum per level — QUEUED, WAITING, COLD, each under its own heading — and said nothing about which repository a line belonged to, unless several projects shared the dashboard, when the name was squeezed in between a line's title and its status. Since #290 each project has one group instead (`FieldModel.strata`, one `Stratum` per repository), headed by the name the project goes by (`repoLabels`: the owner is dropped when every project shares it), how much of its work is below the reactors, and how much of that is at each level, in words — `ATLAS 7  5 queued · 1 waiting · 1 cold`. A single project is headed the same way, so the field reads the same however many projects share it.
+
+Decisions, and why:
+
+- **The groups are in the order of the projects' names.** Nothing that happens to a project's work can move its group past another, so the only thing that moves a group is the work above it growing or shrinking. A group sorted by heat would jump past its neighbours whenever one piece of work changed level, and every line in both would move with it.
+- **Within a project, queued work comes first, then waiting, then cold** (`compareProjectWork` in `shared/work-view.ts`), each level in `compareWork`'s order. What yoke works next still leads, as it did when it had a stratum of its own.
+- **The level is said by weight, not by place.** A waiting line is drawn at 40% opacity (`DIMMED_OPACITY`, `burnOpacity` in `shared/burn-level.ts`, carried on `WorkView.opacity`) — its number, title, status, track and gray glyph — so it recedes against the queued work around it. Cold work shares the group, so it is dimmed the same; its smaller, dimmer type (`ROW_TYPE` and `INK` in `field/painter.ts`) keeps it the faintest of the three, where drawn whole it would have stood out above the waiting lines.
+- **A signal is not dimmed.** An alarm does not cool (#286): a dimmed line's red, orange, yellow or green status, and the glyph in the same colour, are drawn at full strength. A PR waiting for your approval recedes; the yellow saying so does not.
+- **A project's lines are all one size**: that of the hottest level it holds — queued lines throughout a group with any queued work, the waiting size for one whose work waits at most, small print for one nothing is coming for. That keeps a group's bands evenly ruled, and means a line that changes level fades and slides to its new place rather than growing or shrinking as well.
+- **A line does not repeat its project.** The heading above it says it. A reactor still names its project when several share the dashboard, since the burning stratum is not grouped.
+- **The heading is not a level, so the markup says each line's level in words** — `· waiting` at the end of the item — under a heading with the project's whole name (see Accessibility).
 
 ## Colour: the rainbow burns, everything below it is gray
 
@@ -29,7 +43,7 @@ Every issue owns a hue for ever (`shared/issue-colors.ts`, #236), and for a whil
 ### The rule
 
 - **The burning stratum is drawn in the work's hue.** A reactor, its engine's ring, the comet on it and the glow under it; an engine on the bench that still holds the work its action ended on, until it goes idle (`cylinderColor`); a reactor whose work has gone dark while its engine finishes (#268). An engine keeps the hue for as long as its work is on screen.
-- **Every stratum below is hue-free gray.** A line's number, its track and the glyph at its end are `--trim-dim`; its title `--trim-bright`. Heat is said in how bright that ink is, how big the type and how much room a line has — never in colour (`INK` and `ROW_TYPE` in `field/painter.ts`).
+- **Everything below the reactors is hue-free gray.** A line's number, its track and the glyph at its end are `--trim-dim`; its title `--trim-bright`. Heat is said in how bright that ink is, how big the type, how much room a line has and how solidly it is drawn (#290) — never in colour (`INK` and `ROW_TYPE` in `field/painter.ts`, `burnOpacity` in `shared/burn-level.ts`).
 - **Below the reactors, saturated colour means a state** — one of the status signals in `styles/tokens.css`, and never an issue's colour (`WorkSignal` in `shared/work-view.ts`).
 - **What identifies a piece of work keeps its hue wherever the work is**: the one mark on its line (below), its inbox card's edge, and the tether between them. That is what lets a card be matched to its line, and a line to the reactor it came from.
 
@@ -37,24 +51,24 @@ Every issue owns a hue for ever (`shared/issue-colors.ts`, #236), and for a whil
 
 ### Telling neighbours apart: two grays
 
-The hue was doing a job besides saying which issue: it told one line from the next. With forty gray lines in four columns, up to 760 pixels wide and with their status set against the right-hand end, the eye loses its line between the title and the status. So the lines below the reactors are *banded*: counted down each column, every other line lies on a band, the ground lifted by 3.5% of `--trim-bright`. Two values of gray — the ground and the band — alternate down every stratum below the reactors, the same in each, so a line and its neighbours are always on two different grays, and a two-line row's lines read as one.
+The hue was doing a job besides saying which issue: it told one line from the next. With forty gray lines in four columns, up to 760 pixels wide and with their status set against the right-hand end, the eye loses its line between the title and the status. So the lines below the reactors are *banded*: counted down each column, every other line lies on a band, the ground lifted by 3.5% of `--trim-bright`. Two values of gray — the ground and the band — alternate down every project's group below the reactors, the same in each, so a line and its neighbours are always on two different grays, and a two-line row's lines read as one.
 
 Decisions about the bands, and why:
 
 - **Behind the line, not in its ink.** Alternating the ink of the lines between two grays would tell neighbours apart too, but ink brightness already says heat, and one line in two would read as cooler than its neighbour. A band changes nothing a line says.
-- **They belong to the stratum, not to the lines.** The bands are laid out with the stratum (`HeaderNode.bands` in `field/layout.ts`) and drawn where its heading is. When a piece of work leaves, the lines under it slide up across bands that stay put, like ruled paper; bands that were drawn per line would flip from line to line on every change, and the whole stratum below would flicker.
+- **They belong to the group, not to the lines.** The bands are laid out with the project's group (`HeaderNode.bands` in `field/layout.ts`) and drawn where its heading is. When a piece of work leaves, the lines under it slide up across bands that stay put, like ruled paper; bands that were drawn per line would flip from line to line on every change, and the whole group below would flicker. A band is not dimmed with a waiting line on it: it rules the group, not the line.
 - **As faint as will still be seen.** 1.06:1 against the ground, about three just-noticeable steps of lightness (L\* 4.0 to 6.9). Strong enough to read across a room; weak enough that no word on a band drops below its floor — the darkest signal, red, keeps 4.7:1 on one. It reaches 8 pixels past its line, as far as the wash behind a line under the pointer, so the two line up.
 - **Not in the burning stratum.** Reactors are told apart by their rings and their hues.
 
 ### Which issue: one mark of its hue
 
-Each line below the reactors keeps its issue's hue in exactly one place: the mark its track has reached — the dot on *issue · build · draft · ready · merged* that says how far along it is. The marks behind it, and the line joining them, are gray. It is the same hue as the work's reactor, its inbox card and its tether, so a piece of work can be followed as it cools from a reactor into the strata below, and the ring that spreads from it when its state changes is already drawn in that hue.
+Each line below the reactors keeps its issue's hue in exactly one place: the mark its track has reached — the dot on *issue · build · draft · ready · merged* that says how far along it is. The marks behind it, and the line joining them, are gray. It is the same hue as the work's reactor, its inbox card and its tether, so a piece of work can be followed as it cools from a reactor into its project's group below, and the ring that spreads from it when its state changes is already drawn in that hue.
 
 A hue can happen to be close to a signal's — an issue's red mark beside an error — so the two are kept apart by place and shape: an issue's mark is always a 5-pixel dot on the track at the left of the line, and a signal is always words and a glyph at its right-hand end.
 
 ### What state: the signals
 
-A line has at most one signal, worked out with its status in `workStatus`, so the words always say what the colour means. It colours the status and the glyph at the end of the line, and nothing else; the number, the title and the track stay gray. A signal is drawn at full strength in every stratum — an alarm does not cool — and is never the only way it is said: there is always a glyph's shape and words.
+A line has at most one signal, worked out with its status in `workStatus`, so the words always say what the colour means. It colours the status and the glyph at the end of the line, and nothing else; the number, the title and the track stay gray. A signal is drawn at full strength at every level, on a line dimmed to 40% too (#290) — an alarm does not cool — and is never the only way it is said: there is always a glyph's shape and words.
 
 | Signal | Colour | When |
 | --- | --- | --- |
@@ -68,7 +82,7 @@ Red, orange and yellow were chosen for the three states the field most needs to 
 
 ### The grays, and their contrast
 
-Every gray is one of the trim tokens at an alpha over the ground. Each was set to clear a floor against the darkest ground (`--bg-dark`) — WCAG's 4.5:1 for words that identify a line or signal a state, and 3:1 for a neutral status and for marks — and checked on a band as well (`test/field-painter.test.ts`):
+Every gray is one of the trim tokens at an alpha over the ground. Each was set to clear a floor against the darkest ground (`--bg-dark`) — WCAG's 4.5:1 for words that identify a line or signal a state, and 3:1 for a neutral status and for marks — and checked on a band as well (`test/field-painter.test.ts`). The figures below are each level's ink before a waiting or cold line is dimmed to 40% (#290), which takes it under these floors on purpose: it is meant to recede, and what it has to say that matters — its signal — is drawn at full strength and keeps its floor. A queued line keeps every one of them.
 
 | On the ground / on a band | Title | Number | Status (neutral) | Status (in progress) |
 | --- | --- | --- | --- | --- |
@@ -80,7 +94,7 @@ Every gray is one of the trim tokens at an alpha over the ground. Each was set t
 | --- | --- | --- | --- | --- |
 | on the ground / on a band | 4.9 / 4.7 | 6.6 / 6.2 | 12.8 / 12.0 | 14.4 / 13.6 |
 
-A glyph with no signal is 5.7:1, and the marks behind a track's reached mark 3.4:1. To meet those floors a cold title went from 0.46 to 0.54 of `--trim-bright` (it was 3.8:1), and a neutral status from 0.66 and 0.5 to 0.7 and 0.66 of `--trim-dim` in the waiting and cold strata (the cold one was 2.3:1). The gray number is also steadier than the hue it replaces: a line's number used to be anywhere from 2.8:1 (a blue issue) to 18:1 (a yellow one), depending only on its issue number.
+A glyph with no signal is 5.7:1, and the marks behind a track's reached mark 3.4:1. To meet those floors a cold title went from 0.46 to 0.54 of `--trim-bright` (it was 3.8:1), and a neutral status from 0.66 and 0.5 to 0.7 and 0.66 of `--trim-dim` at the waiting and cold levels (the cold one was 2.3:1). The gray number is also steadier than the hue it replaces: a line's number used to be anywhere from 2.8:1 (a blue issue) to 18:1 (a yellow one), depending only on its issue number.
 
 ## How a frame is made
 
@@ -89,7 +103,7 @@ DashboardState ──► workViews / engineViews / vitals      shared/   what ea
        │                    │
        │                    ├──► buildInbox ──► cards    shared/inbox.ts
        │                    ▼
-       └──────────► fieldModel                           field/model.ts     what goes in which stratum
+       └──────────► fieldModel                           field/model.ts     what goes on a reactor, and in which project's group
                             ▼
                       layoutField                        field/layout.ts    where: boxes, and nothing else
                             ▼
@@ -111,11 +125,11 @@ Every step above the painter is a plain function of the store's state, the clock
 Two rules in it are about things staying put, because a dashboard is watched out of the corner of an eye and anything that moves had better mean something:
 
 - The reactor grid's columns are set by the size of the pool, not by how many engines happen to be burning. A reactor keeps its width — and its title its line breaks — as the engines around it start and stop.
-- A stratum is filled down each column in turn. When a piece of work leaves, the ones under it close up by a line, and nothing else moves.
+- A project's group is filled down each column in turn. When a piece of work leaves, the ones under it close up by a line, and nothing else moves. The groups are in the order of the projects' names, so a group moves only when the work above it grows or shrinks.
 
 ### Identity is what makes motion mean something
 
-A node keeps its id for as long as the thing it stands for exists: `work:<key>` for a piece of work, `engine:<n>` for an engine's ring. The animator moves a node from where the last layout had it to where the new one does, on a critically damped spring (`field/spring.ts`), so a change of state reads as one thing going somewhere: a PR whose checks pass slides up a stratum; an engine's ring swings out from the bench to the work it has just taken, growing as it goes, and back when it is done.
+A node keeps its id for as long as the thing it stands for exists: `work:<key>` for a piece of work, `engine:<n>` for an engine's ring. The animator moves a node from where the last layout had it to where the new one does, on a critically damped spring (`field/spring.ts`), so a change of state reads as one thing going somewhere: a PR parked for a person's review sinks below its project's queued work and dims, without leaving its project's group; an engine's ring swings out from the bench to the work it has just taken, growing as it goes, and back when it is done.
 
 The springs are stepped with the closed-form solution rather than by integrating a force, so they land in the same place at any frame rate and cannot blow up after a tab has been in the background. A node that changes *shape* — a line becoming a reactor — is cross-faded rather than tweened, and a node far from where it belongs is drawn faint and firms up as it arrives, so two things crossing on their way are never two lines of text on top of one another.
 
@@ -188,7 +202,7 @@ The inbox is DOM and the field is canvas, so the inbox reports where its cards a
 
 ## Accessibility
 
-A canvas is opaque to a screen reader and to the keyboard. `<yoke-field>` therefore also renders everything it draws as ordinary markup, out of sight but not hidden: the engines as a list, each stratum under a heading, and every piece of work as a link to GitHub. Focusing one of those links draws a focus ring around the same thing on the canvas and scrolls it into view. The inbox and the activity drawer are ordinary DOM.
+A canvas is opaque to a screen reader and to the keyboard. `<yoke-field>` therefore also renders everything it draws as ordinary markup, out of sight but not hidden: the engines as a list, the burning work and then each project's work under a heading — the project's whole `owner/repo` name — and every piece of work as a link to GitHub. Below the reactors each item ends with its level in a word (`queued`, `waiting`, `cold`), since the canvas says it only by how solid it draws the line. Focusing one of those links draws a focus ring around the same thing on the canvas and scrolls it into view. The inbox and the activity drawer are ordinary DOM.
 
 ## Working on it
 
